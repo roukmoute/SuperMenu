@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod catalog;
+mod cleanup;
 mod config;
 mod core;
 mod installer;
@@ -10,6 +11,7 @@ mod timer;
 mod timer_alert;
 mod timer_runtime;
 mod ui;
+mod uninstall_inventory;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

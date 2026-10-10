@@ -4,11 +4,11 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. L'exécutable autonome fait **environ 1 Mio** ; sa taille exacte varie légèrement selon la version du compilateur.
+Windows 10 et 11, x64. L'exécutable autonome fait **environ 1,3 Mio** ; sa taille exacte varie légèrement selon la version du compilateur.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 28 Mio de mémoire privée et 59 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,39 ms) pour le classement en mémoire, de 0,65 ms (p95 2,20 ms) pour les fichiers et de 0,63 ms (p95 1,06 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 92 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
+Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 121 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
 
 ## Utiliser
 
@@ -61,11 +61,21 @@ Une installation se déclenche uniquement par validation d'un résultat « Insta
 
 ## Désinstaller un logiciel
 
-Choisir **Désinstaller** dans le menu, ou saisir `- chrome`, pour parcourir les logiciels installés. Avec une recherche simple comme `chrome`, le résultat à lancer reste en premier ; une ligne **« Désinstaller · Navigateur · WinGet »** permet de retirer le logiciel directement depuis cette recherche.
+Choisir **Désinstaller** dans le menu, ou saisir `- chrome`, pour parcourir les logiciels installés. Avec une recherche simple comme `chrome`, le résultat à lancer reste en premier ; une ligne **« Désinstaller et nettoyer »** permet de retirer le logiciel directement depuis cette recherche.
 
-**Entrée** sur une ligne « Désinstaller » affiche une confirmation avec le nom du logiciel, avec **Non** sélectionné par défaut. Après confirmation, Windows demande les droits administrateur si le logiciel est installé pour tout l'ordinateur, puis une console affiche la progression WinGet. Annuler cette demande conserve le logiciel et permet de réessayer. Le catalogue se rafraîchit à la fin et la console reste ouverte jusqu'à Entrée. Annuler la confirmation ne lance aucun désinstallateur.
+**Entrée** affiche une seule confirmation pour la désinstallation et le nettoyage, avec **Non** sélectionné par défaut. Windows demande les droits administrateur si le logiciel est installé pour tout l'ordinateur, puis la console affiche la progression. WinGet utilise le mode silencieux du désinstallateur lorsqu'il est pris en charge. Après une réussite vérifiée, la recherche de résidus et leur nettoyage s'enchaînent sans confirmation supplémentaire ; la console se ferme automatiquement après le bilan. Une erreur reste visible. Annuler la confirmation ou la demande administrateur ne lance aucun désinstallateur.
 
 Les actions utilisent les identifiants exacts du catalogue ou les noms exacts du registre Windows pour les autres logiciels, y compris ceux installés autrement qu'avec WinGet. Les composants `SystemComponent` ou `NoRemove` sont exclus. Les variantes telles que Firefox ESR et VS Code Insiders gardent leur propre identité. Le helper vérifie à nouveau la présence du logiciel ; une cible inconnue, protégée ou ambiguë n'est pas supprimée. La commande n'utilise ni `--force`, ni `--purge`, ni `--all`.
+
+Le nettoyage natif mémorise l'emplacement du programme avant sa désinstallation. Il vise les fichiers de programme attribuables au produit, ses raccourcis dont la cible est vérifiée, les caches reconnus et les traces techniques qui pointent vers ce programme. Il ne commence pas si la désinstallation échoue, si le logiciel est encore présent ou si sa disparition ne peut pas être vérifiée. Aucun scan n'est effectué pendant la frappe ou au démarrage du menu : ce travail reste dans le processus temporaire de désinstallation.
+
+Le nettoyage **conserve les profils, réglages, sessions et sauvegardes personnelles**. Les dossiers partagés, liens et jonctions, emplacements système et résidus d'attribution incertaine sont laissés en place. La détection est ciblée, et ne prétend pas retrouver chaque trace de tous les logiciels. Les fichiers retirés vont dans la **Corbeille** ; les modifications du registre disposent d'une sauvegarde préalable. Ce mode conserve donc la possibilité de récupérer les fichiers ; vider la Corbeille reste une action séparée.
+
+Dans un ancien dossier d'installation, seuls les binaires identifiés (`.exe`, `.dll`, `.pdb`, `.manifest`) sont recyclés : le dossier, ses ressources et les éventuels fichiers personnels restent en place. Les caches connus peuvent être retirés en entier. Les traces du registre sont limitées aux valeurs de lancement **Run** et **App Paths** qui désignent un exécutable exact du programme ; les clés de réglages, associations, services, pilotes, tâches planifiées, COM et MSI restent sous la responsabilité du désinstallateur officiel.
+
+Les rapports se trouvent dans `%LOCALAPPDATA%\SuperMenu\uninstall-reports` et les sauvegardes du registre dans `%LOCALAPPDATA%\SuperMenu\uninstall-backups`. **Clic droit sur l'icône de Super Menu → Rapports de désinstallation** ouvre ce dossier. Le plan est sauvegardé avant le premier nettoyage, puis un bilan distinct détaille les résidus retirés ou conservés et leurs raisons. Les désinstallateurs externes restent responsables de leurs propres changements ; la conservation des données décrite ici s'applique au nettoyage de Super Menu.
+
+Pour examiner un plan sans désinstaller ni nettoyer : `supermenu.exe --inspect-cleanup "id:Google.Chrome" --report plan.json`. Une cible hors catalogue utilise `name:Nom exact du registre`. Ce diagnostic ne lance aucun désinstallateur et ne demande pas d'élévation.
 
 ![Une action de désinstallation dans Super Menu](docs/remove.png)
 

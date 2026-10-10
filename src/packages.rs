@@ -509,12 +509,29 @@ fn valid_registry_name(name: &str) -> bool {
         && !name.chars().any(char::is_control)
 }
 
+/// Cleanup snapshots use the same exact identity and stable-channel policy as
+/// the removal action. Search aliases never become registry ownership evidence.
+pub fn registry_name_matches_target(target: &str, name: &str) -> bool {
+    if !valid_registry_name(name) {
+        return false;
+    }
+    if let Some(exact) = target.strip_prefix("name:") {
+        return valid_registry_name(exact) && exact.eq_ignore_ascii_case(name);
+    }
+    let Some(id) = target.strip_prefix("id:") else {
+        return false;
+    };
+    prepared().iter().any(|package| {
+        package.package.id.eq_ignore_ascii_case(id) && uninstall_match(&normalize(name), package)
+    })
+}
+
 fn removal_item(package: &Package) -> Item {
     Item::new(
         format!("uninstall:id:{}", package.id),
         package.name,
         format!(
-            "Désinstaller · {} · WinGet · Entrée pour désinstaller",
+            "Désinstaller et nettoyer · {} · données personnelles conservées",
             package.category
         ),
         "−",
@@ -527,7 +544,7 @@ fn named_removal_item(name: &str, category: &str) -> Item {
     Item::new(
         format!("uninstall:name:{name}"),
         name,
-        format!("Désinstaller · {category} · WinGet · Entrée pour désinstaller"),
+        format!("Désinstaller et nettoyer · {category} · données personnelles conservées"),
         "−",
         Kind::Uninstall,
         format!("name:{name}"),

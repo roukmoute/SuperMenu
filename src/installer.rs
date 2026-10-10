@@ -1,13 +1,15 @@
 //! A separate instance of this executable owns WinGet and its visible console.
 //! Package operations and their validation run outside the launcher's UI thread.
 
-use crate::{native::wide, packages};
+use crate::{cleanup::CleanupPlan, config, native::wide, packages};
 use std::io::{self, Write};
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::ptr::{null, null_mut};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_CANCELLED, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND, INVALID_HANDLE_VALUE,
     WAIT_FAILED, WAIT_OBJECT_0,
@@ -116,6 +118,13 @@ impl RemoveTarget {
             Self::Name(name) => name,
         }
     }
+
+    fn canonical(&self) -> String {
+        match self {
+            Self::Id(id) => format!("id:{id}"),
+            Self::Name(name) => format!("name:{name}"),
+        }
+    }
 }
 
 impl Request {
@@ -130,6 +139,9 @@ impl Request {
 
 /// Runs only the private package-helper modes. Normal GUI arguments return None.
 pub fn run_from_args(args: &[String]) -> Option<i32> {
+    if args.iter().skip(1).any(|arg| arg == "--inspect-cleanup") {
+        return Some(inspect_cleanup(args));
+    }
     if !args
         .iter()
         .skip(1)
@@ -164,8 +176,11 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
         }
     };
     let mut wait = true;
+    let mut close_after_success = false;
     let result = match request {
         Ok(request) => {
+            // One initial confirmation authorizes the complete removal. Successful
+            // unattended removals do not require another Enter just to close a log.
             wait = !request.no_wait;
             println!("{heading} de {}\n", request.name);
             let outcome = if valid_parent(request.parent, request.parent_pid) {
@@ -182,7 +197,20 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
                     .and_then(|exe| {
                         let mut runner = SystemRunner { exe };
                         match &request.remove {
-                            Some(target) => perform_remove(&mut runner, target, request.check_only),
+                            Some(target) => {
+                                let plan = CleanupPlan::capture(&target.canonical());
+                                println!("{}\n", plan.summary());
+                                if request.check_only {
+                                    // Preview never deletes files or registry values.
+                                    let _ = plan.preview_report();
+                                }
+                                perform_remove_and_cleanup(
+                                    &mut runner,
+                                    target,
+                                    request.check_only,
+                                    || finish_cleanup(&plan, &target.canonical(), request.token),
+                                )
+                            }
                             None => perform_install(&mut runner, request.id, request.check_only),
                         }
                     })
@@ -208,6 +236,8 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
                     println!(
                         "\nDésinstallation terminée. Le catalogue de Super Menu va être actualisé."
                     );
+                    wait = false;
+                    close_after_success = true;
                     0
                 }
                 Ok(Outcome::RemoveChecked) => {
@@ -233,9 +263,38 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
         let _ = io::stdout().flush();
         let _ = io::stderr().flush();
         let _ = io::stdin().read_line(&mut String::new());
+    } else if close_after_success {
+        // Notify the launcher first; closing this result window is independent.
+        std::thread::sleep(Duration::from_secs(2));
     }
     drop(console);
     Some(result)
+}
+
+/// An explicitly read-only diagnostic. It never invokes WinGet, a remover,
+/// a cleanup executor or an elevation request.
+fn inspect_cleanup(args: &[String]) -> i32 {
+    let parsed = match args {
+        [_, flag, target, report_flag, report_path]
+            if flag == "--inspect-cleanup" && report_flag == "--report" =>
+        {
+            remove_target(target).map(|target| (target.canonical(), PathBuf::from(report_path)))
+        }
+        _ => Err(
+            "Diagnostic : --inspect-cleanup <id:Paquet ou name:Nom exact> --report <fichier.json>"
+                .into(),
+        ),
+    };
+    let (target, path) = match parsed {
+        Ok(parsed) => parsed,
+        Err(_) => return 1,
+    };
+    let plan = CleanupPlan::capture(&target);
+    let report = plan.preview_report();
+    serde_json::to_vec_pretty(&report)
+        .map_err(io::Error::other)
+        .and_then(|bytes| std::fs::write(path, bytes))
+        .map_or(1, |_| 0)
 }
 
 /// Starts the helper; the caller may wait for Child on a worker as a notification fallback.
@@ -258,10 +317,7 @@ pub fn spawn_remove(
     request: usize,
 ) -> Result<RemovalProcess, String> {
     let target = remove_target(target)?;
-    let canonical = match target {
-        RemoveTarget::Id(id) => format!("id:{id}"),
-        RemoveTarget::Name(name) => format!("name:{name}"),
-    };
+    let canonical = target.canonical();
     let args = remove_helper_args(&canonical, parent as usize, parent_pid, request);
     validate_endpoint(parent, parent_pid, request)?;
     if packages::removal_requires_elevation(&canonical) {
@@ -612,11 +668,15 @@ fn command_args(operation: Operation, id: &str) -> Vec<&str> {
         },
         id,
         "--exact",
-        "--source",
-        "winget",
-        "--accept-source-agreements",
-        "--disable-interactivity",
     ];
+    // Registry-named software can have no source association at all. Filtering
+    // that inventory to the winget source would hide it or falsely imply absence.
+    // Curated IDs retain their explicit source; named targets remain exact and
+    // ambiguous results are still refused by WinGet.
+    if !matches!(operation, Operation::ListName | Operation::RemoveName) {
+        args.extend(["--source", "winget"]);
+    }
+    args.extend(["--accept-source-agreements", "--disable-interactivity"]);
     if operation == Operation::Install {
         args.extend(["--no-upgrade", "--accept-package-agreements", "--silent"]);
     } else if matches!(operation, Operation::RemoveId | Operation::RemoveName) {
@@ -761,7 +821,22 @@ fn perform_remove(
     // rejecting multiple matches instead of selecting an arbitrary application.
     let status = runner.run(remove, target.value()).map_err(Failure::local)?;
     match status as u32 {
-        0 => Ok(Outcome::Removed),
+        0 => {
+            // A successful uninstaller exit alone is not proof that the product
+            // disappeared. Never clean program directories while WinGet still
+            // reports the exact target installed, or when verification failed.
+            let verified = runner.run(list, target.value()).map_err(Failure::local)?;
+            match verified as u32 {
+                NO_APPLICATIONS_FOUND => Ok(Outcome::Removed),
+                0 => Err(Failure::local(
+                    "Le logiciel est encore présent après la désinstallation. Aucun nettoyage de résidus n'a été lancé.",
+                )),
+                _ => Err(Failure::winget(
+                    verified,
+                    "Impossible de vérifier la disparition du logiciel. Aucun nettoyage de résidus n'a été lancé",
+                )),
+            }
+        }
         NO_APPLICATIONS_FOUND => Err(Failure::winget(
             status,
             "Déjà absent ou non reconnu par WinGet, aucun désinstallateur lancé",
@@ -771,6 +846,144 @@ fn perform_remove(
             "La désinstallation a échoué, a été annulée ou correspond à plusieurs logiciels",
         )),
     }
+}
+
+fn perform_remove_and_cleanup(
+    runner: &mut impl Runner,
+    target: &RemoveTarget,
+    check_only: bool,
+    cleanup: impl FnOnce(),
+) -> Result<Outcome, Failure> {
+    let outcome = perform_remove(runner, target, check_only)?;
+    if outcome == Outcome::Removed {
+        cleanup();
+    }
+    Ok(outcome)
+}
+
+fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
+    let directory = config::data_dir().join("uninstall-reports");
+    let _journal_parents = match prepare_report_directory(&directory) {
+        Ok(handles) => handles,
+        Err(error) => {
+            eprintln!("\nLe logiciel est retiré ; nettoyage ignoré car son journal ne peut pas être enregistré : {error}");
+            return;
+        }
+    };
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = directory.join(format!("{timestamp}-{}-{request}.json", std::process::id()));
+    // Reserve a unique report before cleanup. Existing files and links are never
+    // overwritten, including in an elevated helper.
+    let intent_path = path.with_extension("plan.json");
+    let file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&intent_path)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("\nLe logiciel est retiré ; nettoyage ignoré car son journal ne peut pas être créé : {error}");
+            return;
+        }
+    };
+    let intent = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "phase": "planned",
+        "target": target,
+        "timestamp_ms": timestamp,
+        "cleanup": plan.preview_report(),
+    });
+    let mut writer = io::BufWriter::new(file);
+    if let Err(error) = serde_json::to_writer_pretty(&mut writer, &intent)
+        .map_err(io::Error::other)
+        .and_then(|_| writer.flush())
+        .and_then(|_| writer.get_ref().sync_all())
+    {
+        eprintln!("\nLe logiciel est retiré ; nettoyage ignoré car son plan ne peut pas être sauvegardé : {error}");
+        return;
+    }
+    drop(writer);
+    let report = plan.execute_after_success();
+    println!(
+        "\nNettoyage : {} résidu(s) retiré(s), {} conservé(s).",
+        report.removed.len(),
+        report.retained.len()
+    );
+    for note in &report.notes {
+        println!("  {note}");
+    }
+    let document = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "phase": "finished",
+        "target": target,
+        "timestamp_ms": timestamp,
+        "cleanup": report,
+    });
+    let file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!(
+                "Le bilan ne peut pas être créé : {error}. Le plan initial reste disponible : {}",
+                intent_path.display()
+            );
+            return;
+        }
+    };
+    let mut writer = io::BufWriter::new(file);
+    if let Err(error) = serde_json::to_writer_pretty(&mut writer, &document)
+        .map_err(io::Error::other)
+        .and_then(|_| writer.flush())
+        .and_then(|_| writer.get_ref().sync_all())
+    {
+        eprintln!("Le journal n'a pas pu être finalisé : {error}");
+    } else {
+        println!("Rapport : {}", path.display());
+    }
+}
+
+fn prepare_report_directory(path: &std::path::Path) -> io::Result<Vec<std::fs::File>> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    if !path.is_absolute() {
+        return Err(io::Error::other("Le dossier du journal n'est pas absolu."));
+    }
+    for ancestor in path.ancestors() {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+                return Err(io::Error::other(
+                    "Le dossier du journal traverse un lien ou une jonction.",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    std::fs::create_dir_all(path)?;
+    // Keep the journal directory and its parents from being replaced during an
+    // elevated cleanup. Create-new files alone cannot pin a changing directory.
+    let mut handles = Vec::new();
+    for ancestor in path.ancestors() {
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1 | 2)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(ancestor)?;
+        let metadata = handle.metadata()?;
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::other("Le parent du journal est devenu un lien."));
+        }
+        handles.push(handle);
+    }
+    Ok(handles)
 }
 
 struct Console {
@@ -854,6 +1067,33 @@ impl Drop for Console {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn journal_parents_stay_pinned_until_both_reports_are_written() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "supermenu-journal-fixture-{}-{nonce}",
+            std::process::id()
+        ));
+        let moved = root.with_extension("moved");
+        assert!(!root.exists() && !moved.exists());
+        let directory = root.join("reports");
+        let handles = prepare_report_directory(&directory).unwrap();
+        assert!(std::fs::rename(&root, &moved).is_err());
+        let plan = directory.join("fixture.plan.json");
+        let finished = directory.join("fixture.json");
+        std::fs::write(&plan, b"owned fixture plan").unwrap();
+        std::fs::write(&finished, b"owned fixture result").unwrap();
+        drop(handles);
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::remove_file(moved.join("reports/fixture.plan.json")).unwrap();
+        std::fs::remove_file(moved.join("reports/fixture.json")).unwrap();
+        std::fs::remove_dir(moved.join("reports")).unwrap();
+        std::fs::remove_dir(moved).unwrap();
+    }
 
     struct FakeRunner {
         results: VecDeque<Result<i32, String>>,
@@ -1174,20 +1414,16 @@ mod tests {
         ] {
             let value = "Exact Display Name";
             let args = command_args(operation, value);
-            assert_eq!(
-                args,
-                vec![
-                    "uninstall",
-                    selector,
-                    value,
-                    "--exact",
-                    "--source",
-                    "winget",
-                    "--accept-source-agreements",
-                    "--disable-interactivity",
-                    "--silent"
-                ]
-            );
+            let mut expected = vec!["uninstall", selector, value, "--exact"];
+            if operation == Operation::RemoveId {
+                expected.extend(["--source", "winget"]);
+            }
+            expected.extend([
+                "--accept-source-agreements",
+                "--disable-interactivity",
+                "--silent",
+            ]);
+            assert_eq!(args, expected);
             for forbidden in [
                 "--all",
                 "--all-versions",
@@ -1237,13 +1473,24 @@ mod tests {
             ),
         ] {
             for code in [0, NO_APPLICATIONS_FOUND, 0x8A15_0016, 0x8A15_0005, 1603] {
-                let mut runner = FakeRunner::codes(&[0, code]);
+                let mut runner = if code == 0 {
+                    FakeRunner::codes(&[0, code, NO_APPLICATIONS_FOUND])
+                } else {
+                    FakeRunner::codes(&[0, code])
+                };
                 let outcome = perform_remove(&mut runner, &target, false);
                 assert_eq!(outcome.is_ok(), code == 0);
                 if let Err(error) = outcome {
                     assert_eq!(error.code as u32, code);
                 }
-                assert_eq!(runner.calls, vec![list, remove]);
+                assert_eq!(
+                    runner.calls,
+                    if code == 0 {
+                        vec![list, remove, list]
+                    } else {
+                        vec![list, remove]
+                    }
+                );
             }
         }
     }
@@ -1256,6 +1503,28 @@ mod tests {
             let outcome = perform_remove(&mut runner, &target, true);
             assert_eq!(outcome.is_ok(), code == 0);
             assert_eq!(runner.calls, vec![Operation::ListName]);
+        }
+    }
+
+    #[test]
+    fn cleanup_only_runs_after_verified_absence_and_never_on_diagnostics_or_failures() {
+        use std::cell::Cell;
+        let target = RemoveTarget::Name("SuperMenu Cleanup Fixture".into());
+        for (codes, diagnostic, should_clean) in [
+            (vec![0, 0, NO_APPLICATIONS_FOUND], false, true),
+            (vec![0, 0, 0], false, false),
+            (vec![0, 0, 5], false, false),
+            (vec![0, 1603], false, false),
+            (vec![NO_APPLICATIONS_FOUND], false, false),
+            (vec![0], true, false),
+        ] {
+            let mut runner = FakeRunner::codes(&codes);
+            let cleaned = Cell::new(false);
+            let result = perform_remove_and_cleanup(&mut runner, &target, diagnostic, || {
+                cleaned.set(true);
+            });
+            assert_eq!(cleaned.get(), should_clean, "{codes:?}");
+            assert_eq!(result.is_ok(), should_clean || diagnostic, "{codes:?}");
         }
     }
 

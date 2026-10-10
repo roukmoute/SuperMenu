@@ -791,6 +791,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 AppendMenuW(menu, MF_STRING, 2, wide("Paramètres").as_ptr());
                 AppendMenuW(menu, MF_STRING, 3, wide("Actualiser l'index").as_ptr());
                 AppendMenuW(menu, MF_STRING, 5, wide("Minuteurs").as_ptr());
+                let reports = config::data_dir().join("uninstall-reports");
+                AppendMenuW(
+                    menu,
+                    MF_STRING | if reports.is_dir() { 0 } else { MF_GRAYED },
+                    6,
+                    wide("Rapports de désinstallation").as_ptr(),
+                );
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
                 AppendMenuW(menu, MF_STRING, 4, wide("Quitter").as_ptr());
                 let mut p: POINT = zeroed();
@@ -816,6 +823,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                     5 => {
                         show(s);
                         set_query(s, "minuteur ");
+                    }
+                    6 => {
+                        if let Err(error) = native::launch(&reports.to_string_lossy(), "") {
+                            show_error(&error);
+                        }
                     }
                     4 => {
                         PostQuitMessage(0);
@@ -957,7 +969,7 @@ unsafe fn key(s: &mut State, key: u32) {
         VK_F5 => reindex(s),
         VK_F1 => {
             s.settings_open = true;
-            MessageBoxW(s.hwnd,wide("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer / désinstaller\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications, installation ou désinstallation\n@ applications à lancer    + installer    - désinstaller\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\nminuteur 5m Thé · timer 90s : compte à rebours\n\nInstaller : Entrée ouvre la progression WinGet.\nDésinstaller : confirmation puis progression WinGet.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.").as_ptr(),wide("Super Menu · Aide").as_ptr(),MB_OK);
+            MessageBoxW(s.hwnd,wide("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer / désinstaller\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications, installation ou désinstallation\n@ applications à lancer    + installer    - désinstaller\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\nminuteur 5m Thé · timer 90s : compte à rebours\n\nInstaller : Entrée ouvre la progression WinGet.\nDésinstaller : une confirmation, puis désinstallation et nettoyage automatique.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.").as_ptr(),wide("Super Menu · Aide").as_ptr(),MB_OK);
             s.settings_open = false;
             finish_modal(s);
             SetFocus(s.edit);
@@ -996,7 +1008,7 @@ fn navigation() -> Vec<Item> {
         ),
         (
             "Désinstaller",
-            "Retirer un logiciel installé · confirmation avant suppression",
+            "Retirer un logiciel et ses résidus · données personnelles conservées",
             "⊠",
             "- ",
         ),
@@ -1882,7 +1894,7 @@ unsafe fn start_remove(s: &mut State, item: &Item) {
     let confirmation = MessageBoxW(
         s.hwnd,
         wide(&format!(
-            "Désinstaller « {} » ?\n\nLe logiciel sera retiré de cet ordinateur.",
+            "Désinstaller « {} » et nettoyer ses résidus ?\n\nLe logiciel sera retiré, puis ses fichiers de programme, caches reconnus et traces techniques seront recherchés automatiquement.\n\nLe nettoyage conservera les profils, réglages et données personnelles. Les résidus incertains ou partagés seront laissés en place.\n\nLes fichiers retirés iront dans la Corbeille ; un rapport et les sauvegardes du registre resteront disponibles.",
             item.title
         ))
         .as_ptr(),
@@ -1910,7 +1922,7 @@ unsafe fn start_remove(s: &mut State, item: &Item) {
                     .unwrap_or(1);
                 installer::notify_remove(hwnd as HWND, parent_pid, request, result);
             });
-            s.status = "Désinstallation en cours · console WinGet".into();
+            s.status = "Désinstallation et nettoyage en cours · voir la console".into();
             update_results(s);
             hide(s);
         }
