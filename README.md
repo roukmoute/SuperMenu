@@ -16,7 +16,7 @@ Télécharger l'archive depuis les [releases](https://github.com/roukmoute/Super
 
 Seul `supermenu.exe` est nécessaire pour utiliser l'application. Les autres fichiers de l'archive sont la documentation, la licence, un rapport de performances et un exemple de configuration. **Ctrl + Retour arrière** supprime le mot précédent ou la sélection dans la recherche ; **Ctrl + Z** annule cette suppression.
 
-La recherche sans préfixe recherche les **applications** : `edge` affiche les applications correspondantes. Un logiciel absent du catalogue intégré apparaît avec le sous-titre **« Installer »**. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` limite la recherche aux applications déjà installées ; `+` affiche uniquement les logiciels à installer. L'onglet « Accueil » revient au menu des fournisseurs.
+La recherche sans préfixe recherche les **applications** : `edge` affiche les applications correspondantes. Un logiciel du catalogue intégré qui n'est pas installé apparaît avec le sous-titre **« Installer »**. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` limite la recherche aux applications déjà installées ; `+` affiche uniquement les logiciels à installer. L'onglet « Accueil » revient au menu des fournisseurs.
 
 Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu lui donne la priorité lorsqu'il fonctionne. Choisir un autre raccourci dans les réglages si ce changement de langue doit rester accessible. Le fichier JSON permet aussi un raccourci personnalisé, par exemple `Ctrl+Alt+Space`.
 
