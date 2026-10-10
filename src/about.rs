@@ -1092,6 +1092,7 @@ unsafe fn layout(state: &mut State) {
             button_height,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
+        InvalidateRect(*button, null(), 1);
     }
     InvalidateRect(state.hwnd, null(), 1);
     InvalidateRect(state.content, null(), 1);
@@ -1109,6 +1110,9 @@ unsafe fn position_content(state: &State) {
             bounds.bottom - bounds.top,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
+        // The parent excludes child controls when painting. Repaint the whole
+        // text control so resizing cannot preserve its previous line wrapping.
+        InvalidateRect(placement.window, null(), 1);
     }
     SetScrollPos(state.content, SB_VERT, state.scroll, 1);
 }
