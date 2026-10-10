@@ -988,7 +988,9 @@ unsafe fn select(s: &mut State, delta: i32) {
 unsafe fn set_query(s: &mut State, text: &str) {
     SetWindowTextW(s.edit, wide(text).as_ptr());
     SetFocus(s.edit);
-    SendMessageW(s.edit, EM_SETSEL, usize::MAX, -1);
+    let end = GetWindowTextLengthW(s.edit) as usize;
+    SendMessageW(s.edit, EM_SETSEL, end, end as isize);
+    SendMessageW(s.edit, EM_SCROLLCARET, 0, 0);
     update_results(s);
 }
 
