@@ -8,7 +8,7 @@ Windows 10 et 11, x64. L'exécutable autonome fait **environ 1 Mio** ; sa taille
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 28 Mio de mémoire privée et 59 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,39 ms) pour le classement en mémoire, de 0,65 ms (p95 2,20 ms) pour les fichiers et de 0,63 ms (p95 1,06 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 73 tests automatisés et les 15 contrôles du menu natif avec le diagnostic de lancement passent.
+Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 28 Mio de mémoire privée et 59 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,39 ms) pour le classement en mémoire, de 0,65 ms (p95 2,20 ms) pour les fichiers et de 0,63 ms (p95 1,06 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 74 tests automatisés et les 15 contrôles du menu natif avec le diagnostic de lancement passent.
 
 ## Utiliser
 

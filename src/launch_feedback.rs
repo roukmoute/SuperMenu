@@ -232,7 +232,7 @@ impl LaunchFeedback {
             ReleaseDC(self.hwnd, dc);
             ValidateRect(self.hwnd, null());
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if SetTimer(self.hwnd, TIMER, remaining.as_millis().max(1) as u32, None) == 0 {
+            if SetTimer(self.hwnd, TIMER, timer_interval(remaining), None) == 0 {
                 self.hide();
                 return Err(win_error("Durée du retour de lancement"));
             }
@@ -317,22 +317,29 @@ unsafe extern "system" fn window_proc(
             return 0;
         }
         WM_TIMER if wparam == TIMER && !ptr.is_null() => {
-            let expired = if let Ok(mut state) = (*ptr).try_borrow_mut() {
-                let expired = state
-                    .deadline
-                    .is_some_and(|deadline| Instant::now() >= deadline);
-                if expired {
-                    state.deadline = None;
-                }
-                expired
+            let remaining = if let Ok(mut state) = (*ptr).try_borrow_mut() {
+                state.deadline.map(|deadline| {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        state.deadline = None;
+                    }
+                    remaining
+                })
             } else {
-                false
+                None
             };
-            // KillTimer does not remove queued messages. An earlier launch's
-            // WM_TIMER must not dismiss a replacement before its own deadline.
-            if expired {
-                KillTimer(hwnd, TIMER);
-                ShowWindow(hwnd, SW_HIDE);
+            // KillTimer does not remove queued messages. A stale or early tick
+            // must wait only until this request's deadline, not another full period.
+            if let Some(remaining) = remaining {
+                if remaining.is_zero()
+                    || SetTimer(hwnd, TIMER, timer_interval(remaining), None) == 0
+                {
+                    if let Ok(mut state) = (*ptr).try_borrow_mut() {
+                        state.deadline = None;
+                    }
+                    KillTimer(hwnd, TIMER);
+                    ShowWindow(hwnd, SW_HIDE);
+                }
             }
             return 0;
         }
@@ -441,6 +448,14 @@ unsafe fn set_round_region(hwnd: HWND, bounds: RECT, dpi: i32) {
     }
 }
 
+// Windows timers use integer milliseconds. Round up so the first tick cannot
+// precede the deadline just because converting Duration truncated a fraction.
+fn timer_interval(remaining: Duration) -> u32 {
+    remaining
+        .as_nanos()
+        .div_ceil(1_000_000)
+        .clamp(1, u32::MAX as u128) as u32
+}
 fn placement(work: RECT, dpi: i32) -> RECT {
     let area_width = (work.right - work.left).max(1);
     let area_height = (work.bottom - work.top).max(1);
@@ -484,6 +499,15 @@ fn win_error(context: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn native_timer_interval_rounds_up_to_the_deadline() {
+        assert_eq!(timer_interval(Duration::ZERO), 1);
+        assert_eq!(timer_interval(Duration::from_nanos(1)), 1);
+        assert_eq!(timer_interval(Duration::from_millis(1)), 1);
+        assert_eq!(timer_interval(Duration::from_nanos(1_000_001)), 2);
+        assert_eq!(timer_interval(Duration::from_micros(1_999_001)), 2000);
+        assert_eq!(timer_interval(DURATION), 2000);
+    }
     #[test]
     fn unicode_title_and_long_names_are_safe_single_line_utf16() {
         let value = title_text("Éditeur 🦀\r\n&&\0Document");
@@ -574,11 +598,13 @@ mod tests {
         popup
             .show("Deuxième lancement", anchor.hwnd(), &settings)
             .unwrap();
+        let replacement_deadline = popup.state.borrow().deadline;
         unsafe {
             // Simulate an already queued timer from the preceding request.
             SendMessageW(hwnd, WM_TIMER, TIMER, 0);
             assert_ne!(IsWindowVisible(hwnd), 0);
         }
+        assert_eq!(popup.state.borrow().deadline, replacement_deadline);
         let mut caption = [0u16; 256];
         let length = unsafe { GetWindowTextW(hwnd, caption.as_mut_ptr(), caption.len() as i32) };
         assert_eq!(
