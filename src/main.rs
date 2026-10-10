@@ -2,11 +2,16 @@
 mod catalog;
 mod config;
 mod core;
+mod installer;
 mod native;
+mod packages;
 mod ui;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = installer::run_from_args(&args) {
+        std::process::exit(code);
+    }
     if args.iter().any(|a| a == "--benchmark") {
         let report = core::benchmark();
         if let Some(pos) = args.iter().position(|a| a == "--report") {

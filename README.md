@@ -4,11 +4,11 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. L'exécutable autonome fait **moins de 1 Mio** ; sa taille exacte varie légèrement selon la version du compilateur.
+Windows 10 et 11, x64. L'exécutable autonome fait **environ 1 Mio** ; sa taille exacte varie légèrement selon la version du compilateur.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 25 Mio de mémoire privée et 54 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,57 ms (p95 2,23 ms) pour le classement en mémoire, et 0,90 ms (p95 2,79 ms) pour les fichiers. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 26 tests automatisés et les 10 contrôles du menu natif passent.
+Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 28 Mio de mémoire privée et 55 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,71 ms (p95 2,60 ms) pour le classement en mémoire, de 0,68 ms (p95 2,70 ms) pour les fichiers et de 0,68 ms (p95 1,15 ms) pour les applications avec les propositions d'installation en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 45 tests automatisés et les 11 contrôles du menu natif passent.
 
 ## Utiliser
 
@@ -16,15 +16,16 @@ Télécharger l'archive depuis les [releases](https://github.com/roukmoute/Super
 
 Seul `supermenu.exe` est nécessaire pour utiliser l'application. Les autres fichiers de l'archive sont la documentation, la licence, un rapport de performances et un exemple de configuration. **Ctrl + Retour arrière** supprime le mot précédent ou la sélection dans la recherche ; **Ctrl + Z** annule cette suppression.
 
-La recherche sans préfixe est réservée aux **applications** : `edge` affiche les applications correspondantes. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` reste un alias facultatif pour les applications. L'onglet « Accueil » revient au menu des fournisseurs.
+La recherche sans préfixe recherche les **applications** : `edge` affiche les applications correspondantes. Un logiciel absent du catalogue intégré apparaît avec le sous-titre **« Installer »**. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` limite la recherche aux applications déjà installées ; `+` affiche uniquement les logiciels à installer. L'onglet « Accueil » revient au menu des fournisseurs.
 
 Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu lui donne la priorité lorsqu'il fonctionne. Choisir un autre raccourci dans les réglages si ce changement de langue doit rester accessible. Le fichier JSON permet aussi un raccourci personnalisé, par exemple `Ctrl+Alt+Space`.
 
 | Saisie | Fournisseur |
 | --- | --- |
-| `firefox` | Applications uniquement, recherche par défaut |
+| `firefox` | Applications et proposition d'installation si Firefox est absent |
 | `;` | Menu des fournisseurs |
-| `@` | Applications, alias facultatif |
+| `@` | Applications déjà installées |
+| `+ firefox` | Logiciels du catalogue à installer |
 | `/` | Fichiers et dossiers indexés |
 | `= (15 + 5) * 3` | Calculatrice locale |
 | `? rust windows` | Recherche Web dans le navigateur par défaut |
@@ -35,6 +36,18 @@ Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu
 | `!` | Actions système |
 
 Les flèches sélectionnent un résultat et **Entrée** l'active. **Échap** efface la recherche, puis masque le menu si elle est déjà vide. **Tab** ouvre le menu des fournisseurs. **Ctrl + Entrée** ouvre le dossier parent d'un fichier. **F1** affiche l'aide, **Ctrl + ,** ouvre les réglages et **F5** actualise l'index. Une commande shell ne s'exécute qu'après validation par Entrée. Les résultats de calcul, symboles et historique sont copiés dans le presse-papiers.
+
+## Installer un logiciel
+
+Saisir `firefox` : si Firefox n'est pas installé, le résultat indique **« Installer · Navigateur · WinGet »**. Sélectionner ce résultat et appuyer sur **Entrée** ouvre une console avec la progression du téléchargement et de l'installation. À la fin, Super Menu reconstruit l'index des applications ; le logiciel devient un résultat normal à lancer. La console reste ouverte pour lire le résultat et se ferme avec Entrée. Une demande d'autorisation Windows peut apparaître selon le logiciel.
+
+Les propositions proviennent d'un petit catalogue intégré de **52 logiciels** : Firefox, Chrome, Brave, Vivaldi, 7-Zip, VLC, Spotify, Discord, Steam, VS Code, Git, PowerToys, LibreOffice, Obsidian et d'autres. `+` permet de parcourir les logiciels absents. Le catalogue ne couvre pas tous les paquets WinGet ; ses entrées sont définies dans [src/packages.rs](src/packages.rs). Le menu Démarrer, les applications Windows et le registre des désinstallations permettent de reconnaître les logiciels déjà présents, même installés autrement qu'avec WinGet. Cette détection s'effectue pendant l'indexation ; aucune requête réseau n'est effectuée pendant la frappe.
+
+Cette fonction utilise [WinGet, fourni par Microsoft App Installer](https://learn.microsoft.com/en-us/windows/package-manager/winget/). S'il est indisponible, la console indique comment installer App Installer depuis le Microsoft Store. Le lanceur et sa recherche fonctionnent aussi sans WinGet. Super Menu ne télécharge aucun gestionnaire de paquets supplémentaire.
+
+![Une proposition d'installation dans Super Menu](docs/install.png)
+
+Une installation se déclenche uniquement par validation d'un résultat « Installer ». La commande cible l'identifiant exact du catalogue et la source `winget`, accepte les accords du paquet et de la source, et utilise `--no-upgrade` pour éviter de mettre à jour un logiciel déjà installé. Une vérification supplémentaire de sa présence précède l'installation. Les erreurs sont affichées dans la console ; un échec permet de réessayer. Une requête de recherche n'est jamais passée à un shell pour installer un logiciel.
 
 ## Réglages et index
 
