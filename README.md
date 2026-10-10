@@ -8,13 +8,19 @@ Windows 10 et 11, x64. L'exécutable autonome fait **environ 1 Mio** ; sa taille
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 28 Mio de mémoire privée et 55 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,71 ms (p95 2,60 ms) pour le classement en mémoire, de 0,68 ms (p95 2,70 ms) pour les fichiers et de 0,68 ms (p95 1,15 ms) pour les applications avec les propositions d'installation en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 45 tests automatisés et les 11 contrôles du menu natif passent.
+Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 26 Mio de mémoire privée et 55 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,41 ms (p95 1,83 ms) pour le classement en mémoire, de 0,55 ms (p95 2,21 ms) pour les fichiers et de 0,55 ms (p95 0,76 ms) pour les applications avec les propositions d'installation en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 51 tests automatisés et les 13 contrôles du menu natif avec le diagnostic de lancement passent.
 
 ## Utiliser
 
 Télécharger l'archive depuis les [releases](https://github.com/roukmoute/SuperMenu/releases), l'extraire et lancer l'exécutable. Au premier lancement, le menu apparaît. Ensuite, **Win + Espace** affiche ou masque le menu. Une icône dans la zone de notification permet aussi de l'ouvrir et de quitter le programme.
 
 Seul `supermenu.exe` est nécessaire pour utiliser l'application. Les autres fichiers de l'archive sont la documentation, la licence, un rapport de performances et un exemple de configuration. **Ctrl + Retour arrière** supprime le mot précédent ou la sélection dans la recherche ; **Ctrl + Z** annule cette suppression.
+
+Lors du lancement d'une application, un petit pop-in **« Lancement de [application]… »** apparaît immédiatement pendant **quatre secondes**, en bas de l'écran du menu. Il reprend le thème et la couleur d'accent, laisse passer les clics et ne prend pas le focus. L'ouverture s'effectue en arrière-plan : le menu peut être rouvert avec Win + Espace pendant qu'une application démarre. Rouvrir le menu masque le pop-in ; la réponse de lancement ne referme pas ce menu.
+
+Les validations répétées de la même application sont regroupées pendant ces quatre secondes, ainsi que tant que Windows traite la demande. Une erreur retire cette protection pour permettre de réessayer et affiche le message de Windows. Le pop-in confirme une demande d'ouverture ; sa durée est fixe et ne dépend pas de l'apparition de la fenêtre de l'application.
+
+![Confirmation de lancement](docs/launch.png)
 
 La recherche sans préfixe recherche les **applications** : `edge` affiche les applications correspondantes. Un logiciel du catalogue intégré qui n'est pas installé apparaît avec le sous-titre **« Installer »**. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` limite la recherche aux applications déjà installées ; `+` affiche uniquement les logiciels à installer. L'onglet « Accueil » revient au menu des fournisseurs.
 
@@ -78,8 +84,9 @@ cargo test --locked
 cargo run --release --locked
 cargo run --release --locked -- --benchmark
 cargo run --release --locked -- --smoke-test --report smoke.json --snapshot menu.bmp
+cargo run --release --locked -- --smoke-test --launch-feedback-test --report feedback.json
 ```
 
-Le benchmark mesure le moteur de recherche sur des catalogues de test ; ses résultats dépendent de la machine et ne constituent pas une garantie de latence du raccourci ou du disque. `--smoke-test` ouvre brièvement le menu pour vérifier son démarrage et peut exporter un rapport ainsi qu'une capture BMP du menu. `--background` démarre sans afficher le menu, utile avec un raccourci placé dans `shell:startup`.
+Le benchmark mesure le moteur de recherche sur des catalogues de test ; ses résultats dépendent de la machine et ne constituent pas une garantie de latence du raccourci ou du disque. `--smoke-test` ouvre brièvement le menu pour vérifier son démarrage et peut exporter un rapport ainsi qu'une capture BMP du menu. Avec `--launch-feedback-test`, il simule un lancement lent pour vérifier le pop-in et la réponse asynchrone sans ouvrir d'autre application. `--background` démarre sans afficher le menu, utile avec un raccourci placé dans `shell:startup`.
 
 GitHub Actions construit et vérifie le projet sur Windows à chaque pull request et mise à jour de `main`/`master`. Après une compilation réussie sur la branche principale, la version de `Cargo.toml` produit automatiquement une préversion téléchargeable, par exemple `v0.1.0`. Une version déjà publiée conserve son archive ; augmenter la version du paquet pour publier une nouvelle préversion. Un tag `v*` produit une release standard si cette version n'existe pas encore. Le code est sous [licence MIT](LICENSE) ; aucune portion du code de Walker n'a été copiée.

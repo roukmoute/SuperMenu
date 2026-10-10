@@ -1,4 +1,4 @@
-use crate::{catalog, config, core, installer, native, packages};
+use crate::{catalog, config, core, installer, launch_feedback, native, packages};
 use core::{Item, Kind};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -6,9 +6,9 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    mpsc, Arc, Mutex,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::{Dwm::*, Gdi::*},
@@ -20,6 +20,8 @@ const SHOW: u32 = WM_APP + 1;
 const INDEX: u32 = WM_APP + 2;
 const REFRESH: u32 = WM_APP + 3;
 const TRAY: u32 = WM_APP + 4;
+const LAUNCH_DONE: u32 = WM_APP + 6;
+const LAUNCH_FEEDBACK_DURATION: Duration = Duration::from_secs(4);
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
 const ROW_HEIGHT: i32 = 48;
@@ -82,6 +84,11 @@ struct State {
     installed_names: Arc<Mutex<Vec<String>>>,
     missing_packages: Vec<Item>,
     installations: Installations,
+    feedback: Option<launch_feedback::LaunchFeedback>,
+    feedback_request: Option<usize>,
+    launches: LaunchRequests,
+    launch_results: mpsc::Receiver<(usize, Result<(), String>)>,
+    launch_sender: mpsc::Sender<(usize, Result<(), String>)>,
     indexing: Arc<AtomicBool>,
     usage: catalog::Usage,
     weights: HashMap<String, u32>,
@@ -102,10 +109,69 @@ struct State {
     previous: HWND,
     settings_open: bool,
     smoke: bool,
+    feedback_test: bool,
+    feedback_test_finished: bool,
     pending_refresh: bool,
     checks: Vec<(String, bool)>,
     started: Instant,
     first_frame_ms: f64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LaunchStart {
+    Started(usize),
+    Duplicate(usize),
+}
+
+#[derive(Default)]
+struct LaunchRequests {
+    pending: HashMap<usize, Item>,
+    recent: HashMap<String, (usize, Instant)>,
+    next_request: usize,
+}
+
+impl LaunchRequests {
+    fn start(&mut self, item: &Item, now: Instant) -> Result<LaunchStart, &'static str> {
+        self.recent.retain(|_, (_, started)| {
+            now.saturating_duration_since(*started) < LAUNCH_FEEDBACK_DURATION
+        });
+        let duplicate = self
+            .pending
+            .iter()
+            .find(|(_, pending)| pending.id == item.id)
+            .map(|(token, _)| *token)
+            .or_else(|| self.recent.get(&item.id).map(|(token, _)| *token));
+        if let Some(token) = duplicate {
+            self.recent.insert(item.id.clone(), (token, now));
+            return Ok(LaunchStart::Duplicate(token));
+        }
+        if self.pending.len() >= 16 {
+            return Err(
+                "Plusieurs applications sont en cours de lancement. Réessaie dans un instant.",
+            );
+        }
+        self.next_request = self
+            .next_request
+            .checked_add(1)
+            .ok_or("Trop de demandes de lancement.")?;
+        self.pending.insert(self.next_request, item.clone());
+        self.recent
+            .insert(item.id.clone(), (self.next_request, now));
+        Ok(LaunchStart::Started(self.next_request))
+    }
+
+    fn finish(&mut self, token: usize, success: bool) -> Option<Item> {
+        let item = self.pending.remove(&token)?;
+        if !success
+            && self
+                .recent
+                .get(&item.id)
+                .is_some_and(|(current, _)| *current == token)
+        {
+            self.recent.remove(&item.id);
+        }
+        Some(item)
+    }
 }
 
 #[derive(Default)]
@@ -197,6 +263,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let cache = Vec::new();
         let usage = catalog::Usage::new();
         let weights = usage.snapshot_for(&cache);
+        let (launch_sender, launch_results) = mpsc::channel();
         let state_cell = Box::new(RefCell::new(State {
             hwnd: null_mut(),
             edit: null_mut(),
@@ -206,6 +273,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             installed_names: Arc::new(Mutex::new(Vec::new())),
             missing_packages: Vec::new(),
             installations: Installations::default(),
+            feedback: None,
+            feedback_request: None,
+            launches: LaunchRequests::default(),
+            launch_results,
+            launch_sender,
             indexing: Arc::new(AtomicBool::new(false)),
             usage,
             weights,
@@ -226,6 +298,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
             previous: null_mut(),
             settings_open: false,
             smoke,
+            feedback_test: smoke && args.iter().any(|arg| arg == "--launch-feedback-test"),
+            feedback_test_finished: false,
             pending_refresh: false,
             checks: Vec::new(),
             started,
@@ -251,6 +325,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         let mut state = state_cell.borrow_mut();
         state.hwnd = hwnd;
+        state.feedback = launch_feedback::LaunchFeedback::new().ok();
         let dark: i32 = if state.settings.theme == "light" {
             0
         } else {
@@ -309,6 +384,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         reindex(&mut state);
         if smoke {
             SetTimer(hwnd, 99, 8500, None);
+            if state.feedback_test {
+                SetTimer(hwnd, 98, 300, None);
+            }
         }
         drop(state);
         let mut msg: MSG = zeroed();
@@ -343,6 +421,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         RemoveClipboardFormatListener(hwnd);
         state.hotkey.take();
         state.watcher.take();
+        state.feedback.take();
         tray(&state, NIM_DELETE);
         DestroyWindow(hwnd);
         for font in state.fonts {
@@ -377,6 +456,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             DEFERRED.with(|d| d.set(d.get() | if msg == INDEX { 1 } else { 2 }));
         } else if msg == installer::INSTALL_DONE {
             DEFERRED_INSTALL.with(|d| d.borrow_mut().push((wp, lp)));
+        } else if msg == LAUNCH_DONE {
+            DEFERRED.with(|d| d.set(d.get() | 4));
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     };
@@ -545,6 +626,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             }
             0
         }
+        LAUNCH_DONE => {
+            process_launch_results(s);
+            0
+        }
         TRAY => {
             if lp as u32 == WM_LBUTTONUP || lp as u32 == WM_LBUTTONDBLCLK {
                 show(s);
@@ -584,7 +669,18 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             0
         }
         WM_TIMER => {
-            if wp == 99 {
+            if wp == 98 && s.feedback_test {
+                KillTimer(hwnd, 98);
+                let item = Item::new(
+                    "feedback-test",
+                    "Super Menu · application de test",
+                    "",
+                    "",
+                    Kind::Application,
+                    "",
+                );
+                start_application(s, &item);
+            } else if wp == 99 {
                 smoke_checks(s);
                 capture_bmp(s);
                 PostQuitMessage(0);
@@ -1058,6 +1154,10 @@ unsafe fn execute(s: &mut State, parent: bool) {
         return;
     };
     let result = match item.kind {
+        Kind::Application => {
+            start_application(s, &item);
+            return;
+        }
         Kind::Install => {
             start_install(s, &item.target);
             return;
@@ -1125,6 +1225,96 @@ unsafe fn execute(s: &mut State, parent: bool) {
             s.settings_open = false;
             finish_modal(s);
             SetFocus(s.edit);
+        }
+    }
+}
+
+unsafe fn start_application(s: &mut State, item: &Item) {
+    let started = match s.launches.start(item, Instant::now()) {
+        Ok(started) => started,
+        Err(error) => {
+            s.status = error.into();
+            InvalidateRect(s.hwnd, null(), 0);
+            return;
+        }
+    };
+    let token = match started {
+        LaunchStart::Started(token) | LaunchStart::Duplicate(token) => token,
+    };
+    hide(s);
+    if let Some(feedback) = &mut s.feedback {
+        if feedback.show(&item.title, s.hwnd, &s.settings).is_ok() {
+            s.feedback_request = Some(token);
+        }
+    }
+    if matches!(started, LaunchStart::Duplicate(_)) {
+        return;
+    }
+    let target = item.target.clone();
+    let arguments = item.arguments.clone();
+    let sender = s.launch_sender.clone();
+    let hwnd = s.hwnd as usize;
+    let parent_pid = GetCurrentProcessId();
+    let test = s.feedback_test;
+    let spawned = std::thread::Builder::new()
+        .name("supermenu-launch".into())
+        .spawn(move || {
+            let result = if test {
+                // Diagnostic mode exercises delayed completion without opening another app.
+                std::thread::sleep(Duration::from_millis(1800));
+                Ok(())
+            } else {
+                native::launch_background(&target, &arguments)
+            };
+            if sender.send((token, result)).is_ok() {
+                let mut actual_pid = 0;
+                GetWindowThreadProcessId(hwnd as HWND, &mut actual_pid);
+                if actual_pid == parent_pid {
+                    PostMessageW(hwnd as HWND, LAUNCH_DONE, 0, 0);
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        let _ = s.launch_sender.send((
+            token,
+            Err(format!("Impossible de lancer l'application : {error}")),
+        ));
+        process_launch_results(s);
+    }
+}
+
+unsafe fn process_launch_results(s: &mut State) {
+    while let Ok((token, result)) = s.launch_results.try_recv() {
+        let Some(item) = s.launches.finish(token, result.is_ok()) else {
+            continue;
+        };
+        match result {
+            Ok(()) => {
+                if s.feedback_test && item.id == "feedback-test" {
+                    s.feedback_test_finished = true;
+                } else if !s.smoke {
+                    s.usage.record(&item.id);
+                    let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
+                    s.weights = s.usage.snapshot_for(&index);
+                }
+                // Shell acceptance never reopens the popup or changes foreground focus.
+            }
+            Err(error) => {
+                if s.feedback_request == Some(token) {
+                    if let Some(feedback) = &mut s.feedback {
+                        feedback.hide();
+                    }
+                    s.feedback_request = None;
+                }
+                s.status = format!("Lancement de {} impossible", item.title);
+                s.settings_open = true;
+                show_error(&error);
+                s.settings_open = false;
+                finish_modal(s);
+                if IsWindowVisible(s.hwnd) != 0 {
+                    SetFocus(s.edit);
+                }
+            }
         }
     }
 }
@@ -1242,6 +1432,10 @@ unsafe fn reindex(s: &mut State) {
 }
 
 unsafe fn show(s: &mut State) {
+    if let Some(feedback) = &mut s.feedback {
+        feedback.hide();
+    }
+    s.feedback_request = None;
     let foreground = GetForegroundWindow();
     if foreground != s.hwnd {
         s.previous = foreground;
@@ -1835,6 +2029,18 @@ unsafe fn settings(s: &mut State) {
 }
 
 unsafe fn smoke_checks(s: &mut State) {
+    if s.feedback_test {
+        s.checks.push((
+            "launch_completion_without_ui_wait".into(),
+            s.feedback_test_finished && s.launches.pending.is_empty(),
+        ));
+        s.checks.push((
+            "launch_popup_expired".into(),
+            s.feedback
+                .as_ref()
+                .is_some_and(|feedback| IsWindowVisible(feedback.hwnd()) == 0),
+        ));
+    }
     set_query(s, "");
     s.checks.push(("all_providers".into(), s.items.len() == 9));
     set_query(s, "@ ");
@@ -1920,6 +2126,9 @@ unsafe fn replay_deferred(hwnd: HWND) {
     }
     if deferred & 2 != 0 {
         PostMessageW(hwnd, REFRESH, 0, 0);
+    }
+    if deferred & 4 != 0 {
+        PostMessageW(hwnd, LAUNCH_DONE, 0, 0);
     }
     DEFERRED_INSTALL.with(|d| {
         for (wp, lp) in d.borrow_mut().drain(..) {
@@ -2291,6 +2500,72 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_app(id: &str) -> Item {
+        Item::new(id, id, "", "", Kind::Application, format!("{id}.exe"))
+    }
+
+    #[test]
+    fn repeated_app_launches_are_deduplicated_during_shell_and_feedback_delay() {
+        let now = Instant::now();
+        let item = test_app("slow");
+        let mut requests = LaunchRequests::default();
+        assert_eq!(requests.start(&item, now), Ok(LaunchStart::Started(1)));
+        assert_eq!(
+            requests.start(&item, now + Duration::from_secs(1)),
+            Ok(LaunchStart::Duplicate(1))
+        );
+        requests.finish(1, true).unwrap();
+        assert_eq!(
+            requests.start(&item, now + Duration::from_secs(2)),
+            Ok(LaunchStart::Duplicate(1))
+        );
+        assert_eq!(
+            requests.start(&item, now + Duration::from_millis(5999)),
+            Ok(LaunchStart::Duplicate(1))
+        );
+        assert_eq!(
+            requests.start(&item, now + Duration::from_millis(9999)),
+            Ok(LaunchStart::Started(2))
+        );
+    }
+
+    #[test]
+    fn failed_app_launch_can_retry_and_old_completion_cannot_finish_new_attempt() {
+        let now = Instant::now();
+        let item = test_app("retry");
+        let other = test_app("other");
+        let mut requests = LaunchRequests::default();
+        assert_eq!(requests.start(&item, now), Ok(LaunchStart::Started(1)));
+        assert_eq!(requests.start(&other, now), Ok(LaunchStart::Started(2)));
+        requests.finish(1, false).unwrap();
+        assert_eq!(requests.start(&item, now), Ok(LaunchStart::Started(3)));
+        assert!(requests.finish(1, true).is_none());
+        assert!(requests.pending.contains_key(&3));
+        assert!(requests.pending.contains_key(&2));
+        assert_eq!(
+            requests.start(&other, now + Duration::from_secs(40)),
+            Ok(LaunchStart::Duplicate(2))
+        );
+    }
+
+    #[test]
+    fn concurrent_launches_are_bounded_and_failure_releases_a_slot() {
+        let now = Instant::now();
+        let mut requests = LaunchRequests::default();
+        for ordinal in 0..16 {
+            assert!(matches!(
+                requests.start(&test_app(&ordinal.to_string()), now),
+                Ok(LaunchStart::Started(_))
+            ));
+        }
+        assert!(requests.start(&test_app("overflow"), now).is_err());
+        requests.finish(1, false).unwrap();
+        assert!(matches!(
+            requests.start(&test_app("overflow"), now),
+            Ok(LaunchStart::Started(_))
+        ));
+    }
+
     #[test]
     fn installed_software_can_be_offered_again_after_a_later_uninstall() {
         let mut installs = Installations::default();

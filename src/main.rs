@@ -3,6 +3,7 @@ mod catalog;
 mod config;
 mod core;
 mod installer;
+mod launch_feedback;
 mod native;
 mod packages;
 mod ui;

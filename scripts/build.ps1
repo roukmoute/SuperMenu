@@ -47,7 +47,7 @@ try {
     }
     $docsDirectory = Join-Path $OutputDirectory 'docs'
     New-Item -ItemType Directory -Path $docsDirectory -Force | Out-Null
-    foreach ($image in @('screenshot.png', 'install.png')) {
+    foreach ($image in @('screenshot.png', 'install.png', 'launch.png')) {
         Copy-Item -LiteralPath (Join-Path $repositoryRoot (Join-Path 'docs' $image)) -Destination (Join-Path $docsDirectory $image) -Force
     }
     $size = (Get-Item -LiteralPath $binaryPath).Length / 1MB

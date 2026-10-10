@@ -24,7 +24,9 @@ use windows_sys::Win32::System::Threading::{
     CreateEventW, CreateMutexW, GetCurrentThreadId, SetEvent, WaitForMultipleObjects,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
-use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SHELLEXECUTEINFOW};
+use windows_sys::Win32::UI::Shell::{
+    ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 pub const WM_ACTIVATE_MENU: u32 = WM_APP + 1;
@@ -314,6 +316,15 @@ pub fn focus_window(hwnd: HWND) -> Result<(), String> {
 }
 
 pub fn launch(target: &str, arguments: &str) -> Result<(), String> {
+    shell_launch(target, arguments, SEE_MASK_FLAG_NO_UI)
+}
+
+/// A worker has no message loop and must finish Shell/DDE activation before exiting.
+pub fn launch_background(target: &str, arguments: &str) -> Result<(), String> {
+    shell_launch(target, arguments, SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC)
+}
+
+fn shell_launch(target: &str, arguments: &str, flags: u32) -> Result<(), String> {
     if target.is_empty() || target.contains('\0') || arguments.contains('\0') {
         return Err("Cible de lancement invalide.".into());
     }
@@ -329,7 +340,7 @@ pub fn launch(target: &str, arguments: &str) -> Result<(), String> {
         .is_ok();
         let mut info: SHELLEXECUTEINFOW = zeroed();
         info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
-        info.fMask = SEE_MASK_FLAG_NO_UI;
+        info.fMask = flags;
         info.lpVerb = verb.as_ptr();
         info.lpFile = file.as_ptr();
         info.lpParameters = arguments.as_ptr();
