@@ -1,5 +1,5 @@
 use crate::{
-    app_icons, catalog, config, core, installer, launch_feedback, native, packages, timer,
+    about, app_icons, catalog, config, core, installer, launch_feedback, native, packages, timer,
     timer_alert, timer_runtime,
 };
 use core::{Item, Kind};
@@ -26,6 +26,7 @@ const REFRESH: u32 = WM_APP + 3;
 const TRAY: u32 = WM_APP + 4;
 const LAUNCH_DONE: u32 = WM_APP + 6;
 const ICONS_READY: u32 = WM_APP + 8;
+const ABOUT: u32 = WM_APP + 9;
 const TIMER_TICK: usize = 43;
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
@@ -118,6 +119,7 @@ struct State {
     edit_bg: HBRUSH,
     icon: HICON,
     app_icons: Option<app_icons::IconCache>,
+    about: Option<about::AboutWindow>,
     hotkey: Option<native::Hotkey>,
     watcher: Option<native::Watcher>,
     dpi: i32,
@@ -355,6 +357,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             edit_bg: null_mut(),
             icon,
             app_icons: None,
+            about: None,
             hotkey: None,
             watcher: None,
             dpi: 96,
@@ -464,8 +467,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
         drop(state);
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            let handled = state_cell.try_borrow().is_ok_and(|state| {
+                state
+                    .about
+                    .as_ref()
+                    .is_some_and(|window| window.handle_message(&msg))
+            });
+            if !handled {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
             // Windows menus and ShellExecute can run a nested message loop while
             // State is borrowed. Replay their notifications once that borrow ends.
             replay_deferred(hwnd);
@@ -487,6 +498,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
                         "files":items.iter().filter(|i|matches!(i.kind,Kind::File|Kind::Folder)).count(),
                         "visible_results":state.items.len(),"indexing_finished":!state.indexing.load(Ordering::Relaxed),
                         "application_icons_loaded":state.app_icons.as_ref().map_or(0, app_icons::IconCache::loaded_count),
+                        "about_created":state.about.is_some(),"about_loaded":state.about.as_ref().is_some_and(about::AboutWindow::is_loaded),
+                        "about_hwnd":state.about.as_ref().map_or(0, |window| window.hwnd() as usize),
                         "timer_count":state.timers.borrow().book.snapshots(Instant::now()).len(),
                         "timer_alert_visible":state.timers.borrow().alert_visible(),
                         "timer_alert_hwnd":state.timers.borrow().alert_hwnd() as usize,
@@ -500,6 +513,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         state.watcher.take();
         state.feedback.take();
         state.app_icons.take();
+        state.about.take();
         state.timers.borrow_mut().shutdown();
         timer_runtime::unbind();
         KillTimer(hwnd, TIMER_TICK);
@@ -554,6 +568,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             DEFERRED.with(|d| d.set(d.get() | 4));
         } else if msg == ICONS_READY {
             DEFERRED.with(|d| d.set(d.get() | 16));
+        } else if msg == ABOUT {
+            DEFERRED.with(|d| d.set(d.get() | 32));
         } else if msg == WM_TIMER && wp == TIMER_TICK {
             DEFERRED.with(|d| d.set(d.get() | 8));
         } else if msg == timer_alert::WM_TIMER_ALERT_DISMISSED {
@@ -564,6 +580,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
     };
     let s = &mut *borrowed;
     match msg {
+        ABOUT => {
+            show_about(s);
+            0
+        }
         ICONS_READY => {
             let changed = s.app_icons.as_mut().is_some_and(|icons| icons.drain());
             request_result_icons(s);
@@ -825,6 +845,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 AppendMenuW(menu, MF_STRING, 2, wide("Paramètres").as_ptr());
                 AppendMenuW(menu, MF_STRING, 3, wide("Actualiser l'index").as_ptr());
                 AppendMenuW(menu, MF_STRING, 5, wide("Minuteurs").as_ptr());
+                AppendMenuW(menu, MF_STRING, 7, wide("À propos de Super Menu").as_ptr());
                 let reports = config::data_dir().join("uninstall-reports");
                 AppendMenuW(
                     menu,
@@ -854,6 +875,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                         settings(s);
                     }
                     3 => refresh_index_and_icons(s),
+                    7 => show_about(s),
                     5 => {
                         show(s);
                         set_query(s, "minuteur ");
@@ -908,6 +930,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
         }
         WM_DESTROY => {
             s.app_icons.take();
+            s.about.take();
             KillTimer(hwnd, 1);
             KillTimer(hwnd, 99);
             KillTimer(hwnd, TIMER_TICK);
@@ -1083,6 +1106,12 @@ fn navigation() -> Vec<Item> {
             "Paramètres Windows et actions rapides",
             "⏻",
             "! ",
+        ),
+        (
+            "À propos",
+            "Super Menu, matériel et informations Windows",
+            "\u{E946}",
+            "about",
         ),
     ]
     .into_iter()
@@ -1649,6 +1678,11 @@ fn system_items() -> Vec<Item> {
             "settings",
         ),
         (
+            "À propos de Super Menu",
+            "Version, matériel et informations Windows",
+            "about",
+        ),
+        (
             "Paramètres Windows",
             "Ouvrir les réglages du système",
             "ms-settings:",
@@ -1734,6 +1768,10 @@ unsafe fn execute(s: &mut State, parent: bool) {
             return;
         }
         Kind::Navigation => {
+            if item.target == "about" {
+                show_about(s);
+                return;
+            }
             set_query(s, &item.target);
             return;
         }
@@ -1743,6 +1781,10 @@ unsafe fn execute(s: &mut State, parent: bool) {
             native::activate_window(&item.target)
         }
         Kind::System => match item.target.as_str() {
+            "about" => {
+                show_about(s);
+                return;
+            }
             "settings" => {
                 settings(s);
                 return;
@@ -2700,6 +2742,46 @@ unsafe fn capture_bmp(s: &State) {
     ReleaseDC(s.hwnd, dc);
 }
 
+fn about_context(s: &State) -> about::Context {
+    let index = s.index.lock().unwrap_or_else(|error| error.into_inner());
+    about::Context {
+        theme: s.settings.theme.clone(),
+        accent_color: s.settings.accent_color.clone(),
+        hotkey: s.settings.hotkey.clone(),
+        applications: index
+            .iter()
+            .filter(|item| item.kind == Kind::Application)
+            .count(),
+        files: index
+            .iter()
+            .filter(|item| matches!(item.kind, Kind::File | Kind::Folder))
+            .count(),
+        index_items: index.len(),
+        app_uptime: s.started.elapsed(),
+    }
+}
+
+unsafe fn show_about(s: &mut State) {
+    let context = about_context(s);
+    // Opening the information window should keep focus there instead of
+    // restoring the previously active application through hide().
+    ShowWindow(s.hwnd, SW_HIDE);
+    if let Some(window) = s.about.as_mut() {
+        window.show(context);
+    } else {
+        match about::AboutWindow::new(s.hwnd, context) {
+            Ok(mut window) => {
+                window.show(about_context(s));
+                s.about = Some(window);
+            }
+            Err(error) => {
+                show(s);
+                show_error(&error);
+            }
+        }
+    }
+}
+
 // A native modal settings window. No embedded browser and no UI framework runtime.
 unsafe fn settings(s: &mut State) {
     if s.settings_open {
@@ -2746,7 +2828,12 @@ unsafe fn smoke_checks(s: &mut State) {
         ));
     }
     set_query(s, "");
-    s.checks.push(("all_providers".into(), s.items.len() == 12));
+    s.checks.push(("all_providers".into(), s.items.len() == 13));
+    s.checks.push((
+        "about_menu_entry".into(),
+        s.items.iter().any(|item| item.target == "about")
+            && system_items().iter().any(|item| item.target == "about"),
+    ));
     s.checks.push((
         "timer_menu_entry".into(),
         s.items.iter().any(|item| item.target == "minuteur "),
@@ -2877,6 +2964,9 @@ unsafe fn replay_deferred(hwnd: HWND) {
     }
     if deferred & 16 != 0 {
         PostMessageW(hwnd, ICONS_READY, 0, 0);
+    }
+    if deferred & 32 != 0 {
+        PostMessageW(hwnd, ABOUT, 0, 0);
     }
     DEFERRED_TIMER_ACK.with(|d| {
         for generation in d.borrow_mut().drain(..) {
@@ -3608,8 +3698,12 @@ mod tests {
     #[test]
     fn home_providers() {
         let menu = navigation();
-        assert_eq!(menu.len(), 12);
+        assert_eq!(menu.len(), 13);
         assert!(menu.iter().all(|i| i.kind == Kind::Navigation));
+        let about = core::rank(&menu, "à propos", 1, &HashMap::new());
+        assert_eq!(about.len(), 1);
+        assert_eq!(about[0].target, "about");
+        assert!(system_items().iter().any(|item| item.target == "about"));
     }
 
     #[test]

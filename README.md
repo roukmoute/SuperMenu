@@ -4,13 +4,15 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. L'exécutable autonome fait **environ 1,3 Mio** ; sa taille exacte varie légèrement selon la version du compilateur.
+Windows 10 et 11, x64. L'exécutable autonome fait **environ 1,4 Mio** ; sa taille exacte varie légèrement selon la version du compilateur.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 137 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
+Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 144 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
 
 ## Utiliser
+
+**À propos** ouvre une fenêtre native inspirée des écrans d'information système : grand titre Super Menu, matériel (processeur, carte graphique, écran, mémoire et disque système), édition et version Windows, durée de fonctionnement et informations de l'application. Elle reprend le thème et la couleur d'accent du menu. Accessible dans l'accueil, avec `; à propos`, dans le module Système (`! à propos`) ou depuis l'icône près de l'horloge. Les informations sont lues localement à l'ouverture ; leur collecte ne ralentit pas le démarrage du lanceur. Le bouton **GitHub** ouvre le dépôt du projet, et **Échap** ferme la fenêtre.
 
 Télécharger l'archive depuis les [releases](https://github.com/roukmoute/SuperMenu/releases), l'extraire et lancer l'exécutable. Au premier lancement, le menu apparaît. Ensuite, **Win + Espace** affiche ou masque le menu. Une icône dans la zone de notification permet aussi de l'ouvrir et de quitter le programme.
 

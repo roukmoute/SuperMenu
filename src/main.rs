@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod about;
 mod app_icons;
 mod catalog;
 mod cleanup;
@@ -8,6 +9,7 @@ mod installer;
 mod launch_feedback;
 mod native;
 mod packages;
+mod system_info;
 mod timer;
 mod timer_alert;
 mod timer_runtime;
