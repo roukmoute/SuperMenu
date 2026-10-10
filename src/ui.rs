@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -28,6 +28,7 @@ const CLASS: &str = "SuperMenuWindow";
 const CF_UNICODETEXT: u32 = 13;
 thread_local! { static DEFERRED:Cell<u8>=const {Cell::new(0)}; }
 thread_local! { static DEFERRED_INSTALL:RefCell<Vec<(usize,isize)>>=const {RefCell::new(Vec::new())}; }
+thread_local! { static DEFERRED_REMOVE:RefCell<Vec<(usize,isize)>>=const {RefCell::new(Vec::new())}; }
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -81,8 +82,14 @@ struct State {
     palette: Palette,
     index: Arc<Mutex<Vec<Item>>>,
     installed_names: Arc<Mutex<Vec<String>>>,
+    removable_names: Arc<Mutex<Vec<String>>>,
     missing_packages: Vec<Item>,
+    removable_packages: Vec<Item>,
     installations: Installations,
+    removals: Installations,
+    removal_refresh_after: HashMap<String, usize>,
+    index_generation: usize,
+    catalog_ready: Arc<AtomicUsize>,
     feedback: Option<launch_feedback::LaunchFeedback>,
     feedback_request: Option<usize>,
     launches: LaunchRequests,
@@ -222,6 +229,31 @@ pub fn show_error(error: &str) {
     }
 }
 
+fn reconcile_removals(
+    completed: &mut HashSet<String>,
+    refresh_after: &mut HashMap<String, usize>,
+    observed_generation: usize,
+    available: &[Item],
+) {
+    completed.retain(|target| {
+        let fresh = refresh_after
+            .get(target)
+            .is_some_and(|minimum| observed_generation >= *minimum);
+        !fresh || available.iter().any(|item| &item.target == target)
+    });
+    refresh_after.retain(|target, _| completed.contains(target));
+}
+
+fn clear_removal_for_install(
+    removals: &mut Installations,
+    refresh_after: &mut HashMap<String, usize>,
+    id: &str,
+) {
+    let target = format!("id:{id}");
+    removals.completed.remove(&target);
+    refresh_after.remove(&target);
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let started = Instant::now();
     if !cfg!(target_os = "windows") {
@@ -270,8 +302,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
             settings,
             index: Arc::new(Mutex::new(cache)),
             installed_names: Arc::new(Mutex::new(Vec::new())),
+            removable_names: Arc::new(Mutex::new(Vec::new())),
             missing_packages: Vec::new(),
+            removable_packages: Vec::new(),
             installations: Installations::default(),
+            removals: Installations::default(),
+            removal_refresh_after: HashMap::new(),
+            index_generation: 0,
+            catalog_ready: Arc::new(AtomicUsize::new(0)),
             feedback: None,
             feedback_request: None,
             launches: LaunchRequests::default(),
@@ -382,7 +420,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         reindex(&mut state);
         if smoke {
-            SetTimer(hwnd, 99, 8500, None);
+            let smoke_timeout = args
+                .iter()
+                .position(|arg| arg == "--smoke-timeout-ms")
+                .and_then(|position| args.get(position + 1))
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|value| (8500..=300_000).contains(value))
+                .unwrap_or(8500);
+            SetTimer(hwnd, 99, smoke_timeout, None);
             if state.feedback_test {
                 SetTimer(hwnd, 98, 300, None);
             }
@@ -455,6 +500,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             DEFERRED.with(|d| d.set(d.get() | if msg == INDEX { 1 } else { 2 }));
         } else if msg == installer::INSTALL_DONE {
             DEFERRED_INSTALL.with(|d| d.borrow_mut().push((wp, lp)));
+        } else if msg == installer::REMOVE_DONE {
+            DEFERRED_REMOVE.with(|d| d.borrow_mut().push((wp, lp)));
         } else if msg == LAUNCH_DONE {
             DEFERRED.with(|d| d.set(d.get() | 4));
         }
@@ -590,9 +637,50 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             s.weights = s.usage.snapshot_for(&index);
             let apps = index.iter().filter(|i| i.kind == Kind::Application).count();
             let installed_names = s.installed_names.lock().unwrap_or_else(|e| e.into_inner());
-            s.missing_packages = packages::missing_items(&index, &installed_names, &HashSet::new());
+            let visible_apps: Vec<Item> = index
+                .iter()
+                .filter(|item| {
+                    item.kind == Kind::Application
+                        && !s
+                            .removals
+                            .completed
+                            .iter()
+                            .any(|target| packages::application_matches_removal(item, target))
+                })
+                .cloned()
+                .collect();
+            let visible_names: Vec<String> = installed_names
+                .iter()
+                .filter(|name| {
+                    let entry = Item::new("", name.as_str(), "", "", Kind::Application, "");
+                    !s.removals
+                        .completed
+                        .iter()
+                        .any(|target| packages::application_matches_removal(&entry, target))
+                })
+                .cloned()
+                .collect();
+            s.missing_packages =
+                packages::missing_items(&visible_apps, &visible_names, &HashSet::new());
             s.installations.refresh_missing(&mut s.missing_packages);
+            let removable_names = s.removable_names.lock().unwrap_or_else(|e| e.into_inner());
+            let available = packages::removable_items_with_inventory(
+                &index,
+                &installed_names,
+                &removable_names,
+            );
             drop(installed_names);
+            reconcile_removals(
+                &mut s.removals.completed,
+                &mut s.removal_refresh_after,
+                s.catalog_ready.load(Ordering::Acquire),
+                &available,
+            );
+            s.removable_packages = available
+                .into_iter()
+                .filter(|item| !s.removals.completed.contains(&item.target))
+                .collect();
+            drop(removable_names);
             s.status = if s.indexing.load(Ordering::Relaxed) {
                 format!("{apps} applis · indexation…")
             } else {
@@ -616,12 +704,36 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 if let Some(package) = packages::find(&id) {
                     if success {
                         s.missing_packages.retain(|item| item.target != package.id);
+                        clear_removal_for_install(
+                            &mut s.removals,
+                            &mut s.removal_refresh_after,
+                            package.id,
+                        );
                         reindex(s);
                     } else {
                         s.status = format!("Installation de {} interrompue", package.name);
                     }
                     update_results(s);
                 }
+            }
+            0
+        }
+        installer::REMOVE_DONE => {
+            let success = lp == 0;
+            if let Some(target) = s.removals.finish(wp, success) {
+                if success {
+                    s.removal_refresh_after
+                        .insert(target.clone(), s.index_generation.saturating_add(1));
+                    s.removable_packages.retain(|item| item.target != target);
+                    if let Some(id) = target.strip_prefix("id:") {
+                        s.installations.completed.remove(id);
+                    }
+                    reindex(s);
+                } else {
+                    s.status = "Désinstallation interrompue · détails dans la console".into();
+                    reindex(s);
+                }
+                update_results(s);
             }
             0
         }
@@ -786,7 +898,7 @@ unsafe fn key(s: &mut State, key: u32) {
         VK_F5 => reindex(s),
         VK_F1 => {
             s.settings_open = true;
-            MessageBoxW(s.hwnd,wide("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications et propositions d'installation\n@ applications installées    + logiciels à installer\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\n\nInstaller : Entrée ouvre la progression WinGet.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.").as_ptr(),wide("Super Menu · Aide").as_ptr(),MB_OK);
+            MessageBoxW(s.hwnd,wide("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer / désinstaller\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications, installation ou désinstallation\n@ applications à lancer    + installer    - désinstaller\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\n\nInstaller : Entrée ouvre la progression WinGet.\nDésinstaller : confirmation puis progression WinGet.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.").as_ptr(),wide("Super Menu · Aide").as_ptr(),MB_OK);
             s.settings_open = false;
             finish_modal(s);
             SetFocus(s.edit);
@@ -813,9 +925,21 @@ fn navigation() -> Vec<Item> {
     [
         (
             "Applications",
-            "Applications installées · + pour installer un logiciel",
+            "Rechercher et lancer une application installée",
             "▦",
             "@ ",
+        ),
+        (
+            "Installer",
+            "Ajouter un logiciel · catalogue WinGet",
+            "↓",
+            "+ ",
+        ),
+        (
+            "Désinstaller",
+            "Retirer un logiciel installé · confirmation avant suppression",
+            "⊠",
+            "- ",
         ),
         (
             "Fichiers",
@@ -871,7 +995,7 @@ unsafe fn update_results(s: &mut State) {
     let start = Instant::now();
     let trimmed = s.query.trim();
     let prefix = trimmed.chars().next().unwrap_or('\0');
-    let body = if "@/+=?>:.~!;".contains(prefix) && prefix != '\0' {
+    let body = if "@/+-=?>:.~!;".contains(prefix) && prefix != '\0' {
         trimmed.get(prefix.len_utf8()..).unwrap_or("").trim()
     } else {
         trimmed
@@ -884,7 +1008,7 @@ unsafe fn update_results(s: &mut State) {
             if body.is_empty() {
                 navigation()
             } else {
-                core::rank(&navigation(), body, 9, weights)
+                core::rank(&navigation(), body, limit, weights)
             }
         }
         '=' => {
@@ -1033,14 +1157,44 @@ unsafe fn update_results(s: &mut State) {
             } else {
                 if prefix == '+' {
                     s.section = "INSTALLER AVEC WINGET".into();
+                } else if prefix == '-' {
+                    s.section = "DÉSINSTALLER UN LOGICIEL".into();
                 }
-                packages::search(&index, &s.missing_packages, trimmed, limit, weights)
+                let visible_apps: Vec<Item> = if s.removals.completed.is_empty() {
+                    Vec::new()
+                } else {
+                    index
+                        .iter()
+                        .filter(|item| {
+                            item.kind == Kind::Application
+                                && !s.removals.completed.iter().any(|target| {
+                                    packages::application_matches_removal(item, target)
+                                })
+                        })
+                        .cloned()
+                        .collect()
+                };
+                let search_index = if s.removals.completed.is_empty() {
+                    index.as_slice()
+                } else {
+                    visible_apps.as_slice()
+                };
+                packages::search_with_removals(
+                    search_index,
+                    &s.missing_packages,
+                    &s.removable_packages,
+                    trimmed,
+                    limit,
+                    weights,
+                )
             }
         }
     };
     for item in &mut s.items {
         if item.kind == Kind::Install && s.installations.is_pending(&item.target) {
             item.subtitle = "Installation en cours · progression dans la console".into();
+        } else if item.kind == Kind::Uninstall && s.removals.is_pending(&item.target) {
+            item.subtitle = "Désinstallation en cours · progression dans la console".into();
         }
     }
     s.selected = 0;
@@ -1159,6 +1313,10 @@ unsafe fn execute(s: &mut State, parent: bool) {
         }
         Kind::Install => {
             start_install(s, &item.target);
+            return;
+        }
+        Kind::Uninstall => {
+            start_remove(s, &item);
             return;
         }
         Kind::Navigation => {
@@ -1319,7 +1477,7 @@ unsafe fn process_launch_results(s: &mut State) {
 }
 
 unsafe fn start_install(s: &mut State, id: &str) {
-    if packages::find(id).is_none() {
+    if packages::find(id).is_none() || s.removals.is_pending(&format!("id:{id}")) {
         return;
     }
     let Some(request) = s.installations.start(id) else {
@@ -1345,6 +1503,73 @@ unsafe fn start_install(s: &mut State, id: &str) {
         }
         Err(error) => {
             s.installations.finish(request, false);
+            s.settings_open = true;
+            show_error(&error);
+            s.settings_open = false;
+            finish_modal(s);
+            SetFocus(s.edit);
+        }
+    }
+}
+
+unsafe fn start_remove(s: &mut State, item: &Item) {
+    if item.kind != Kind::Uninstall
+        || s.removals.is_pending(&item.target)
+        || s.removals.completed.contains(&item.target)
+        || !s
+            .removable_packages
+            .iter()
+            .any(|entry| entry.target == item.target)
+    {
+        return;
+    }
+    if item
+        .target
+        .strip_prefix("id:")
+        .is_some_and(|id| s.installations.is_pending(id))
+    {
+        s.status = "Installation en cours · réessaie après son achèvement".into();
+        InvalidateRect(s.hwnd, null(), 0);
+        return;
+    }
+    s.settings_open = true;
+    let confirmation = MessageBoxW(
+        s.hwnd,
+        wide(&format!(
+            "Désinstaller « {} » ?\n\nLe logiciel sera retiré de cet ordinateur.",
+            item.title
+        ))
+        .as_ptr(),
+        wide("Super Menu · Désinstaller").as_ptr(),
+        MB_YESNO | MB_DEFBUTTON2 | MB_ICONWARNING,
+    );
+    s.settings_open = false;
+    finish_modal(s);
+    if confirmation != IDYES {
+        SetFocus(s.edit);
+        return;
+    }
+    let Some(request) = s.removals.start(&item.target) else {
+        return;
+    };
+    let parent_pid = GetCurrentProcessId();
+    match installer::spawn_remove(&item.target, s.hwnd, parent_pid, request) {
+        Ok(mut child) => {
+            let hwnd = s.hwnd as usize;
+            std::thread::spawn(move || {
+                let result = child
+                    .wait()
+                    .ok()
+                    .and_then(|status| status.code())
+                    .unwrap_or(1);
+                installer::notify_remove(hwnd as HWND, parent_pid, request, result);
+            });
+            s.status = "Désinstallation en cours · console WinGet".into();
+            update_results(s);
+            hide(s);
+        }
+        Err(error) => {
+            s.removals.finish(request, false);
             s.settings_open = true;
             show_error(&error);
             s.settings_open = false;
@@ -1391,6 +1616,10 @@ unsafe fn reindex(s: &mut State) {
     InvalidateRect(s.hwnd, null(), 0);
     let index = s.index.clone();
     let installed_names = s.installed_names.clone();
+    let removable_names = s.removable_names.clone();
+    s.index_generation = s.index_generation.saturating_add(1);
+    let generation = s.index_generation;
+    let catalog_ready = s.catalog_ready.clone();
     let busy = s.indexing.clone();
     let settings = s.settings.clone();
     let hwnd = s.hwnd as usize;
@@ -1405,7 +1634,9 @@ unsafe fn reindex(s: &mut State) {
             }
         }
         let apps = native::app_catalog();
-        *installed_names.lock().unwrap_or_else(|e| e.into_inner()) = packages::installed_names();
+        let (all_names, remove_names) = packages::installed_inventory();
+        *installed_names.lock().unwrap_or_else(|e| e.into_inner()) = all_names;
+        *removable_names.lock().unwrap_or_else(|e| e.into_inner()) = remove_names;
         {
             let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
             let previous_files: Vec<Item> = index
@@ -1416,6 +1647,7 @@ unsafe fn reindex(s: &mut State) {
             *index = apps.clone();
             index.extend(previous_files);
         }
+        catalog_ready.store(generation, Ordering::Release);
         unsafe {
             PostMessageW(hwnd as HWND, INDEX, 0, 0);
         }
@@ -1854,13 +2086,10 @@ unsafe fn paint(s: &State, dc: HDC) {
         dc,
         s.fonts[2],
         s.palette.muted,
-        if s.items
-            .get(s.selected)
-            .is_some_and(|item| item.kind == Kind::Install)
-        {
-            "↑ ↓ naviguer   ↵ installer   Échap fermer   F1 aide"
-        } else {
-            "↑ ↓ naviguer   ↵ ouvrir   Échap fermer   F1 aide"
+        match s.items.get(s.selected).map(|item| &item.kind) {
+            Some(Kind::Install) => "↑ ↓ naviguer   ↵ installer   Échap fermer   F1 aide",
+            Some(Kind::Uninstall) => "↑ ↓ naviguer   ↵ désinstaller   Échap fermer",
+            _ => "↑ ↓ naviguer   ↵ ouvrir   Échap fermer   F1 aide",
         },
         scale(28),
         scale(h - 39),
@@ -2041,7 +2270,16 @@ unsafe fn smoke_checks(s: &mut State) {
         ));
     }
     set_query(s, "");
-    s.checks.push(("all_providers".into(), s.items.len() == 9));
+    s.checks.push(("all_providers".into(), s.items.len() == 11));
+    s.checks.push((
+        "package_menu_entries".into(),
+        s.items
+            .iter()
+            .any(|item| item.title == "Installer" && item.target == "+ ")
+            && s.items
+                .iter()
+                .any(|item| item.title == "Désinstaller" && item.target == "- "),
+    ));
     set_query(s, "@ ");
     s.checks.push((
         "applications".into(),
@@ -2053,7 +2291,7 @@ unsafe fn smoke_checks(s: &mut State) {
         .find(|item| {
             !item
                 .title
-                .starts_with(['@', '/', '+', '=', '?', '>', ':', '.', '~', '!', ';'])
+                .starts_with(['@', '/', '+', '-', '=', '?', '>', ':', '.', '~', '!', ';'])
         })
         .map(|item| item.title.clone())
         .unwrap_or_default();
@@ -2063,7 +2301,7 @@ unsafe fn smoke_checks(s: &mut State) {
         !s.items.is_empty()
             && s.items
                 .iter()
-                .all(|i| matches!(i.kind, Kind::Application | Kind::Install)),
+                .all(|i| matches!(i.kind, Kind::Application | Kind::Install | Kind::Uninstall)),
     ));
     set_query(s, "/ ");
     s.checks.push((
@@ -2079,6 +2317,14 @@ unsafe fn smoke_checks(s: &mut State) {
             && s.items
                 .iter()
                 .all(|item| item.kind == Kind::Install && packages::find(&item.target).is_some()),
+    ));
+    set_query(s, "- ");
+    s.checks.push((
+        "remove_catalog".into(),
+        s.items.iter().all(|item| {
+            item.kind == Kind::Uninstall
+                && (item.target.starts_with("id:") || item.target.starts_with("name:"))
+        }),
     ));
     set_query(s, "= (12 + 8) * 3");
     s.checks.push((
@@ -2132,6 +2378,11 @@ unsafe fn replay_deferred(hwnd: HWND) {
     DEFERRED_INSTALL.with(|d| {
         for (wp, lp) in d.borrow_mut().drain(..) {
             PostMessageW(hwnd, installer::INSTALL_DONE, wp, lp);
+        }
+    });
+    DEFERRED_REMOVE.with(|d| {
+        for (wp, lp) in d.borrow_mut().drain(..) {
+            PostMessageW(hwnd, installer::REMOVE_DONE, wp, lp);
         }
     });
 }
@@ -2529,6 +2780,45 @@ mod tests {
     }
 
     #[test]
+    fn removal_markers_survive_stale_snapshots_and_allow_later_reinstallation() {
+        let target = "id:Mozilla.Firefox".to_string();
+        let mut removals = Installations::default();
+        let token = removals.start(&target).unwrap();
+        removals.finish(token, true).unwrap();
+        assert!(removals.finish(token, true).is_none());
+        let mut refresh_after = HashMap::from([(target.clone(), 2)]);
+        reconcile_removals(&mut removals.completed, &mut refresh_after, 1, &[]);
+        assert!(removals.completed.contains(&target));
+        let still_present = Item::new("remove", "Firefox", "", "", Kind::Uninstall, &target);
+        reconcile_removals(
+            &mut removals.completed,
+            &mut refresh_after,
+            2,
+            &[still_present],
+        );
+        assert!(removals.completed.contains(&target));
+        reconcile_removals(&mut removals.completed, &mut refresh_after, 2, &[]);
+        assert!(removals.completed.is_empty());
+        assert!(refresh_after.is_empty());
+        assert!(removals.start(&target).is_some());
+    }
+
+    #[test]
+    fn successful_install_clears_an_unobserved_removal_for_the_same_product() {
+        let mut removals = Installations::default();
+        removals.completed.insert("id:Mozilla.Firefox".into());
+        removals.completed.insert("id:VideoLAN.VLC".into());
+        let mut refresh_after = HashMap::from([
+            ("id:Mozilla.Firefox".into(), 2),
+            ("id:VideoLAN.VLC".into(), 2),
+        ]);
+        clear_removal_for_install(&mut removals, &mut refresh_after, "Mozilla.Firefox");
+        assert!(!removals.completed.contains("id:Mozilla.Firefox"));
+        assert!(!refresh_after.contains_key("id:Mozilla.Firefox"));
+        assert!(removals.completed.contains("id:VideoLAN.VLC"));
+    }
+
+    #[test]
     fn failed_app_launch_can_retry_and_old_completion_cannot_finish_new_attempt() {
         let now = Instant::now();
         let item = test_app("retry");
@@ -2810,7 +3100,7 @@ mod tests {
     #[test]
     fn home_providers() {
         let menu = navigation();
-        assert_eq!(menu.len(), 9);
+        assert_eq!(menu.len(), 11);
         assert!(menu.iter().all(|i| i.kind == Kind::Navigation));
     }
 }

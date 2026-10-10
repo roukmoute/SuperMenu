@@ -8,7 +8,7 @@ Windows 10 et 11, x64. L'exécutable autonome fait **environ 1 Mio** ; sa taille
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 26 Mio de mémoire privée et 55 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,41 ms (p95 1,83 ms) pour le classement en mémoire, de 0,55 ms (p95 2,21 ms) pour les fichiers et de 0,55 ms (p95 0,76 ms) pour les applications avec les propositions d'installation en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 51 tests automatisés et les 13 contrôles du menu natif avec le diagnostic de lancement passent.
+Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 28 Mio de mémoire privée et 59 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,39 ms) pour le classement en mémoire, de 0,65 ms (p95 2,20 ms) pour les fichiers et de 0,63 ms (p95 1,06 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 73 tests automatisés et les 15 contrôles du menu natif avec le diagnostic de lancement passent.
 
 ## Utiliser
 
@@ -22,16 +22,17 @@ Les validations répétées de la même application sont regroupées pendant ces
 
 ![Confirmation de lancement](docs/launch.png)
 
-La recherche sans préfixe recherche les **applications** : `edge` affiche les applications correspondantes. Un logiciel du catalogue intégré qui n'est pas installé apparaît avec le sous-titre **« Installer »**. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` limite la recherche aux applications déjà installées ; `+` affiche uniquement les logiciels à installer. L'onglet « Accueil » revient au menu des fournisseurs.
+La recherche sans préfixe recherche les **applications** : `edge` affiche d'abord les applications correspondantes, puis leur action **« Désinstaller »**. Un logiciel du catalogue intégré qui n'est pas installé apparaît avec le sous-titre **« Installer »**. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` limite la recherche aux applications à lancer ; `+` affiche uniquement les logiciels à installer et `-` ceux à désinstaller. Le menu d'accueil comporte aussi les entrées **Installer** et **Désinstaller**.
 
 Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu lui donne la priorité lorsqu'il fonctionne. Choisir un autre raccourci dans les réglages si ce changement de langue doit rester accessible. Le fichier JSON permet aussi un raccourci personnalisé, par exemple `Ctrl+Alt+Space`.
 
 | Saisie | Fournisseur |
 | --- | --- |
-| `firefox` | Applications et proposition d'installation si Firefox est absent |
+| `firefox` | Application puis désinstallation, ou installation si Firefox est absent |
 | `;` | Menu des fournisseurs |
 | `@` | Applications déjà installées |
 | `+ firefox` | Logiciels du catalogue à installer |
+| `- firefox` | Logiciels installés à désinstaller |
 | `/` | Fichiers et dossiers indexés |
 | `= (15 + 5) * 3` | Calculatrice locale |
 | `? rust windows` | Recherche Web dans le navigateur par défaut |
@@ -54,6 +55,16 @@ Cette fonction utilise [WinGet, fourni par Microsoft App Installer](https://lear
 ![Une proposition d'installation dans Super Menu](docs/install.png)
 
 Une installation se déclenche uniquement par validation d'un résultat « Installer ». La commande cible l'identifiant exact du catalogue et la source `winget`, accepte les accords du paquet et de la source, et utilise `--no-upgrade` pour éviter de mettre à jour un logiciel déjà installé. Une vérification supplémentaire de sa présence précède l'installation. Les erreurs sont affichées dans la console ; un échec permet de réessayer. Une requête de recherche n'est jamais passée à un shell pour installer un logiciel.
+
+## Désinstaller un logiciel
+
+Choisir **Désinstaller** dans le menu, ou saisir `- chrome`, pour parcourir les logiciels installés. Avec une recherche simple comme `chrome`, le résultat à lancer reste en premier ; une ligne **« Désinstaller · Navigateur · WinGet »** permet de retirer le logiciel directement depuis cette recherche.
+
+**Entrée** sur une ligne « Désinstaller » affiche une confirmation avec le nom du logiciel, avec **Non** sélectionné par défaut. Après confirmation, Windows demande les droits administrateur si le logiciel est installé pour tout l'ordinateur, puis une console affiche la progression WinGet. Annuler cette demande conserve le logiciel et permet de réessayer. Le catalogue se rafraîchit à la fin et la console reste ouverte jusqu'à Entrée. Annuler la confirmation ne lance aucun désinstallateur.
+
+Les actions utilisent les identifiants exacts du catalogue ou les noms exacts du registre Windows pour les autres logiciels, y compris ceux installés autrement qu'avec WinGet. Les composants `SystemComponent` ou `NoRemove` sont exclus. Les variantes telles que Firefox ESR et VS Code Insiders gardent leur propre identité. Le helper vérifie à nouveau la présence du logiciel ; une cible inconnue, protégée ou ambiguë n'est pas supprimée. La commande n'utilise ni `--force`, ni `--purge`, ni `--all`.
+
+![Une action de désinstallation dans Super Menu](docs/remove.png)
 
 ## Réglages et index
 
@@ -87,6 +98,6 @@ cargo run --release --locked -- --smoke-test --report smoke.json --snapshot menu
 cargo run --release --locked -- --smoke-test --launch-feedback-test --report feedback.json
 ```
 
-Le benchmark mesure le moteur de recherche sur des catalogues de test ; ses résultats dépendent de la machine et ne constituent pas une garantie de latence du raccourci ou du disque. `--smoke-test` ouvre brièvement le menu pour vérifier son démarrage et peut exporter un rapport ainsi qu'une capture BMP du menu. Avec `--launch-feedback-test`, il simule un lancement lent pour vérifier le pop-in et la réponse asynchrone sans ouvrir d'autre application. `--background` démarre sans afficher le menu, utile avec un raccourci placé dans `shell:startup`.
+Le benchmark mesure le moteur de recherche sur des catalogues de test ; ses résultats dépendent de la machine et ne constituent pas une garantie de latence du raccourci ou du disque. `--smoke-test` ouvre brièvement le menu pour vérifier son démarrage et peut exporter un rapport ainsi qu'une capture BMP du menu. Avec `--launch-feedback-test`, il simule un lancement lent pour vérifier le pop-in et la réponse asynchrone sans ouvrir d'autre application. `--smoke-timeout-ms 120000`, uniquement avec `--smoke-test`, prolonge le diagnostic jusqu'à deux minutes (maximum cinq minutes), utile pour observer une opération longue. `--background` démarre sans afficher le menu, utile avec un raccourci placé dans `shell:startup`.
 
 GitHub Actions construit et vérifie le projet sur Windows à chaque pull request et mise à jour de `main`/`master`. Après une compilation réussie sur la branche principale, la version de `Cargo.toml` produit automatiquement une préversion téléchargeable, par exemple `v0.1.0`. Une version déjà publiée conserve son archive ; augmenter la version du paquet pour publier une nouvelle préversion. Un tag `v*` produit une release standard si cette version n'existe pas encore. Le code est sous [licence MIT](LICENSE) ; aucune portion du code de Walker n'a été copiée.

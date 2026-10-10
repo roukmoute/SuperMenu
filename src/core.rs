@@ -8,6 +8,7 @@ use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 pub enum Kind {
     Application,
     Install,
+    Uninstall,
     File,
     Folder,
     Command,
@@ -712,10 +713,12 @@ pub fn benchmark() -> String {
     let simple = measure(&items, &queries, false);
     let mixed_stats = measure(&mixed, &mixed_queries, true);
     let missing = crate::packages::missing_items(&mixed, &[], &Default::default());
+    let removals = crate::packages::removable_items(&mixed, &[]);
     let search = |ordinal: usize| {
-        crate::packages::search(
+        crate::packages::search_with_removals(
             &mixed,
             &missing,
+            &removals,
             queries[ordinal % queries.len()],
             9,
             &usage,
@@ -731,7 +734,7 @@ pub fn benchmark() -> String {
         samples.push(started.elapsed().as_secs_f64() * 1000.0);
     }
     samples.sort_by(f64::total_cmp);
-    format!("20,000 indexed items, top 9, 100 warmups, 400 samples per scenario\nSimple index median: {:.3} ms; p95: {:.3} ms.\nMixed index /files median: {:.3} ms; p95: {:.3} ms.\nMixed index apps + cached install suggestions median: {:.3} ms; p95: {:.3} ms.\nIn-memory ranking only; indexing, activation and cold startup are separate.",simple.0,simple.1,mixed_stats.0,mixed_stats.1,samples[200],samples[379])
+    format!("20,000 indexed items, top 9, 100 warmups, 400 samples per scenario\nSimple index median: {:.3} ms; p95: {:.3} ms.\nMixed index /files median: {:.3} ms; p95: {:.3} ms.\nMixed index apps + cached package actions median: {:.3} ms; p95: {:.3} ms.\nIn-memory ranking only; indexing, activation and cold startup are separate.",simple.0,simple.1,mixed_stats.0,mixed_stats.1,samples[200],samples[379])
 }
 
 #[cfg(test)]

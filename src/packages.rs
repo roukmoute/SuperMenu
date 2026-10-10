@@ -1,4 +1,4 @@
-//! Curated WinGet suggestions. Searching is entirely local; installation is handled by the UI.
+//! Local software management suggestions. Searching never runs WinGet or reads the registry.
 //! IDs verified against https://github.com/microsoft/winget-pkgs on 2026-10-10.
 //! A manifest lives at manifests/{publisher initial}/{dot-separated ID components}.
 use crate::core::{self, Item, Kind};
@@ -259,6 +259,7 @@ pub fn find(id: &str) -> Option<&'static Package> {
 
 struct PreparedPackage {
     package: &'static Package,
+    primary_name: String,
     names: Vec<String>,
     category: String,
     identifier: String,
@@ -278,6 +279,7 @@ fn prepared() -> &'static [PreparedPackage] {
                 names.dedup();
                 PreparedPackage {
                     package,
+                    primary_name: normalize(package.name),
                     names,
                     category: normalize(package.category),
                     identifier: normalize(package.id),
@@ -291,8 +293,8 @@ fn normalize(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
     let mut spacing = true;
     for character in value.nfd().filter(|c| !is_combining_mark(*c)) {
-        // '+' carries identity in Notepad++; stripping it would confuse the built-in Notepad.
-        if character.is_alphanumeric() || character == '+' {
+        // Keep product punctuation: Notepad++ differs from Notepad, and C# differs from C.
+        if character.is_alphanumeric() || matches!(character, '+' | '#') {
             result.extend(character.to_lowercase());
             spacing = false;
         } else if !spacing {
@@ -441,6 +443,353 @@ pub fn missing_items(
         .collect()
 }
 
+// Presence detection intentionally groups channels to avoid advertising another browser
+// installation. Destructive actions must keep those channels separate instead.
+fn package_channel(name: &str, package: &PreparedPackage) -> &'static str {
+    let has = |token: &str| name.split_whitespace().any(|word| word == token);
+    match package.package.id {
+        "Mozilla.Firefox" if has("esr") || name.starts_with("firefoxesr") => "esr",
+        "Mozilla.Firefox" if has("nightly") => "nightly",
+        "Mozilla.Firefox" if has("developer") => "developer",
+        "Google.Chrome" if has("canary") => "canary",
+        "Google.Chrome" if has("dev") => "dev",
+        "Opera.Opera" if has("gx") => "gx",
+        "Microsoft.VisualStudioCode" if has("insiders") => "insiders",
+        "Microsoft.PowerShell"
+            if name
+                .split_whitespace()
+                .find(|word| word.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                .is_some_and(|word| word.parse::<u32>().is_ok_and(|version| version <= 5)) =>
+        {
+            "legacy"
+        }
+        _ if has("beta") => "beta",
+        _ if has("nightly") => "nightly",
+        _ if has("preview") => "preview",
+        _ if has("portable") => "portable",
+        _ => "stable",
+    }
+}
+
+fn uninstall_match(name: &str, package: &PreparedPackage) -> bool {
+    package_channel(name, package) == "stable" && family_identity_match(name, package)
+}
+
+fn family_identity_match(name: &str, package: &PreparedPackage) -> bool {
+    package.names.iter().any(|alias| {
+        // Typing aliases are useful for search, but names such as FF/terminal are
+        // insufficient evidence for a destructive action on a specific package.
+        if alias != &package.primary_name
+            && (alias.chars().count() <= 3
+                || matches!(alias.as_str(), "terminal" | "pwsh" | "gh desktop"))
+        {
+            return false;
+        }
+        let Some(suffix) = name.strip_prefix(alias) else {
+            return false;
+        };
+        if suffix.is_empty() {
+            return true;
+        }
+        if !suffix.starts_with(' ') && !suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        suffix.split_whitespace().all(|token| {
+            installed_suffix(package.package.id, token)
+                && (!token.chars().next().is_some_and(|c| c.is_ascii_digit())
+                    || token.chars().all(|c| c.is_ascii_digit()))
+        })
+    })
+}
+
+fn valid_registry_name(name: &str) -> bool {
+    !name.is_empty()
+        && name == name.trim()
+        && name.chars().count() <= 2048
+        && !name.chars().any(char::is_control)
+}
+
+fn removal_item(package: &Package) -> Item {
+    Item::new(
+        format!("uninstall:id:{}", package.id),
+        package.name,
+        format!(
+            "Désinstaller · {} · WinGet · Entrée pour désinstaller",
+            package.category
+        ),
+        "−",
+        Kind::Uninstall,
+        format!("id:{}", package.id),
+    )
+}
+
+fn named_removal_item(name: &str, category: &str) -> Item {
+    Item::new(
+        format!("uninstall:name:{name}"),
+        name,
+        format!("Désinstaller · {category} · WinGet · Entrée pour désinstaller"),
+        "−",
+        Kind::Uninstall,
+        format!("name:{name}"),
+    )
+}
+
+/// Build this list on the catalog worker. Unknown software requires an exact registry
+/// DisplayName: an arbitrary application shortcut or a similarly named file is insufficient.
+/// Pass the removable half of installed_inventory() for the registry names.
+pub fn removable_items(index: &[Item], installed_names: &[String]) -> Vec<Item> {
+    let app_names: Vec<String> = index
+        .iter()
+        .filter(|item| item.kind == Kind::Application)
+        .map(|item| normalize(&item.title))
+        .collect();
+    let registry: Vec<(&str, String)> = installed_names
+        .iter()
+        .filter(|name| valid_registry_name(name))
+        .map(|name| (name.as_str(), normalize(name)))
+        .collect();
+    let mut items = Vec::new();
+    let mut known = HashSet::new();
+    for package in prepared() {
+        let registered_stable = registry
+            .iter()
+            .any(|(_, name)| uninstall_match(name, package));
+        let registered_variant = registry.iter().any(|(_, name)| {
+            family_identity_match(name, package) && package_channel(name, package) != "stable"
+        });
+        // An ESR-only registry snapshot can still expose a shortcut simply called
+        // Firefox. Prefer its exact DisplayName over guessing the stable package ID.
+        if registered_stable
+            || (!registered_variant && app_names.iter().any(|name| uninstall_match(name, package)))
+        {
+            known.insert(package.package.id);
+            items.push(removal_item(package.package));
+        }
+    }
+    let mut names = HashSet::new();
+    for (original, normalized) in registry {
+        if prepared().iter().any(|package| {
+            known.contains(package.package.id) && uninstall_match(&normalized, package)
+        }) {
+            continue;
+        }
+        // Keep punctuation and version in the execution target. Only casing is ignored
+        // for duplicate registry views; C++, C# and C are different products.
+        if names.insert(original.to_lowercase()) {
+            let category = prepared()
+                .iter()
+                .find(|package| family_identity_match(&normalized, package))
+                .map_or("Logiciel installé", |package| package.package.category);
+            items.push(named_removal_item(original, category));
+        }
+    }
+    items.sort_by(|left, right| {
+        left.title
+            .to_lowercase()
+            .cmp(&right.title.to_lowercase())
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    items
+}
+
+/// The UI uses both snapshots so an application shortcut cannot reintroduce a
+/// catalog product whose registry entry forbids removal.
+pub fn removable_items_with_inventory(
+    index: &[Item],
+    all_names: &[String],
+    removable_names: &[String],
+) -> Vec<Item> {
+    removable_items(index, removable_names)
+        .into_iter()
+        .filter(|item| removal_is_allowed(&item.target, all_names, removable_names))
+        .collect()
+}
+
+/// Validate against a fresh worker/helper snapshot before executing WinGet. The
+/// target is a catalog ID or an exact DisplayName, never a search query.
+pub fn removal_is_allowed(target: &str, all_names: &[String], removable_names: &[String]) -> bool {
+    if let Some(name) = target.strip_prefix("name:") {
+        return valid_registry_name(name)
+            && removable_names
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(name));
+    }
+    let Some(id) = target.strip_prefix("id:") else {
+        return false;
+    };
+    let Some(package) = prepared()
+        .iter()
+        .find(|package| package.package.id.eq_ignore_ascii_case(id))
+    else {
+        return false;
+    };
+    let mut stable_registered = false;
+    let mut variant_registered = false;
+    for name in all_names {
+        let normalized = normalize(name);
+        if uninstall_match(&normalized, package) {
+            stable_registered = true;
+            // Any protected version blocks the shared ID, even if another version
+            // is eligible. Exact-name fallback must never weaken this restriction.
+            if !removable_names
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(name))
+            {
+                return false;
+            }
+        } else if family_identity_match(&normalized, package) {
+            variant_registered = true;
+        }
+    }
+    // No registry entry remains valid for UWP applications found in the app index.
+    // A registry containing only ESR/Canary must not be mistaken for the stable ID.
+    stable_registered || !variant_registered
+}
+
+fn version_name_match(left: &str, right: &str) -> bool {
+    let (shorter, longer) = if left.len() <= right.len() {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let Some(suffix) = longer.strip_prefix(shorter) else {
+        return false;
+    };
+    if suffix.is_empty() {
+        return true;
+    }
+    if !suffix.starts_with(' ') && !suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    suffix.split_whitespace().all(|token| {
+        installed_suffix("", token)
+            && !matches!(token, "preview" | "portable")
+            && (!token.chars().next().is_some_and(|c| c.is_ascii_digit())
+                || token.chars().all(|c| c.is_ascii_digit()))
+            || token.strip_prefix('v').is_some_and(|version| {
+                !version.is_empty() && version.chars().all(|c| c.is_ascii_digit())
+            })
+    })
+}
+
+/// Relate a completed removal to application shortcuts without matching files or other
+/// channels. This is temporary cache suppression, never an executable command.
+pub fn application_matches_removal(item: &Item, target: &str) -> bool {
+    if item.kind != Kind::Application {
+        return false;
+    }
+    let title = normalize(&item.title);
+    if let Some(id) = target.strip_prefix("id:") {
+        return prepared().iter().any(|package| {
+            package.package.id.eq_ignore_ascii_case(id) && uninstall_match(&title, package)
+        });
+    }
+    let Some(name) = target
+        .strip_prefix("name:")
+        .filter(|name| valid_registry_name(name))
+    else {
+        return false;
+    };
+    let name = normalize(name);
+    for package in prepared() {
+        if family_identity_match(&title, package) && family_identity_match(&name, package) {
+            return package_channel(&title, package) == package_channel(&name, package);
+        }
+    }
+    version_name_match(&title, &name)
+}
+
+fn valid_removal(item: &Item) -> bool {
+    if item.kind != Kind::Uninstall || !item.arguments.is_empty() {
+        return false;
+    }
+    if let Some(id) = item.target.strip_prefix("id:") {
+        return find(id).is_some();
+    }
+    item.target
+        .strip_prefix("name:")
+        .is_some_and(|name| valid_registry_name(name) && name == item.title)
+}
+
+fn named_relevance(name: &str, query: &str) -> Option<u32> {
+    if name == query {
+        return Some(1000);
+    }
+    if name.starts_with(query) {
+        return Some(850);
+    }
+    let tokens: Vec<_> = query.split_whitespace().collect();
+    (!tokens.is_empty()
+        && tokens.iter().all(|query_token| {
+            name.split_whitespace()
+                .any(|token| token.starts_with(query_token))
+        }))
+    .then_some(750)
+}
+
+fn removal_relevance(item: &Item, query: &str) -> Option<u32> {
+    let title = normalize(&item.title);
+    let named = named_relevance(&title, query);
+    let package = if let Some(id) = item.target.strip_prefix("id:") {
+        prepared()
+            .iter()
+            .find(|package| package.package.id.eq_ignore_ascii_case(id))
+    } else {
+        prepared()
+            .iter()
+            .find(|package| family_identity_match(&title, package))
+    };
+    match (named, package.and_then(|package| relevance(package, query))) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
+    }
+}
+
+fn ranked_removals(
+    removals: &[Item],
+    body: &str,
+    limit: usize,
+    weights: &HashMap<String, u32>,
+    explicit: bool,
+) -> Vec<Item> {
+    let normalized = normalize(body);
+    if normalized.is_empty() {
+        return removals
+            .iter()
+            .filter(|item| valid_removal(item))
+            .take(limit)
+            .cloned()
+            .collect();
+    }
+    let mut ordinary = core::rank_filtered(removals, body, limit, weights, valid_removal);
+    // Curated aliases such as npp/ff are intentionally searchable even if they are
+    // absent from the item title. No full app index is cloned here.
+    for item in removals.iter().filter(|item| valid_removal(item)) {
+        if removal_relevance(item, &normalized).is_some_and(|score| score >= 750)
+            && !ordinary.iter().any(|existing| existing.id == item.id)
+        {
+            ordinary.push(item.clone());
+        }
+    }
+    let mut scores: Vec<_> = ordinary
+        .into_iter()
+        .filter_map(|item| {
+            let score = removal_relevance(&item, &normalized).unwrap_or(0);
+            (explicit || score >= 750).then_some((score, item))
+        })
+        .collect();
+    scores.sort_by(|(left_score, left), (right_score, right)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    scores
+        .into_iter()
+        .take(limit)
+        .map(|(_, item)| item)
+        .collect()
+}
+
 fn relevance(package: &PreparedPackage, query: &str) -> Option<u32> {
     if query == package.identifier {
         return Some(1000);
@@ -571,7 +920,7 @@ pub fn search(
     let allowed_prefix = query
         .chars()
         .next()
-        .is_none_or(|character| !"/=?:.~!;>".contains(character));
+        .is_none_or(|character| !"/=?:.~!;>-".contains(character));
     let mut installs: Vec<(u32, &Package)> = if allowed_prefix {
         missing
             .iter()
@@ -609,6 +958,66 @@ pub fn search(
     strong
 }
 
+/// Search precomputed software actions. Launchable applications with a direct name or
+/// alias match lead; removal actions follow, then installation and fuzzy launch matches.
+/// '+' remains missing software, '-' is removal only, and '@' is launch only.
+pub fn search_with_removals(
+    index: &[Item],
+    missing: &[Item],
+    removals: &[Item],
+    query: &str,
+    limit: usize,
+    weights: &HashMap<String, u32>,
+) -> Vec<Item> {
+    let limit = limit.min(100);
+    if limit == 0 {
+        return Vec::new();
+    }
+    let query = query.trim();
+    if let Some(body) = query.strip_prefix('-') {
+        let body = body.trim();
+        if body.len() > 256 {
+            return Vec::new();
+        }
+        return ranked_removals(removals, body, limit, weights, true);
+    }
+    if query.starts_with(['+', '@'])
+        || query
+            .chars()
+            .next()
+            .is_some_and(|character| "/=?:.~!;>".contains(character))
+    {
+        return search(index, missing, query, limit, weights);
+    }
+    let normalized = normalize(query);
+    if normalized.chars().count() < 2 || normalized.len() > 256 {
+        return search(index, missing, query, limit, weights);
+    }
+    let ordinary = search(index, missing, query, limit.saturating_mul(2), weights);
+    let relevant_packages: Vec<_> = prepared()
+        .iter()
+        .filter(|package| relevance(package, &normalized).is_some_and(|score| score >= 850))
+        .collect();
+    let mut direct_apps = Vec::new();
+    let mut remaining = Vec::new();
+    for item in ordinary {
+        let direct = item.kind == Kind::Application
+            && (strongly_matches(&item.title, &normalized)
+                || relevant_packages
+                    .iter()
+                    .any(|package| installed_match(&normalize(&item.title), package)));
+        if direct {
+            direct_apps.push(item);
+        } else {
+            remaining.push(item);
+        }
+    }
+    direct_apps.extend(ranked_removals(removals, query, limit, weights, false));
+    direct_apps.extend(remaining);
+    direct_apps.truncate(limit);
+    direct_apps
+}
+
 #[cfg(test)]
 pub fn suggestions(
     index: &[Item],
@@ -627,19 +1036,76 @@ pub fn suggestions(
     )
 }
 
-/// Read only uninstall DisplayNames from both machine/user and 32/64-bit registry
-/// views. Called on the catalog worker, never in the typing path.
-pub fn installed_names() -> Vec<String> {
+/// One read-only traversal of machine/user and 32/64-bit registry views yields both
+/// presence and removal snapshots. The latter excludes NoRemove/SystemComponent.
+/// Called on the catalog worker/helper, never in the typing path.
+pub fn installed_inventory() -> (Vec<String>, Vec<String>) {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    inventory_from_roots(&[HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE])
+}
+
+/// Determine whether this exact removal target is installed for the machine. This
+/// read-only HKLM scan is performed when an action starts, never while typing.
+/// User-only, unknown, channel-mismatched and protected entries do not request elevation.
+pub fn removal_requires_elevation(target: &str) -> bool {
+    use windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE;
+    if !(target
+        .strip_prefix("name:")
+        .is_some_and(valid_registry_name)
+        || target
+            .strip_prefix("id:")
+            .is_some_and(|id| find(id).is_some()))
+    {
+        return false;
+    }
+    let (all_names, removable_names) = inventory_from_roots(&[HKEY_LOCAL_MACHINE]);
+    removal_requires_elevation_in_inventory(target, &all_names, &removable_names)
+}
+
+fn removal_requires_elevation_in_inventory(
+    target: &str,
+    machine_names: &[String],
+    machine_removable_names: &[String],
+) -> bool {
+    if !removal_is_allowed(target, machine_names, machine_removable_names) {
+        return false;
+    }
+    if target.starts_with("name:") {
+        // removal_is_allowed already requires an exact, eligible machine DisplayName.
+        return true;
+    }
+    let Some(id) = target.strip_prefix("id:") else {
+        return false;
+    };
+    let Some(package) = prepared()
+        .iter()
+        .find(|package| package.package.id.eq_ignore_ascii_case(id))
+    else {
+        return false;
+    };
+    // Unlike allowance for UWP/app-index targets, elevation requires positive evidence
+    // of the stable product in HKLM. An empty machine snapshot is never sufficient.
+    machine_removable_names
+        .iter()
+        .any(|name| uninstall_match(&normalize(name), package))
+}
+
+fn inventory_from_roots(
+    roots: &[windows_sys::Win32::System::Registry::HKEY],
+) -> (Vec<String>, Vec<String>) {
     use windows_sys::Win32::Foundation::{ERROR_NO_MORE_ITEMS, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
-        RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE,
-        KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_EXPAND_SZ, REG_SZ,
+        RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+        REG_EXPAND_SZ, REG_SZ,
     };
     let path = wide("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall");
     let display_name = wide("DisplayName");
     let mut names = Vec::new();
+    let mut removable = Vec::new();
     let mut seen = HashSet::new();
-    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+    let mut removable_seen = HashSet::new();
+    let mut blocked = HashSet::new();
+    for &root in roots {
         for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
             let mut key = std::ptr::null_mut();
             // SAFETY: all names/buffers remain valid for these synchronous, read-only calls.
@@ -651,7 +1117,8 @@ pub fn installed_names() -> Vec<String> {
             let key = RegistryKey(key);
             for index in 0..8192 {
                 if names.len() >= 4096 {
-                    return names;
+                    removable.retain(|name: &String| !blocked.contains(&name.to_lowercase()));
+                    return (names, removable);
                 }
                 let mut name = [0_u16; 256];
                 let mut name_length = name.len() as u32;
@@ -709,13 +1176,55 @@ pub fn installed_names() -> Vec<String> {
                 let text = String::from_utf16_lossy(&buffer[..length])
                     .trim()
                     .to_string();
-                if !text.is_empty() && seen.insert(normalize(&text)) {
+                if text.is_empty() {
+                    continue;
+                }
+                let cannot_remove = registry_removal_blocked(child.0, "SystemComponent")
+                    || registry_removal_blocked(child.0, "NoRemove");
+                if cannot_remove {
+                    blocked.insert(text.to_lowercase());
+                }
+                if !cannot_remove
+                    && valid_registry_name(&text)
+                    && removable_seen.insert(text.to_lowercase())
+                {
+                    removable.push(text.clone());
+                }
+                if seen.insert(text.to_lowercase()) {
                     names.push(text);
                 }
             }
         }
     }
-    names
+    removable.retain(|name| !blocked.contains(&name.to_lowercase()));
+    (names, removable)
+}
+
+fn registry_removal_blocked(key: windows_sys::Win32::System::Registry::HKEY, name: &str) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{RegQueryValueExW, REG_DWORD};
+    let name = wide(name);
+    let mut value = 0_u32;
+    let mut kind = 0;
+    let mut length = std::mem::size_of_val(&value) as u32;
+    // SAFETY: the read-only key is open and this DWORD buffer remains valid until return.
+    let result = unsafe {
+        RegQueryValueExW(
+            key,
+            name.as_ptr(),
+            std::ptr::null(),
+            &mut kind,
+            (&mut value as *mut u32).cast(),
+            &mut length,
+        )
+    };
+    if result == ERROR_FILE_NOT_FOUND {
+        return false;
+    }
+    result != ERROR_SUCCESS
+        || kind != REG_DWORD
+        || length as usize != std::mem::size_of_val(&value)
+        || value != 0
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -747,6 +1256,17 @@ mod tests {
     }
     fn results(index: &[Item], registry: &[String], query: &str) -> Vec<Item> {
         suggestions(index, registry, &HashSet::new(), query, 9, &HashMap::new())
+    }
+
+    fn managed_results(index: &[Item], registry: &[String], query: &str) -> Vec<Item> {
+        search_with_removals(
+            index,
+            &missing_items(index, registry, &HashSet::new()),
+            &removable_items(index, registry),
+            query,
+            20,
+            &HashMap::new(),
+        )
     }
 
     #[test]
@@ -893,5 +1413,343 @@ mod tests {
         assert!(results(&index, &[], "/Firefox")
             .iter()
             .all(|item| item.kind != Kind::Install));
+    }
+
+    #[test]
+    fn removal_targets_use_known_ids_or_exact_registry_names_only() {
+        let file = Item::new("file:firefox", "Firefox", "", "", Kind::File, "Firefox.txt");
+        assert!(removable_items(&[file, app("Acme Writer")], &[]).is_empty());
+        let removals = removable_items(
+            &[app("Firefox"), app("Firefox Private Browsing")],
+            &[
+                "Mozilla Firefox 145.0 (x64 fr)".into(),
+                "7-Zip 24.09 (x64 edition)".into(),
+                "Acme Writer 2.4 (x64)".into(),
+                "Acme Writer 2.4 (x64)".into(),
+                "Editor C++ \"Pro\" 2026".into(),
+            ],
+        );
+        assert_eq!(removals.len(), 4);
+        assert_eq!(
+            removals
+                .iter()
+                .filter(|item| item.target == "id:Mozilla.Firefox")
+                .count(),
+            1
+        );
+        assert!(removals.iter().any(|item| item.target == "id:7zip.7zip"));
+        assert!(removals
+            .iter()
+            .any(|item| item.target == "name:Acme Writer 2.4 (x64)"));
+        assert!(removals
+            .iter()
+            .any(|item| item.target == "name:Editor C++ \"Pro\" 2026"));
+        assert!(removals
+            .iter()
+            .all(|item| item.kind == Kind::Uninstall && item.arguments.is_empty()));
+    }
+
+    #[test]
+    fn removal_channels_are_not_mapped_to_the_stable_id() {
+        for (display, stable_id) in [
+            ("Mozilla Firefox ESR (x64 fr)", "Mozilla.Firefox"),
+            ("Google Chrome Canary", "Google.Chrome"),
+            (
+                "Microsoft Visual Studio Code Insiders",
+                "Microsoft.VisualStudioCode",
+            ),
+            ("Opera GX Stable 120.0", "Opera.Opera"),
+        ] {
+            let removals = removable_items(&[], &[display.into()]);
+            assert_eq!(removals.len(), 1);
+            assert_eq!(removals[0].target, format!("name:{display}"));
+            assert!(!application_matches_removal(
+                &app(display),
+                &format!("id:{stable_id}")
+            ));
+        }
+        let esr_only = removable_items(&[app("Firefox")], &["Firefox ESR".into()]);
+        assert_eq!(esr_only.len(), 1);
+        assert_eq!(esr_only[0].target, "name:Firefox ESR");
+        let both = removable_items(
+            &[app("Firefox"), app("Firefox ESR")],
+            &[
+                "Mozilla Firefox 145.0 (x64 fr)".into(),
+                "Mozilla Firefox ESR (x64 fr)".into(),
+            ],
+        );
+        assert_eq!(both.len(), 2);
+        assert!(both.iter().any(|item| item.target == "id:Mozilla.Firefox"));
+        assert!(both
+            .iter()
+            .any(|item| item.target == "name:Mozilla Firefox ESR (x64 fr)"));
+    }
+
+    #[test]
+    fn successful_removal_masks_only_its_app_identity() {
+        assert!(application_matches_removal(
+            &app("Firefox ESR"),
+            "name:Mozilla Firefox ESR (x64 fr)"
+        ));
+        assert!(!application_matches_removal(
+            &app("Firefox"),
+            "name:Mozilla Firefox ESR (x64 fr)"
+        ));
+        assert!(application_matches_removal(
+            &app("Firefox"),
+            "id:Mozilla.Firefox"
+        ));
+        assert!(!application_matches_removal(
+            &app("Firefox ESR"),
+            "id:Mozilla.Firefox"
+        ));
+        assert!(!application_matches_removal(
+            &app("Firefox Manager"),
+            "id:Mozilla.Firefox"
+        ));
+        assert!(!application_matches_removal(
+            &app("GitHub Desktop"),
+            "id:Git.Git"
+        ));
+        assert!(application_matches_removal(
+            &app("Acme Writer"),
+            "name:Acme Writer 2.4 (x64)"
+        ));
+        assert!(!application_matches_removal(
+            &app("Acme Writer Manager"),
+            "name:Acme Writer"
+        ));
+        assert!(!application_matches_removal(
+            &app("Editor C"),
+            "name:Editor C++"
+        ));
+        assert!(!application_matches_removal(
+            &app("Editor C"),
+            "name:Editor C#"
+        ));
+        let file = Item::new("file:acme", "Acme Writer", "", "", Kind::File, "acme.txt");
+        assert!(!application_matches_removal(&file, "name:Acme Writer"));
+    }
+
+    #[test]
+    fn launch_results_lead_removal_results_then_fuzzy_launches() {
+        let index = [app("Firefox"), app("Fire Fox Toolkit")];
+        let results = managed_results(&index, &[], "Firefox");
+        assert_eq!(results[0].title, "Firefox");
+        assert_eq!(results[0].kind, Kind::Application);
+        assert_eq!(results[1].target, "id:Mozilla.Firefox");
+        assert_eq!(results[1].kind, Kind::Uninstall);
+        assert_eq!(results[2].title, "Fire Fox Toolkit");
+        assert!(results.iter().all(|item| item.kind != Kind::File));
+        let registry_only = managed_results(
+            &[app("Acme Writer"), app("Ace More Writer")],
+            &["Acme Writer 2.4".into()],
+            "Acme",
+        );
+        assert_eq!(registry_only[0].kind, Kind::Application);
+        assert_eq!(registry_only[1].target, "name:Acme Writer 2.4");
+    }
+
+    #[test]
+    fn management_prefixes_keep_actions_separate_and_browse_removals() {
+        let index = [app("Firefox"), app("Notepad++")];
+        let registry = ["Acme Writer 2.4".into()];
+        for query in ["-", "- firefox", "- npp", "- Acme"] {
+            let result = managed_results(&index, &registry, query);
+            assert!(!result.is_empty());
+            assert!(result.iter().all(|item| item.kind == Kind::Uninstall));
+        }
+        assert!(managed_results(&index, &registry, "@ npp")
+            .iter()
+            .all(|item| item.kind == Kind::Application));
+        assert!(managed_results(&index, &registry, "+")
+            .iter()
+            .all(|item| item.kind == Kind::Install));
+        for query in [
+            "", "f", "/Firefox", "=Firefox", "?Firefox", ">Firefox", ";", ":Firefox",
+        ] {
+            assert!(managed_results(&index, &registry, query)
+                .iter()
+                .all(|item| item.kind != Kind::Uninstall));
+        }
+    }
+
+    #[test]
+    fn removal_queries_cannot_replace_the_cached_execution_target() {
+        let registry = ["Editor C++ \"Pro\" 2026".into()];
+        for query in ["- Editor", "- \"Editor\"", "Editor"] {
+            let result = managed_results(&[], &registry, query);
+            assert!(!result.is_empty());
+            assert_eq!(result[0].target, "name:Editor C++ \"Pro\" 2026");
+            assert!(result[0].arguments.is_empty());
+        }
+        let invalid = [
+            Item::new(
+                "fake:id",
+                "Firefox",
+                "",
+                "",
+                Kind::Uninstall,
+                "id:Mozilla.Firefox; calc.exe",
+            ),
+            Item::new(
+                "fake:name",
+                "Firefox",
+                "",
+                "",
+                Kind::Uninstall,
+                "name:Different Name",
+            ),
+            Item::new(
+                "fake:control",
+                "Firefox\ncalc.exe",
+                "",
+                "",
+                Kind::Uninstall,
+                "name:Firefox\ncalc.exe",
+            ),
+        ];
+        assert!(search_with_removals(&[], &[], &invalid, "-", 9, &HashMap::new()).is_empty());
+        assert!(removable_items(&[], &[String::new(), "Bad\nName".into()]).is_empty());
+    }
+
+    #[test]
+    fn protected_registered_products_cannot_reappear_through_app_shortcuts() {
+        let all = [
+            "Mozilla Firefox 145.0 (x64 fr)".into(),
+            "Acme Writer 2.4".into(),
+        ];
+        assert!(
+            removable_items_with_inventory(&[app("Firefox"), app("Acme Writer")], &all, &[])
+                .is_empty()
+        );
+        assert!(!removal_is_allowed("id:Mozilla.Firefox", &all, &[]));
+        assert!(!removal_is_allowed("name:Acme Writer 2.4", &all, &[]));
+        assert!(removal_is_allowed("name:Acme Writer 2.4", &all, &all));
+        let two_versions = [
+            "Mozilla Firefox 145.0".into(),
+            "Mozilla Firefox 144.0".into(),
+        ];
+        let only_one_removable = ["Mozilla Firefox 145.0".into()];
+        assert!(!removal_is_allowed(
+            "id:Mozilla.Firefox",
+            &two_versions,
+            &only_one_removable
+        ));
+        assert!(removal_is_allowed("id:Microsoft.WindowsTerminal", &[], &[]));
+        assert!(!removal_is_allowed("id:unknown.Package", &[], &[]));
+        assert!(!removal_is_allowed("name:arbitrary shortcut", &[], &[]));
+    }
+
+    #[test]
+    fn powershell_major_version_and_typing_aliases_are_not_ambiguous_identities() {
+        let modern = removable_items(&[], &["PowerShell 7.4.5.0 (x64)".into()]);
+        assert_eq!(modern[0].target, "id:Microsoft.PowerShell");
+        assert!(application_matches_removal(
+            &app("PowerShell 7"),
+            "name:PowerShell 7.4.5.0 (x64)"
+        ));
+        let legacy = removable_items(&[], &["PowerShell 5.1".into()]);
+        assert_eq!(legacy[0].target, "name:PowerShell 5.1");
+        assert!(!application_matches_removal(
+            &app("PowerShell 5.1"),
+            "id:Microsoft.PowerShell"
+        ));
+        assert!(removable_items(&[app("FF"), app("terminal"), app("NPP")], &[]).is_empty());
+        assert!(!application_matches_removal(&app("FF"), "name:Firefox"));
+    }
+
+    #[test]
+    fn elevation_requires_positive_eligible_machine_evidence() {
+        let machine = ["Google Chrome 145.0.1 (x64)".into()];
+        assert!(removal_requires_elevation_in_inventory(
+            "id:Google.Chrome",
+            &machine,
+            &machine
+        ));
+        // No machine entry means unknown or HKCU-only, even for a catalog ID.
+        assert!(!removal_requires_elevation_in_inventory(
+            "id:Google.Chrome",
+            &[],
+            &[]
+        ));
+        assert!(!removal_requires_elevation_in_inventory(
+            "id:Microsoft.WindowsTerminal",
+            &[],
+            &[]
+        ));
+        assert!(!removal_requires_elevation_in_inventory(
+            "id:Unknown.Package",
+            &machine,
+            &machine
+        ));
+        assert!(!removal_requires_elevation_in_inventory(
+            "Google Chrome",
+            &machine,
+            &machine
+        ));
+        assert!(!removal_requires_elevation_in_inventory(
+            "id:Google.Chrome",
+            &machine,
+            &[]
+        ));
+        let both_versions = [
+            "Google Chrome 145.0.1 (x64)".into(),
+            "Google Chrome 144.0.1 (x64)".into(),
+        ];
+        assert!(!removal_requires_elevation_in_inventory(
+            "id:Google.Chrome",
+            &both_versions,
+            &machine
+        ));
+    }
+
+    #[test]
+    fn elevation_uses_exact_display_names_and_separate_channels() {
+        let machine = [
+            "Google Chrome Canary".into(),
+            "Editor C++ \"Pro\" 2026".into(),
+        ];
+        assert!(!removal_requires_elevation_in_inventory(
+            "id:Google.Chrome",
+            &machine,
+            &machine
+        ));
+        assert!(removal_requires_elevation_in_inventory(
+            "name:Google Chrome Canary",
+            &machine,
+            &machine
+        ));
+        assert!(!removal_requires_elevation_in_inventory(
+            "name:Google Chrome",
+            &machine,
+            &machine
+        ));
+        assert!(removal_requires_elevation_in_inventory(
+            "name:Editor C++ \"Pro\" 2026",
+            &machine,
+            &machine
+        ));
+        assert!(!removal_requires_elevation_in_inventory(
+            "name:Editor C",
+            &machine,
+            &machine
+        ));
+        assert!(!removal_requires_elevation_in_inventory(
+            "name:Editor C++ \"Pro\" 2026",
+            &machine,
+            &[]
+        ));
+        assert!(!removal_requires_elevation_in_inventory(
+            "name:Editor C++ \"Pro\" 2026",
+            &[],
+            &[]
+        ));
+        let studio = ["Microsoft Visual Studio Code Insiders".into()];
+        assert!(!removal_requires_elevation_in_inventory(
+            "id:Microsoft.VisualStudioCode",
+            &studio,
+            &studio
+        ));
     }
 }
