@@ -8,7 +8,7 @@ Windows 10 et 11, x64. L'exécutable autonome fait **environ 1,3 Mio** ; sa tail
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 129 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
+Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 137 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
 
 ## Utiliser
 
@@ -22,7 +22,9 @@ Les validations répétées de la même application sont regroupées pendant ces
 
 ![Confirmation de lancement](docs/launch.png)
 
-Les pictogrammes des résultats sont centrés dans leurs pastilles. Les icônes Windows utilisent la police système Segoe MDL2 Assets, sans fichier de police ni paquet d’icônes supplémentaire.
+Les applications installées affichent leurs **véritables icônes Windows**, extraites des exécutables, des raccourcis du menu Démarrer et des applications du Microsoft Store. Elles sont centrées dans leurs pastilles et adaptées à la résolution de l'écran. Leur chargement s'effectue en arrière-plan pour les résultats visibles ; un cache en mémoire limité à 256 icônes évite de les recharger pendant la frappe. **F5** actualise aussi ces icônes. Aucun logo n'est téléchargé, et aucun paquet d'icônes supplémentaire n'est nécessaire.
+
+Si Windows ne fournit pas d'icône, le pictogramme générique reste visible. Les actions **Installer** et **Désinstaller** conservent leurs pictogrammes distincts ; un logiciel absent n'a pas nécessairement de ressource d'icône sur l'ordinateur. Les autres pictogrammes utilisent les polices système Segoe MDL2 Assets et Segoe UI Symbol.
 
 La recherche sans préfixe recherche les **applications** : `edge` affiche d'abord les applications correspondantes, puis leur action **« Désinstaller »**. Un logiciel du catalogue intégré qui n'est pas installé apparaît avec le sous-titre **« Installer »**. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` limite la recherche aux applications à lancer ; `+` affiche uniquement les logiciels à installer et `-` ceux à désinstaller. Le menu d'accueil comporte aussi les entrées **Installer** et **Désinstaller**.
 

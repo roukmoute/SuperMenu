@@ -1,6 +1,6 @@
 use crate::{
-    catalog, config, core, installer, launch_feedback, native, packages, timer, timer_alert,
-    timer_runtime,
+    app_icons, catalog, config, core, installer, launch_feedback, native, packages, timer,
+    timer_alert, timer_runtime,
 };
 use core::{Item, Kind};
 use std::cell::{Cell, RefCell};
@@ -25,6 +25,7 @@ const INDEX: u32 = WM_APP + 2;
 const REFRESH: u32 = WM_APP + 3;
 const TRAY: u32 = WM_APP + 4;
 const LAUNCH_DONE: u32 = WM_APP + 6;
+const ICONS_READY: u32 = WM_APP + 8;
 const TIMER_TICK: usize = 43;
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
@@ -116,6 +117,7 @@ struct State {
     fonts: [HFONT; 6],
     edit_bg: HBRUSH,
     icon: HICON,
+    app_icons: Option<app_icons::IconCache>,
     hotkey: Option<native::Hotkey>,
     watcher: Option<native::Watcher>,
     dpi: i32,
@@ -298,7 +300,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 GetLastError()
             ));
         }
-        let settings = config::load();
+        let mut settings = config::load();
+        if smoke {
+            if let Some(theme) = args
+                .iter()
+                .position(|argument| argument == "--smoke-theme")
+                .and_then(|position| args.get(position + 1))
+                .filter(|theme| matches!(theme.as_str(), "dark" | "light"))
+            {
+                settings.theme = theme.clone();
+            }
+        }
         let cache = Vec::new();
         let usage = catalog::Usage::new();
         let weights = usage.snapshot_for(&cache);
@@ -342,6 +354,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             fonts: [null_mut(); 6],
             edit_bg: null_mut(),
             icon,
+            app_icons: None,
             hotkey: None,
             watcher: None,
             dpi: 96,
@@ -376,6 +389,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         let mut state = state_cell.borrow_mut();
         state.hwnd = hwnd;
+        state.app_icons = app_icons::IconCache::new(hwnd, ICONS_READY).ok();
         state.feedback = launch_feedback::LaunchFeedback::new().ok();
         timer_runtime::bind(&state.timers, hwnd);
         let dark: i32 = if state.settings.theme == "light" {
@@ -472,6 +486,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                         "index_items":items.len(),"applications":items.iter().filter(|i|i.kind==Kind::Application).count(),
                         "files":items.iter().filter(|i|matches!(i.kind,Kind::File|Kind::Folder)).count(),
                         "visible_results":state.items.len(),"indexing_finished":!state.indexing.load(Ordering::Relaxed),
+                        "application_icons_loaded":state.app_icons.as_ref().map_or(0, app_icons::IconCache::loaded_count),
                         "timer_count":state.timers.borrow().book.snapshots(Instant::now()).len(),
                         "timer_alert_visible":state.timers.borrow().alert_visible(),
                         "timer_alert_hwnd":state.timers.borrow().alert_hwnd() as usize,
@@ -484,6 +499,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         state.hotkey.take();
         state.watcher.take();
         state.feedback.take();
+        state.app_icons.take();
         state.timers.borrow_mut().shutdown();
         timer_runtime::unbind();
         KillTimer(hwnd, TIMER_TICK);
@@ -536,6 +552,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             DEFERRED_REMOVE.with(|d| d.borrow_mut().push((wp, lp)));
         } else if msg == LAUNCH_DONE {
             DEFERRED.with(|d| d.set(d.get() | 4));
+        } else if msg == ICONS_READY {
+            DEFERRED.with(|d| d.set(d.get() | 16));
         } else if msg == WM_TIMER && wp == TIMER_TICK {
             DEFERRED.with(|d| d.set(d.get() | 8));
         } else if msg == timer_alert::WM_TIMER_ALERT_DISMISSED {
@@ -546,6 +564,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
     };
     let s = &mut *borrowed;
     match msg {
+        ICONS_READY => {
+            let changed = s.app_icons.as_mut().is_some_and(|icons| icons.drain());
+            request_result_icons(s);
+            if changed {
+                InvalidateRect(hwnd, null(), 0);
+            }
+            0
+        }
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
             let dc = BeginPaint(hwnd, &mut ps);
@@ -646,10 +672,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
             layout_edit(s);
+            request_result_icons(s);
             0
         }
         WM_SIZE => {
             layout_edit(s);
+            request_result_icons(s);
             0
         }
         WM_CLIPBOARDUPDATE => {
@@ -740,6 +768,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             if let Some(id) = s.installations.finish(wp, success) {
                 if let Some(package) = packages::find(&id) {
                     if success {
+                        if let Some(icons) = s.app_icons.as_mut() {
+                            icons.clear();
+                        }
                         s.missing_packages.retain(|item| item.target != package.id);
                         clear_removal_for_install(
                             &mut s.removals,
@@ -759,6 +790,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             let success = lp == 0;
             if let Some(target) = s.removals.finish(wp, success) {
                 if success {
+                    if let Some(icons) = s.app_icons.as_mut() {
+                        icons.clear();
+                    }
                     s.removal_refresh_after
                         .insert(target.clone(), s.index_generation.saturating_add(1));
                     s.removable_packages.retain(|item| item.target != target);
@@ -819,7 +853,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                         show(s);
                         settings(s);
                     }
-                    3 => reindex(s),
+                    3 => refresh_index_and_icons(s),
                     5 => {
                         show(s);
                         set_query(s, "minuteur ");
@@ -873,6 +907,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             0
         }
         WM_DESTROY => {
+            s.app_icons.take();
             KillTimer(hwnd, 1);
             KillTimer(hwnd, 99);
             KillTimer(hwnd, TIMER_TICK);
@@ -966,7 +1001,7 @@ unsafe fn key(s: &mut State, key: u32) {
             }
         }
         VK_TAB => set_query(s, ";"),
-        VK_F5 => reindex(s),
+        VK_F5 => refresh_index_and_icons(s),
         VK_F1 => {
             s.settings_open = true;
             MessageBoxW(s.hwnd,wide("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer / désinstaller\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications, installation ou désinstallation\n@ applications à lancer    + installer    - désinstaller\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\nminuteur 5m Thé · timer 90s : compte à rebours\n\nInstaller : Entrée ouvre la progression WinGet.\nDésinstaller : une confirmation, puis désinstallation et nettoyage automatique.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.").as_ptr(),wide("Super Menu · Aide").as_ptr(),MB_OK);
@@ -983,6 +1018,7 @@ unsafe fn select(s: &mut State, delta: i32) {
         return;
     }
     s.selected = (s.selected as i32 + delta).rem_euclid(s.items.len() as i32) as usize;
+    request_result_icons(s);
     InvalidateRect(s.hwnd, null(), 0);
 }
 unsafe fn set_query(s: &mut State, text: &str) {
@@ -1298,7 +1334,25 @@ unsafe fn update_results(s: &mut State) {
     }
     s.selected = 0;
     s.timing = format!("{:.1} ms", start.elapsed().as_secs_f64() * 1000.);
+    request_result_icons(s);
     InvalidateRect(s.hwnd, null(), 0);
+}
+
+fn application_icon_size(dpi: i32) -> u32 {
+    (24 * dpi / 96).clamp(16, 128) as u32
+}
+
+// Only schedule visible applications. Extraction and COM stay on the icon worker.
+fn request_result_icons(s: &mut State) {
+    let size = application_icon_size(s.dpi);
+    let offset = s.selected.saturating_sub(s.visible_rows.saturating_sub(1));
+    if let Some(icons) = s.app_icons.as_mut() {
+        for item in s.items.iter().skip(offset).take(s.visible_rows) {
+            if item.kind == Kind::Application {
+                icons.request(&item.target, size);
+            }
+        }
+    }
 }
 
 fn search_catalog(
@@ -1967,6 +2021,15 @@ unsafe fn copy_text(hwnd: HWND, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+unsafe fn refresh_index_and_icons(s: &mut State) {
+    if let Some(icons) = s.app_icons.as_mut() {
+        icons.clear();
+    }
+    reindex(s);
+    request_result_icons(s);
+    InvalidateRect(s.hwnd, null(), 0);
+}
+
 unsafe fn reindex(s: &mut State) {
     if s.indexing.swap(true, Ordering::AcqRel) {
         s.pending_refresh = true;
@@ -2074,6 +2137,7 @@ unsafe fn place(s: &mut State) {
         rebuild_fonts(s);
     }
     layout_edit(s);
+    request_result_icons(s);
 }
 unsafe fn layout_edit(s: &State) {
     if s.edit.is_null() {
@@ -2176,6 +2240,21 @@ unsafe fn text(
 // Windows private-use glyphs belong to the system icon font, not the Unicode
 // symbol font. Reuse both cached fonts and center in the exact tile rectangle.
 unsafe fn result_icon(dc: HDC, s: &State, item: &Item, mut bounds: RECT) {
+    if item.kind == Kind::Application {
+        let size = application_icon_size(s.dpi);
+        if let Some(icon) = s
+            .app_icons
+            .as_ref()
+            .and_then(|icons| icons.get(&item.target, size))
+        {
+            let pixels = size as i32;
+            let x = bounds.left + (bounds.right - bounds.left - pixels) / 2;
+            let y = bounds.top + (bounds.bottom - bounds.top - pixels) / 2;
+            if DrawIconEx(dc, x, y, icon, pixels, pixels, 0, null_mut(), DI_NORMAL) != 0 {
+                return;
+            }
+        }
+    }
     let glyph = match item.kind {
         Kind::Install => "\u{E896}",   // Download
         Kind::Uninstall => "\u{E74D}", // Delete
@@ -2795,6 +2874,9 @@ unsafe fn replay_deferred(hwnd: HWND) {
     }
     if deferred & 8 != 0 {
         PostMessageW(hwnd, WM_TIMER, TIMER_TICK, 0);
+    }
+    if deferred & 16 != 0 {
+        PostMessageW(hwnd, ICONS_READY, 0, 0);
     }
     DEFERRED_TIMER_ACK.with(|d| {
         for generation in d.borrow_mut().drain(..) {
