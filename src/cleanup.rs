@@ -1354,7 +1354,9 @@ fn value_text(value_type: u32, bytes: &[u8]) -> Option<String> {
         return None;
     }
     let utf16: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     let end = utf16
