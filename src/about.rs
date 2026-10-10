@@ -1169,6 +1169,7 @@ unsafe fn draw(hwnd: HWND, dc: HDC, state: &State) {
 
 unsafe fn draw_button(state: &State, button: &DRAWITEMSTRUCT) {
     let mut bounds = button.rcItem;
+    FillRect(button.hDC, &bounds, state.brushes[0]);
     let pressed = button.itemState & ODS_SELECTED != 0;
     rounded(
         button.hDC,
