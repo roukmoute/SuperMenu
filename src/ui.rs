@@ -857,30 +857,50 @@ unsafe fn update_results(s: &mut State) {
             )
         }
         _ => {
-            s.section = match prefix {
-                '@' => "APPLICATIONS",
-                '/' => "FICHIERS",
-                _ => "RÉSULTATS",
+            s.section = if prefix == '/' {
+                "FICHIERS"
+            } else {
+                "APPLICATIONS"
             }
             .into();
             let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
-            if prefix == '@' || prefix == '/' {
-                core::rank_filtered(&index, body, limit, weights, |i| {
-                    if prefix == '@' {
-                        i.kind == Kind::Application
-                    } else {
-                        matches!(i.kind, Kind::File | Kind::Folder)
-                    }
-                })
-            } else {
-                core::rank(&index, body, limit, weights)
-            }
+            search_catalog(&index, trimmed, limit, weights)
         }
     };
     s.selected = 0;
     s.timing = format!("{:.1} ms", start.elapsed().as_secs_f64() * 1000.);
     InvalidateRect(s.hwnd, null(), 0);
 }
+
+fn search_catalog(
+    index: &[Item],
+    query: &str,
+    limit: usize,
+    weights: &HashMap<String, u32>,
+) -> Vec<Item> {
+    let query = query.trim();
+    let files = query.starts_with('/');
+    let body = query.strip_prefix(['@', '/']).unwrap_or(query).trim();
+    core::rank_filtered(index, body, limit, weights, |item| {
+        if files {
+            matches!(item.kind, Kind::File | Kind::Folder)
+        } else {
+            item.kind == Kind::Application
+        }
+    })
+}
+
+fn active_tab(query: &str) -> &'static str {
+    match query.trim().chars().next() {
+        None => "Accueil",
+        Some('/') => "Fichiers",
+        Some('?') => "Web",
+        Some(';') => "Modules  ;",
+        Some('=' | '>' | ':' | '.' | '~' | '!') => "",
+        _ => "Applications",
+    }
+}
+
 fn system_items() -> Vec<Item> {
     [
         (
@@ -1360,7 +1380,7 @@ unsafe fn paint(s: &State, dc: HDC) {
         true,
     );
     for (label, x, width) in [
-        ("Tout", 28, 48),
+        ("Accueil", 28, 48),
         ("Applications", 89, 117),
         ("Fichiers", 224, 77),
         ("Web", 322, 48),
@@ -1369,11 +1389,7 @@ unsafe fn paint(s: &State, dc: HDC) {
         text(
             dc,
             s.fonts[2],
-            if (label == "Tout" && !s.query.starts_with(['@', '/', '?']))
-                || (label == "Applications" && s.query.starts_with('@'))
-                || (label == "Fichiers" && s.query.starts_with('/'))
-                || (label == "Web" && s.query.starts_with('?'))
-            {
+            if label == active_tab(&s.query) {
                 s.palette.accent
             } else {
                 s.palette.muted
@@ -1695,6 +1711,24 @@ unsafe fn smoke_checks(s: &mut State) {
     s.checks.push((
         "applications".into(),
         !s.items.is_empty() && s.items.iter().all(|i| i.kind == Kind::Application),
+    ));
+    let app_query = s
+        .items
+        .first()
+        .map(|item| item.title.clone())
+        .unwrap_or_default();
+    set_query(s, &app_query);
+    s.checks.push((
+        "default_applications".into(),
+        !s.items.is_empty() && s.items.iter().all(|i| i.kind == Kind::Application),
+    ));
+    set_query(s, "/ ");
+    s.checks.push((
+        "explicit_files".into(),
+        !s.items.is_empty()
+            && s.items
+                .iter()
+                .all(|i| matches!(i.kind, Kind::File | Kind::Folder)),
     ));
     set_query(s, "= (12 + 8) * 3");
     s.checks.push((
@@ -2100,6 +2134,80 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn index_search_defaults_to_applications_and_files_require_prefix() {
+        let index = vec![
+            Item::new(
+                "app",
+                "Microsoft Edge",
+                "Application Windows",
+                "",
+                Kind::Application,
+                "edge.exe",
+            ),
+            Item::new(
+                "file",
+                "Edge",
+                "C:\\Documents\\Edge",
+                "",
+                Kind::File,
+                "file",
+            ),
+            Item::new(
+                "folder",
+                "EdgeDrop",
+                "C:\\Documents\\EdgeDrop",
+                "",
+                Kind::Folder,
+                "folder",
+            ),
+            Item::new(
+                "notes",
+                "notes.txt",
+                "C:\\Documents\\EdgeDrop\\notes.txt",
+                "",
+                Kind::File,
+                "notes",
+            ),
+        ];
+        let weights = HashMap::from([("file".into(), u32::MAX)]);
+        for query in ["edge", "  EDGE  ", "@ edge"] {
+            let hits = search_catalog(&index, query, 1, &weights);
+            assert_eq!(hits.len(), 1, "query: {query}");
+            assert_eq!(hits[0].id, "app", "query: {query}");
+        }
+        assert!(search_catalog(&index, "edgedrop", 9, &weights).is_empty());
+        for query in ["/ edge", " / edge ", "/", "/ edgedrop"] {
+            let hits = search_catalog(&index, query, 9, &weights);
+            assert!(!hits.is_empty(), "query: {query}");
+            assert!(hits
+                .iter()
+                .all(|i| matches!(i.kind, Kind::File | Kind::Folder)));
+            assert!(hits.iter().any(|i| i.id == "folder"));
+            assert!(hits.iter().any(|i| i.id == "notes"));
+        }
+        let mut restored: Vec<Item> =
+            serde_json::from_str(&serde_json::to_string(&index).unwrap()).unwrap();
+        restored.iter_mut().for_each(Item::prepare);
+        assert_eq!(search_catalog(&restored, "edge", 1, &weights)[0].id, "app");
+    }
+
+    #[test]
+    fn tabs_match_default_apps_and_trimmed_prefixes() {
+        for (query, expected) in [
+            ("", "Accueil"),
+            ("   ", "Accueil"),
+            ("edge", "Applications"),
+            (" @ edge", "Applications"),
+            (" / edge", "Fichiers"),
+            (" ? edge", "Web"),
+            (" ;", "Modules  ;"),
+            ("= 1+1", ""),
+        ] {
+            assert_eq!(active_tab(query), expected, "query: {query}");
+        }
+    }
+
     thread_local! { static EDIT_CHANGES: Cell<usize> = const { Cell::new(0) }; }
 
     unsafe extern "system" fn edit_test_parent(

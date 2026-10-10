@@ -8,7 +8,7 @@ Windows 10 et 11, x64. L'exécutable autonome fait **moins de 1 Mio** ; sa taill
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 25 Mio de mémoire privée et 54 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,57 ms (p95 2,23 ms) pour le classement en mémoire, et 0,90 ms (p95 2,79 ms) pour les fichiers. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 24 tests automatisés et les 8 contrôles du menu natif passent.
+Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 25 Mio de mémoire privée et 54 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,57 ms (p95 2,23 ms) pour le classement en mémoire, et 0,90 ms (p95 2,79 ms) pour les fichiers. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 26 tests automatisés et les 10 contrôles du menu natif passent.
 
 ## Utiliser
 
@@ -16,13 +16,15 @@ Télécharger l'archive depuis les [releases](https://github.com/roukmoute/Super
 
 Seul `supermenu.exe` est nécessaire pour utiliser l'application. Les autres fichiers de l'archive sont la documentation, la licence, un rapport de performances et un exemple de configuration. **Ctrl + Retour arrière** supprime le mot précédent ou la sélection dans la recherche ; **Ctrl + Z** annule cette suppression.
 
+La recherche sans préfixe est réservée aux **applications** : `edge` affiche les applications correspondantes. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` reste un alias facultatif pour les applications. L'onglet « Accueil » revient au menu des fournisseurs.
+
 Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu lui donne la priorité lorsqu'il fonctionne. Choisir un autre raccourci dans les réglages si ce changement de langue doit rester accessible. Le fichier JSON permet aussi un raccourci personnalisé, par exemple `Ctrl+Alt+Space`.
 
 | Saisie | Fournisseur |
 | --- | --- |
-| `firefox` | Applications et résultats correspondants |
+| `firefox` | Applications uniquement, recherche par défaut |
 | `;` | Menu des fournisseurs |
-| `@` | Applications |
+| `@` | Applications, alias facultatif |
 | `/` | Fichiers et dossiers indexés |
 | `= (15 + 5) * 3` | Calculatrice locale |
 | `? rust windows` | Recherche Web dans le navigateur par défaut |
