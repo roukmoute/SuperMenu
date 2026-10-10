@@ -22,6 +22,8 @@ Les validations répétées de la même application sont regroupées pendant ces
 
 ![Confirmation de lancement](docs/launch.png)
 
+Les pictogrammes des résultats sont centrés dans leurs pastilles. Les icônes Windows utilisent la police système Segoe MDL2 Assets, sans fichier de police ni paquet d’icônes supplémentaire.
+
 La recherche sans préfixe recherche les **applications** : `edge` affiche d'abord les applications correspondantes, puis leur action **« Désinstaller »**. Un logiciel du catalogue intégré qui n'est pas installé apparaît avec le sous-titre **« Installer »**. Les fichiers et dossiers se recherchent explicitement avec `/`, par exemple `/ edge`. `@` limite la recherche aux applications à lancer ; `+` affiche uniquement les logiciels à installer et `-` ceux à désinstaller. Le menu d'accueil comporte aussi les entrées **Installer** et **Désinstaller**.
 
 Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu lui donne la priorité lorsqu'il fonctionne. Choisir un autre raccourci dans les réglages si ce changement de langue doit rester accessible. Le fichier JSON permet aussi un raccourci personnalisé, par exemple `Ctrl+Alt+Space`.

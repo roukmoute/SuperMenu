@@ -105,7 +105,7 @@ struct State {
     section: String,
     timing: String,
     status: String,
-    fonts: [HFONT; 5],
+    fonts: [HFONT; 6],
     edit_bg: HBRUSH,
     icon: HICON,
     hotkey: Option<native::Hotkey>,
@@ -325,7 +325,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             section: "EXPLORER".into(),
             timing: String::new(),
             status: "Index local".into(),
-            fonts: [null_mut(); 5],
+            fonts: [null_mut(); 6],
             edit_bg: null_mut(),
             icon,
             hotkey: None,
@@ -1736,9 +1736,16 @@ unsafe fn rebuild_fonts(s: &mut State) {
             DeleteObject(font);
         }
     }
-    for (i, (size, weight)) in [(20, 400), (15, 400), (11, 400), (11, 600), (20, 400)]
-        .into_iter()
-        .enumerate()
+    for (i, (size, weight)) in [
+        (20, 400),
+        (15, 400),
+        (11, 400),
+        (11, 600),
+        (20, 400),
+        (18, 400),
+    ]
+    .into_iter()
+    .enumerate()
     {
         s.fonts[i] = CreateFontW(
             -size * s.dpi / 96,
@@ -1754,10 +1761,10 @@ unsafe fn rebuild_fonts(s: &mut State) {
             CLIP_DEFAULT_PRECIS as u32,
             CLEARTYPE_QUALITY as u32,
             DEFAULT_PITCH as u32,
-            wide(if i == 4 {
-                "Segoe UI Symbol"
-            } else {
-                "Segoe UI"
+            wide(match i {
+                4 => "Segoe UI Symbol",
+                5 => "Segoe MDL2 Assets",
+                _ => "Segoe UI",
             })
             .as_ptr(),
         );
@@ -1803,6 +1810,34 @@ unsafe fn text(
             | DT_END_ELLIPSIS
             | DT_NOPREFIX
             | if right { DT_RIGHT } else { DT_LEFT },
+    );
+    SelectObject(dc, old);
+}
+// Windows private-use glyphs belong to the system icon font, not the Unicode
+// symbol font. Reuse both cached fonts and center in the exact tile rectangle.
+unsafe fn result_icon(dc: HDC, s: &State, item: &Item, mut bounds: RECT) {
+    let glyph = match item.kind {
+        Kind::Install => "\u{E896}",   // Download
+        Kind::Uninstall => "\u{E74D}", // Delete
+        Kind::Navigation if item.target.trim() == "+" => "\u{E896}",
+        Kind::Navigation if item.target.trim() == "-" => "\u{E74D}",
+        _ => &item.glyph,
+    };
+    let mut characters = glyph.chars();
+    let is_windows_icon = characters
+        .next()
+        .is_some_and(|character| ('\u{E000}'..='\u{F8FF}').contains(&character))
+        && characters.next().is_none();
+    let old = SelectObject(dc, s.fonts[if is_windows_icon { 5 } else { 4 }]);
+    SetTextColor(dc, s.palette.accent);
+    SetBkMode(dc, TRANSPARENT as i32);
+    let glyph = wide(glyph);
+    DrawTextW(
+        dc,
+        glyph.as_ptr(),
+        -1,
+        &mut bounds,
+        DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX,
     );
     SelectObject(dc, old);
 }
@@ -1995,16 +2030,16 @@ unsafe fn paint(s: &State, dc: HDC) {
             scale(31),
             scale(10),
         );
-        text(
+        result_icon(
             dc,
-            s.fonts[4],
-            s.palette.accent,
-            &item.glyph,
-            scale(43),
-            scale(y + 8),
-            scale(23),
-            scale(30),
-            false,
+            s,
+            item,
+            RECT {
+                left: scale(36),
+                top: scale(y + 8),
+                right: scale(36) + scale(31),
+                bottom: scale(y + 8) + scale(31),
+            },
         );
         text(
             dc,
