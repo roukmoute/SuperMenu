@@ -2,7 +2,7 @@
 //! French source text is the built-in fallback. No HTTP client or async runtime is bundled.
 
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -51,11 +51,12 @@ impl LanguagePack {
         }
     }
 
+    fn text<'a>(&'a self, source: &'a str) -> &'a str {
+        self.messages.get(source).map_or(source, String::as_str)
+    }
+
     fn translate(&self, source: &str) -> String {
-        self.messages
-            .get(source)
-            .cloned()
-            .unwrap_or_else(|| source.to_string())
+        self.text(source).to_string()
     }
 }
 
@@ -92,7 +93,12 @@ pub fn tr(source: &str) -> String {
 
 /// Replace named placeholders once; a replacement is literal text, never another template.
 pub fn fmt(source: &str, values: &[(&str, String)]) -> String {
-    substitute(&tr(source), values)
+    // Keep the pack borrowed during formatting: cloning the template would allocate
+    // a second String for every translated status message and result subtitle.
+    active_pack()
+        .read()
+        .map(|pack| substitute(pack.text(source), values))
+        .unwrap_or_else(|_| substitute(source, values))
 }
 
 fn substitute(template: &str, values: &[(&str, String)]) -> String {
@@ -286,11 +292,11 @@ fn tokens(template: &str) -> impl Iterator<Item = (usize, usize, &str)> {
     })
 }
 
-fn placeholders(template: &str) -> BTreeMap<&str, usize> {
-    let mut placeholders = BTreeMap::new();
-    for (_, _, name) in tokens(template) {
-        *placeholders.entry(name).or_insert(0) += 1;
-    }
+fn placeholders(template: &str) -> Vec<&str> {
+    // Sorted names retain duplicate occurrences, so equality checks both names
+    // and counts without allocating a tree node for each distinct placeholder.
+    let mut placeholders: Vec<_> = tokens(template).map(|(_, _, name)| name).collect();
+    placeholders.sort_unstable();
     placeholders
 }
 
@@ -594,7 +600,7 @@ mod tests {
         assert_eq!(placeholders("{a}: {b} {a}"), placeholders("{b}: {a}/{a}"));
         assert_eq!(
             placeholders("Literal { } or JSON {\"a\":1}"),
-            BTreeMap::new()
+            Vec::<&str>::new()
         );
     }
 

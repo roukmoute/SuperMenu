@@ -4,11 +4,13 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. L'exécutable autonome fait **environ 1,4 Mio** ; sa taille exacte varie légèrement selon la version du compilateur.
+Windows 10 et 11, x64. Le binaire mesuré de la version **0.6.1** fait **1 154 560 octets (1,10 Mio)**, soit **27,8 % de moins** que la version précédente reconstruite avec le même compilateur. Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances](PERFORMANCE.md) précise la méthode et les compromis.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 165 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
+Les clés de recherche sont préparées pendant l'indexation ; la frappe filtre les candidats et sélectionne les meilleurs résultats sans trier tout le catalogue. Le menu garde ses fournisseurs fixes et ses textes traduits en mémoire, et réutilise sa mémoire de conversion UTF-16 ainsi que les ressources de dessin Windows. La restauration du cache utilise une vue de fichier en lecture seule ; sa sauvegarde écrit les éléments empruntés sans recopier l'index complet. Les mesures reproductibles du moteur, du cache et du menu sont décrites dans le [guide de tests](TESTING.md#mesurer-les-performances).
+
+Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **174 tests Rust**, le benchmark de cache facultatif et les **755 assertions Windows** passent.
 
 ## Langues
 
@@ -143,8 +145,11 @@ cargo run --release --locked
 cargo run --release --locked -- --benchmark
 cargo run --release --locked -- --smoke-test --report smoke.json --snapshot menu.bmp
 cargo run --release --locked -- --smoke-test --launch-feedback-test --report feedback.json
+.\scripts\measure-performance.ps1 -Executable .\target\release\supermenu.exe -Report .\artifacts\performance.json
 ```
 
 Le benchmark mesure le moteur de recherche sur des catalogues de test ; ses résultats dépendent de la machine et ne constituent pas une garantie de latence du raccourci ou du disque. `--smoke-test` ouvre brièvement le menu pour vérifier son démarrage et peut exporter un rapport ainsi qu'une capture BMP du menu. Avec `--launch-feedback-test`, il simule un lancement lent pour vérifier le pop-in et la réponse asynchrone sans ouvrir d'autre application. `--smoke-timeout-ms 120000`, uniquement avec `--smoke-test`, prolonge le diagnostic jusqu'à deux minutes (maximum cinq minutes), utile pour observer une opération longue. `--background` démarre sans afficher le menu, utile avec un raccourci placé dans `shell:startup`.
+
+`measure-performance.ps1` mesure séparément le premier dessin du menu, sa mémoire, le dessin seul et la recherche suivie du dessin, sur une fixture isolée. Son rapport indique le binaire exact, les échantillons, les médianes et les p95. Ces mesures incluent les échanges Win32 entre processus et un dessin hors écran ; les lancements répétés utilisent généralement les caches Windows déjà chauds. Elles complètent le benchmark du moteur sur 20 000 éléments et n'imposent aucun seuil fixe dépendant du matériel.
 
 GitHub Actions construit et vérifie le projet sur Windows à chaque pull request et mise à jour de `main`/`master`. Après une compilation réussie sur la branche principale, la version de `Cargo.toml` produit automatiquement une préversion téléchargeable, par exemple `v0.1.0`. Une version déjà publiée conserve son archive ; augmenter la version du paquet pour publier une nouvelle préversion. Un tag `v*` produit une release standard si cette version n'existe pas encore. Le code est sous [licence MIT](LICENSE) ; aucune portion du code de Walker n'a été copiée.

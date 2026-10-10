@@ -91,6 +91,9 @@ struct State {
     edit: HWND,
     settings: config::Settings,
     palette: Palette,
+    cached_ui: CachedUi,
+    paint_text: RefCell<Vec<u16>>,
+    query_text: Vec<u16>,
     index: Arc<Mutex<Vec<Item>>>,
     installed_names: Arc<Mutex<Vec<String>>>,
     removable_names: Arc<Mutex<Vec<String>>>,
@@ -113,6 +116,8 @@ struct State {
     weights: HashMap<String, u32>,
     clipboard: catalog::ClipHistory,
     items: Vec<Item>,
+    item_icon_keys: Vec<Option<app_icons::Key>>,
+    item_icon_size: u32,
     selected: usize,
     query: String,
     section: String,
@@ -140,6 +145,88 @@ struct State {
     checks: Vec<(String, bool)>,
     started: Instant,
     first_frame_ms: f64,
+}
+
+// These providers and translated labels only change with settings/language.
+// Keeping them prepared avoids normalization, translation locks and allocation
+// for every keystroke or repaint.
+#[derive(Default)]
+struct CachedUi {
+    navigation: Vec<Item>,
+    commands: Vec<Item>,
+    symbols: Vec<Item>,
+    system: Vec<Item>,
+    tagline: String,
+    tabs: [String; 5],
+    hotkey: String,
+    empty: String,
+    empty_indexing: String,
+    empty_hint: String,
+    hints: [String; 4],
+}
+
+impl CachedUi {
+    fn new(settings: &config::Settings) -> Self {
+        Self {
+            navigation: navigation(),
+            commands: settings
+                .commands
+                .iter()
+                .map(|command| {
+                    let mut item = Item::new(
+                        format!("command:{}", command.name),
+                        &command.name,
+                        &command.file_name,
+                        "›",
+                        Kind::Command,
+                        &command.file_name,
+                    );
+                    item.arguments = command.arguments.clone();
+                    item
+                })
+                .collect(),
+            symbols: [
+                ("→", "flèche droite"),
+                ("←", "flèche gauche"),
+                ("✓", "coche"),
+                ("×", "multiplication"),
+                ("—", "tiret cadratin"),
+                ("€", "euro"),
+                ("°", "degré"),
+                ("π", "pi"),
+                ("©", "copyright"),
+                ("∞", "infini"),
+                ("♥", "cœur"),
+                ("…", "points de suspension"),
+            ]
+            .into_iter()
+            .map(|(symbol, title)| {
+                Item::new(
+                    format!("symbol:{symbol}"),
+                    format!("{symbol}  {}", i18n::tr(title)),
+                    i18n::tr("Entrée pour copier"),
+                    symbol,
+                    Kind::Symbol,
+                    symbol,
+                )
+            })
+            .collect(),
+            system: system_items(),
+            tagline: i18n::tr("/   À portée de clavier"),
+            tabs: ["Accueil", "Applications", "Fichiers", "Web", "Modules  ;"].map(i18n::tr),
+            hotkey: settings.hotkey.replace('+', " + "),
+            empty: i18n::tr("Aucun résultat"),
+            empty_indexing: i18n::tr("L'index se construit en arrière-plan…"),
+            empty_hint: i18n::tr("Essaie un autre mot ou change de module avec ;"),
+            hints: [
+                "↑ ↓ naviguer   ↵ ouvrir   Échap fermer   F1 aide",
+                "↑ ↓ naviguer   ↵ installer   Échap fermer   F1 aide",
+                "↑ ↓ naviguer   ↵ désinstaller   Échap fermer",
+                "↑ ↓ naviguer   ↵ sélectionner   Échap fermer",
+            ]
+            .map(i18n::tr),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -516,6 +603,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             hwnd: null_mut(),
             edit: null_mut(),
             palette: Palette::from(&settings),
+            cached_ui: CachedUi::default(),
+            paint_text: RefCell::new(Vec::with_capacity(256)),
+            query_text: Vec::with_capacity(1025),
             settings,
             index: Arc::new(Mutex::new(cache)),
             installed_names: Arc::new(Mutex::new(Vec::new())),
@@ -539,6 +629,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
             weights,
             clipboard: catalog::ClipHistory::new(),
             items: vec![],
+            item_icon_keys: Vec::new(),
+            item_icon_size: 0,
             selected: 0,
             query: String::new(),
             section: i18n::tr("EXPLORER"),
@@ -1401,13 +1493,17 @@ unsafe fn update_results(s: &mut State) {
         return;
     }
     let len = GetWindowTextLengthW(s.edit).max(0) as usize;
-    let mut text = vec![0u16; len + 1];
-    GetWindowTextW(s.edit, text.as_mut_ptr(), text.len() as i32);
-    let query = String::from_utf16_lossy(&text[..len]);
-    if query != s.query {
+    s.query_text.resize(len + 1, 0);
+    let read = GetWindowTextW(s.edit, s.query_text.as_mut_ptr(), s.query_text.len() as i32).max(0)
+        as usize;
+    if !s
+        .query
+        .encode_utf16()
+        .eq(s.query_text[..read].iter().copied())
+    {
         s.timer_focus = None;
+        s.query = String::from_utf16_lossy(&s.query_text[..read]);
     }
-    s.query = query;
     let start = Instant::now();
     let trimmed = s.query.trim();
     let prefix = trimmed.chars().next().unwrap_or('\0');
@@ -1426,9 +1522,9 @@ unsafe fn update_results(s: &mut State) {
             '\0' | ';' => {
                 s.section = i18n::tr("EXPLORER");
                 if body.is_empty() {
-                    navigation()
+                    s.cached_ui.navigation.clone()
                 } else {
-                    core::rank(&navigation(), body, limit, weights)
+                    core::rank(&s.cached_ui.navigation, body, limit, weights)
                 }
             }
             '=' => {
@@ -1474,24 +1570,7 @@ unsafe fn update_results(s: &mut State) {
             }
             '>' => {
                 s.section = i18n::tr("COMMANDES");
-                let commands: Vec<Item> = s
-                    .settings
-                    .commands
-                    .iter()
-                    .map(|c| {
-                        let mut i = Item::new(
-                            format!("command:{}", c.name),
-                            &c.name,
-                            &c.file_name,
-                            "›",
-                            Kind::Command,
-                            &c.file_name,
-                        );
-                        i.arguments = c.arguments.clone();
-                        i
-                    })
-                    .collect();
-                let mut found = core::rank(&commands, body, limit, weights);
+                let mut found = core::rank(&s.cached_ui.commands, body, limit, weights);
                 if !body.is_empty() && found.len() < limit {
                     let mut cmd = Item::new(
                         "shell",
@@ -1523,33 +1602,7 @@ unsafe fn update_results(s: &mut State) {
             }
             '.' => {
                 s.section = i18n::tr("SYMBOLES");
-                let items: Vec<Item> = [
-                    ("→", "flèche droite"),
-                    ("←", "flèche gauche"),
-                    ("✓", "coche"),
-                    ("×", "multiplication"),
-                    ("—", "tiret cadratin"),
-                    ("€", "euro"),
-                    ("°", "degré"),
-                    ("π", "pi"),
-                    ("©", "copyright"),
-                    ("∞", "infini"),
-                    ("♥", "cœur"),
-                    ("…", "points de suspension"),
-                ]
-                .into_iter()
-                .map(|(symbol, title)| {
-                    Item::new(
-                        format!("symbol:{symbol}"),
-                        format!("{symbol}  {}", i18n::tr(title)),
-                        i18n::tr("Entrée pour copier"),
-                        symbol,
-                        Kind::Symbol,
-                        symbol,
-                    )
-                })
-                .collect();
-                core::rank(&items, body, limit, weights)
+                core::rank(&s.cached_ui.symbols, body, limit, weights)
             }
             '~' => {
                 s.section = i18n::tr("FENÊTRES OUVERTES");
@@ -1558,7 +1611,7 @@ unsafe fn update_results(s: &mut State) {
             '!' => {
                 s.section = i18n::tr("SYSTÈME");
                 core::rank(
-                    &system_items(),
+                    &s.cached_ui.system,
                     body,
                     if body.is_empty() { 20 } else { limit },
                     weights,
@@ -1623,8 +1676,11 @@ unsafe fn update_results(s: &mut State) {
     }
     for item in &mut s.items {
         if item.kind == Kind::Application {
-            item.subtitle = i18n::tr(&item.subtitle);
-            item.prepare();
+            let subtitle = i18n::tr(&item.subtitle);
+            if subtitle != item.subtitle {
+                item.subtitle = subtitle;
+                item.prepare();
+            }
         }
         if item.kind == Kind::Install && s.installations.is_pending(&item.target) {
             item.subtitle = i18n::tr("Installation en cours · progression dans la console");
@@ -1634,6 +1690,7 @@ unsafe fn update_results(s: &mut State) {
     }
     s.selected = 0;
     s.timing = format!("{:.1} ms", start.elapsed().as_secs_f64() * 1000.);
+    prepare_result_icons(s);
     request_result_icons(s);
     InvalidateRect(s.hwnd, null(), 0);
 }
@@ -1642,14 +1699,33 @@ fn application_icon_size(dpi: i32) -> u32 {
     (24 * dpi / 96).clamp(16, 128) as u32
 }
 
+fn prepare_result_icons(s: &mut State) {
+    s.item_icon_size = application_icon_size(s.dpi);
+    s.item_icon_keys.clear();
+    s.item_icon_keys.extend(s.items.iter().map(|item| {
+        (item.kind == Kind::Application)
+            .then(|| app_icons::Key::new(&item.target, s.item_icon_size))
+            .flatten()
+    }));
+}
+
 // Only schedule visible applications. Extraction and COM stay on the icon worker.
 fn request_result_icons(s: &mut State) {
     let size = application_icon_size(s.dpi);
+    if s.item_icon_size != size {
+        prepare_result_icons(s);
+    }
     let offset = s.selected.saturating_sub(s.visible_rows.saturating_sub(1));
     if let Some(icons) = s.app_icons.as_mut() {
-        for item in s.items.iter().skip(offset).take(s.visible_rows) {
-            if item.kind == Kind::Application {
-                icons.request(&item.target, size);
+        for (item, key) in s
+            .items
+            .iter()
+            .zip(&s.item_icon_keys)
+            .skip(offset)
+            .take(s.visible_rows)
+        {
+            if let Some(key) = key {
+                icons.request_key(&item.target, key);
             }
         }
     }
@@ -2404,14 +2480,16 @@ unsafe fn reindex(s: &mut State) {
         *installed_names.lock().unwrap_or_else(|e| e.into_inner()) = all_names;
         *removable_names.lock().unwrap_or_else(|e| e.into_inner()) = remove_names;
         if i18n::revision() == language_revision {
+            // Allocate and clone only the small application catalog off-lock.
+            // Existing file entries can move into the new snapshot instead of
+            // cloning every path and normalized search field while typing waits.
+            let previous_count = index.lock().unwrap_or_else(|e| e.into_inner()).len();
+            let mut published = Vec::with_capacity(apps.len() + previous_count);
+            published.extend_from_slice(&apps);
             let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
-            let previous_files: Vec<Item> = index
-                .iter()
-                .filter(|i| matches!(i.kind, Kind::File | Kind::Folder))
-                .cloned()
-                .collect();
-            *index = apps.clone();
-            index.extend(previous_files);
+            index.retain(|item| matches!(item.kind, Kind::File | Kind::Folder));
+            published.append(&mut index);
+            *index = published;
         }
         catalog_ready.store(generation, Ordering::Release);
         unsafe {
@@ -2461,15 +2539,19 @@ unsafe fn place(s: &mut State) {
     info.cbSize = size_of::<MONITORINFO>() as u32;
     GetMonitorInfoW(monitor, &mut info);
     let area = info.rcWork;
-    SetWindowPos(
-        s.hwnd,
-        null_mut(),
-        area.left + 40,
-        area.top + 40,
-        0,
-        0,
-        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-    );
+    // Move once to obtain the destination DPI only when changing monitors.
+    // Reopening on the same screen need not jump to the corner and back.
+    if MonitorFromWindow(s.hwnd, MONITOR_DEFAULTTONEAREST) != monitor {
+        SetWindowPos(
+            s.hwnd,
+            null_mut(),
+            area.left + 40,
+            area.top + 40,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
     let old_dpi = s.dpi;
     s.dpi = GetDpiForWindow(s.hwnd).max(96) as i32;
     let width = (s.settings.window_width * s.dpi / 96).min(area.right - area.left - 32);
@@ -2477,7 +2559,15 @@ unsafe fn place(s: &mut State) {
     s.visible_rows = (((height * 96 / s.dpi) - ROW_TOP - 58) / ROW_HEIGHT).max(1) as usize;
     let x = area.left + (area.right - area.left - width) / 2;
     let y = area.top + ((area.bottom - area.top - height) / 4).max(16);
-    SetWindowPos(s.hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+    let mut current: RECT = zeroed();
+    GetWindowRect(s.hwnd, &mut current);
+    if current.left != x
+        || current.top != y
+        || current.right - x != width
+        || current.bottom - y != height
+    {
+        SetWindowPos(s.hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+    }
     if old_dpi != s.dpi {
         rebuild_fonts(s);
     }
@@ -2550,6 +2640,7 @@ unsafe fn rebuild_fonts(s: &mut State) {
 #[allow(clippy::too_many_arguments)] // Mirrors DrawText's native geometry and style inputs.
 unsafe fn text(
     dc: HDC,
+    scratch: &mut Vec<u16>,
     font: HFONT,
     color: u32,
     value: &str,
@@ -2568,10 +2659,12 @@ unsafe fn text(
         right: x + w,
         bottom: y + h,
     };
-    let value = wide(value);
+    scratch.clear();
+    scratch.extend(value.encode_utf16());
+    scratch.push(0);
     DrawTextW(
         dc,
-        value.as_ptr(),
+        scratch.as_ptr(),
         -1,
         &mut rect,
         DT_SINGLELINE
@@ -2584,13 +2677,20 @@ unsafe fn text(
 }
 // Windows private-use glyphs belong to the system icon font, not the Unicode
 // symbol font. Reuse both cached fonts and center in the exact tile rectangle.
-unsafe fn result_icon(dc: HDC, s: &State, item: &Item, mut bounds: RECT) {
+unsafe fn result_icon(
+    dc: HDC,
+    scratch: &mut Vec<u16>,
+    s: &State,
+    item: &Item,
+    key: Option<&app_icons::Key>,
+    mut bounds: RECT,
+) {
     if item.kind == Kind::Application {
         let size = application_icon_size(s.dpi);
         if let Some(icon) = s
             .app_icons
             .as_ref()
-            .and_then(|icons| icons.get(&item.target, size))
+            .and_then(|icons| key.and_then(|key| icons.get_key(key)))
         {
             let pixels = size as i32;
             let x = bounds.left + (bounds.right - bounds.left - pixels) / 2;
@@ -2615,10 +2715,12 @@ unsafe fn result_icon(dc: HDC, s: &State, item: &Item, mut bounds: RECT) {
     let old = SelectObject(dc, s.fonts[if is_windows_icon { 5 } else { 4 }]);
     SetTextColor(dc, s.palette.accent);
     SetBkMode(dc, TRANSPARENT as i32);
-    let glyph = wide(glyph);
+    scratch.clear();
+    scratch.extend(glyph.encode_utf16());
+    scratch.push(0);
     DrawTextW(
         dc,
-        glyph.as_ptr(),
+        scratch.as_ptr(),
         -1,
         &mut bounds,
         DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX,
@@ -2626,8 +2728,10 @@ unsafe fn result_icon(dc: HDC, s: &State, item: &Item, mut bounds: RECT) {
     SelectObject(dc, old);
 }
 unsafe fn rect(dc: HDC, c: u32, x: i32, y: i32, w: i32, h: i32, radius: i32) {
-    let brush = CreateSolidBrush(c);
-    let old = SelectObject(dc, brush);
+    // Windows supplies a per-DC stock brush. Recoloring it avoids creating and
+    // deleting dozens of GDI objects for each frame, with the same geometry.
+    let old = SelectObject(dc, GetStockObject(DC_BRUSH));
+    let previous_color = SetDCBrushColor(dc, c);
     let pen = SelectObject(dc, GetStockObject(NULL_PEN));
     if radius > 0 {
         RoundRect(dc, x, y, x + w, y + h, radius, radius);
@@ -2636,9 +2740,11 @@ unsafe fn rect(dc: HDC, c: u32, x: i32, y: i32, w: i32, h: i32, radius: i32) {
     }
     SelectObject(dc, old);
     SelectObject(dc, pen);
-    DeleteObject(brush);
+    SetDCBrushColor(dc, previous_color);
 }
 unsafe fn paint(s: &State, dc: HDC) {
+    let mut scratch = s.paint_text.borrow_mut();
+    let scratch = &mut *scratch;
     let mut bounds: RECT = zeroed();
     GetClientRect(s.hwnd, &mut bounds);
     let scale = |n: i32| n * s.dpi / 96;
@@ -2664,6 +2770,7 @@ unsafe fn paint(s: &State, dc: HDC) {
     }
     text(
         dc,
+        scratch,
         s.fonts[3],
         s.palette.text,
         "SUPER MENU",
@@ -2675,9 +2782,10 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
     text(
         dc,
+        scratch,
         s.fonts[2],
         s.palette.muted,
-        &i18n::tr("/   À portée de clavier"),
+        &s.cached_ui.tagline,
         scale(162),
         scale(20),
         scale(250),
@@ -2686,6 +2794,7 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
     text(
         dc,
+        scratch,
         s.fonts[4],
         s.palette.muted,
         "⚙",
@@ -2697,6 +2806,7 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
     text(
         dc,
+        scratch,
         s.fonts[0],
         s.palette.muted,
         "×",
@@ -2726,6 +2836,7 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
     text(
         dc,
+        scratch,
         s.fonts[4],
         s.palette.accent,
         "⌕",
@@ -2737,31 +2848,36 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
     text(
         dc,
+        scratch,
         s.fonts[2],
         s.palette.muted,
-        &s.settings.hotkey.replace('+', " + "),
+        &s.cached_ui.hotkey,
         scale(w - 165),
         scale(78),
         scale(126),
         scale(25),
         true,
     );
-    for (label, x, width) in [
+    for ((label, x, width), translated) in [
         ("Accueil", 28, 48),
         ("Applications", 89, 117),
         ("Fichiers", 224, 77),
         ("Web", 322, 48),
         ("Modules  ;", 389, 112),
-    ] {
+    ]
+    .into_iter()
+    .zip(&s.cached_ui.tabs)
+    {
         text(
             dc,
+            scratch,
             s.fonts[2],
             if label == active_tab(&s.query) {
                 s.palette.accent
             } else {
                 s.palette.muted
             },
-            &i18n::tr(label),
+            translated,
             scale(x),
             scale(128),
             scale(width),
@@ -2771,6 +2887,7 @@ unsafe fn paint(s: &State, dc: HDC) {
     }
     text(
         dc,
+        scratch,
         s.fonts[3],
         s.palette.muted,
         &s.section,
@@ -2782,6 +2899,7 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
     text(
         dc,
+        scratch,
         s.fonts[2],
         s.palette.muted,
         &s.timing,
@@ -2816,8 +2934,10 @@ unsafe fn paint(s: &State, dc: HDC) {
         );
         result_icon(
             dc,
+            scratch,
             s,
             item,
+            s.item_icon_keys.get(row + offset).and_then(Option::as_ref),
             RECT {
                 left: scale(36),
                 top: scale(y + 8),
@@ -2827,6 +2947,7 @@ unsafe fn paint(s: &State, dc: HDC) {
         );
         text(
             dc,
+            scratch,
             s.fonts[1],
             if row + offset == s.selected {
                 s.palette.accent
@@ -2842,6 +2963,7 @@ unsafe fn paint(s: &State, dc: HDC) {
         );
         text(
             dc,
+            scratch,
             s.fonts[2],
             s.palette.muted,
             &item.subtitle,
@@ -2853,6 +2975,7 @@ unsafe fn paint(s: &State, dc: HDC) {
         );
         text(
             dc,
+            scratch,
             s.fonts[0],
             s.palette.muted,
             "›",
@@ -2867,9 +2990,10 @@ unsafe fn paint(s: &State, dc: HDC) {
         let y = ROW_TOP + 60;
         text(
             dc,
+            scratch,
             s.fonts[0],
             s.palette.text,
-            &i18n::tr("Aucun résultat"),
+            &s.cached_ui.empty,
             scale(28),
             scale(y),
             scale(w - 56),
@@ -2878,13 +3002,14 @@ unsafe fn paint(s: &State, dc: HDC) {
         );
         text(
             dc,
+            scratch,
             s.fonts[2],
             s.palette.muted,
-            &i18n::tr(if s.indexing.load(Ordering::Relaxed) {
-                "L'index se construit en arrière-plan…"
+            if s.indexing.load(Ordering::Relaxed) {
+                &s.cached_ui.empty_indexing
             } else {
-                "Essaie un autre mot ou change de module avec ;"
-            }),
+                &s.cached_ui.empty_hint
+            },
             scale(28),
             scale(y + 42),
             scale(w - 56),
@@ -2903,14 +3028,15 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
     text(
         dc,
+        scratch,
         s.fonts[2],
         s.palette.muted,
-        &i18n::tr(match s.items.get(s.selected).map(|item| &item.kind) {
-            Some(Kind::Install) => "↑ ↓ naviguer   ↵ installer   Échap fermer   F1 aide",
-            Some(Kind::Uninstall) => "↑ ↓ naviguer   ↵ désinstaller   Échap fermer",
-            Some(Kind::Timer) => "↑ ↓ naviguer   ↵ sélectionner   Échap fermer",
-            _ => "↑ ↓ naviguer   ↵ ouvrir   Échap fermer   F1 aide",
-        }),
+        &s.cached_ui.hints[match s.items.get(s.selected).map(|item| &item.kind) {
+            Some(Kind::Install) => 1,
+            Some(Kind::Uninstall) => 2,
+            Some(Kind::Timer) => 3,
+            _ => 0,
+        }],
         scale(28),
         scale(h - 39),
         scale(347),
@@ -2919,6 +3045,7 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
     text(
         dc,
+        scratch,
         s.fonts[2],
         s.palette.muted,
         &s.status,
@@ -3012,6 +3139,7 @@ unsafe fn capture_bmp(s: &State) {
         };
         text(
             mem,
+            &mut s.paint_text.borrow_mut(),
             s.fonts[0],
             if s.query.is_empty() {
                 s.palette.muted
@@ -3088,6 +3216,7 @@ unsafe fn show_about(s: &mut State) {
 }
 
 unsafe fn refresh_language(s: &mut State) {
+    s.cached_ui = CachedUi::new(&s.settings);
     SendMessageW(
         s.edit,
         EM_SETCUEBANNER,

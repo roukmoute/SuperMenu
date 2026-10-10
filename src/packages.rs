@@ -292,6 +292,23 @@ fn prepared() -> &'static [PreparedPackage] {
 fn normalize(value: &str) -> String {
     let mut result = String::with_capacity(value.len());
     let mut spacing = true;
+    // Product names are usually ASCII. Preserve '+' and '#' exactly as the
+    // Unicode path does, while avoiding decomposition/category lookup per byte.
+    if value.is_ascii() {
+        for byte in value.bytes() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'#') {
+                result.push(byte.to_ascii_lowercase() as char);
+                spacing = false;
+            } else if !spacing {
+                result.push(' ');
+                spacing = true;
+            }
+        }
+        if spacing {
+            result.pop();
+        }
+        return result;
+    }
     for character in value.nfd().filter(|c| !is_combining_mark(*c)) {
         // Keep product punctuation: Notepad++ differs from Notepad, and C# differs from C.
         if character.is_alphanumeric() || matches!(character, '+' | '#') {
@@ -738,9 +755,9 @@ fn named_relevance(name: &str, query: &str) -> Option<u32> {
     if name.starts_with(query) {
         return Some(850);
     }
-    let tokens: Vec<_> = query.split_whitespace().collect();
-    (!tokens.is_empty()
-        && tokens.iter().all(|query_token| {
+    let tokens = query.split_whitespace();
+    (tokens.clone().next().is_some()
+        && tokens.clone().all(|query_token| {
             name.split_whitespace()
                 .any(|token| token.starts_with(query_token))
         }))
@@ -820,12 +837,12 @@ fn relevance(package: &PreparedPackage, query: &str) -> Option<u32> {
     if package.names.iter().any(|name| name.starts_with(query)) {
         return Some(850);
     }
-    let tokens: Vec<&str> = query.split_whitespace().collect();
-    if tokens.is_empty() {
-        return None;
-    }
+    // Cloning this small string iterator is allocation-free; collecting the same
+    // query into a Vec for every curated package adds avoidable per-key churn.
+    let tokens = query.split_whitespace();
+    tokens.clone().next()?;
     let name_match = package.names.iter().any(|name| {
-        tokens.iter().all(|query_token| {
+        tokens.clone().all(|query_token| {
             name.split_whitespace()
                 .any(|token| token.starts_with(query_token))
         })
@@ -834,7 +851,7 @@ fn relevance(package: &PreparedPackage, query: &str) -> Option<u32> {
         return Some(750);
     }
     // Category words may accompany a product name, or be searched on their own.
-    let all_match = tokens.iter().all(|query_token| {
+    let all_match = tokens.clone().all(|query_token| {
         package.names.iter().any(|name| {
             name.split_whitespace()
                 .any(|token| token.starts_with(query_token))
@@ -849,9 +866,13 @@ fn relevance(package: &PreparedPackage, query: &str) -> Option<u32> {
     // Keep the prepared French source category for compatibility, while also
     // accepting the category currently shown by the selected language pack.
     // This late fallback avoids translation lookups for exact product matches.
-    let category = normalize(&crate::i18n::tr(package.package.category));
+    let translated = crate::i18n::tr(package.package.category);
+    if translated == package.package.category {
+        return None;
+    }
+    let category = normalize(&translated);
     tokens
-        .iter()
+        .clone()
         .all(|query_token| {
             package.names.iter().any(|name| {
                 name.split_whitespace()
@@ -923,8 +944,10 @@ pub fn search(
         .filter_map(|package| relevance(package, &normalized).map(|score| (package, score)))
         .collect();
     let mut alias_apps = HashSet::new();
-    if !install_only {
+    if !install_only && relevant.iter().any(|(_, score)| *score >= 850) {
         // Exact/strong aliases also find installed apps such as 'npp' => Notepad++.
+        // Broad category/unknown queries cannot match any strong alias; do not
+        // normalize the entire application index when there is no such package.
         for item in index.iter().filter(|item| item.kind == Kind::Application) {
             let name = normalize(&item.title);
             if relevant
@@ -1378,6 +1401,58 @@ mod tests {
         let result = results(&[installed], &[], "@ npp");
         assert_eq!(result[0].title, "Notepad++");
         assert!(result.iter().all(|item| item.kind == Kind::Application));
+    }
+
+    #[test]
+    fn product_normalization_preserves_unicode_reference_and_punctuation() {
+        fn reference(value: &str) -> String {
+            let mut result = String::new();
+            let mut spacing = true;
+            for character in value.nfd().filter(|c| !is_combining_mark(*c)) {
+                if character.is_alphanumeric() || matches!(character, '+' | '#') {
+                    result.extend(character.to_lowercase());
+                    spacing = false;
+                } else if !spacing {
+                    result.push(' ');
+                    spacing = true;
+                }
+            }
+            if result.ends_with(' ') {
+                result.pop();
+            }
+            result
+        }
+        for byte in 0..=127 {
+            let character = char::from(byte);
+            for value in [
+                character.to_string(),
+                format!("\t{character}A C++ / C#_Notepad++\r\n"),
+                format!("ASCII{character}École / Straße / Cœur"),
+            ] {
+                assert_eq!(normalize(&value), reference(&value), "{value:?}");
+            }
+        }
+        assert_eq!(normalize("Notepad++ / C# / C++"), "notepad++ c# c++");
+        // Package identity intentionally differs from core search's ligature
+        // aliases: do not broaden product matching during optimization.
+        assert_eq!(
+            normalize("Cœur Straße Æsir Øresund"),
+            "cœur straße æsir øresund"
+        );
+    }
+
+    #[test]
+    fn non_catalog_queries_keep_apps_and_categories_without_strong_aliases() {
+        let index = [app("Acme Writer"), app("Acme Reader"), app("Notepad++")];
+        let missing = missing_items(&index, &[], &HashSet::new());
+        let generic = search(&index, &missing, "@ acme writer", 9, &HashMap::new());
+        assert_eq!(generic[0].title, "Acme Writer");
+        assert!(generic.iter().all(|item| item.kind == Kind::Application));
+        let alias = search(&index, &missing, "@ npp", 9, &HashMap::new());
+        assert_eq!(alias[0].title, "Notepad++");
+        let category = search(&index, &missing, "+ navigateur", 9, &HashMap::new());
+        assert!(!category.is_empty());
+        assert!(category.iter().all(|item| item.kind == Kind::Install));
     }
 
     #[test]

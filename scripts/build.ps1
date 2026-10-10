@@ -46,7 +46,7 @@ try {
         if (-not $?) { throw 'Les tests du menu Windows ont échoué.' }
     }
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $OutputDirectory ($binaryTarget.name + '.exe')) -Force
-    foreach ($name in @('README.md', 'TESTING.md', 'LICENSE', 'settings.example.json')) {
+    foreach ($name in @('README.md', 'TESTING.md', 'PERFORMANCE.md', 'LICENSE', 'settings.example.json')) {
         Copy-Item -LiteralPath (Join-Path $repositoryRoot $name) -Destination (Join-Path $OutputDirectory $name) -Force
     }
     $docsDirectory = Join-Path $OutputDirectory 'docs'

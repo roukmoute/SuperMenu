@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::mem::{size_of, zeroed};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use windows::Win32::Foundation::SIZE;
@@ -24,13 +24,13 @@ const CACHE_LIMIT: usize = 256;
 const PENDING_LIMIT: usize = 32;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct Key {
+pub(crate) struct Key {
     target: String,
     size: u32,
 }
 
 impl Key {
-    fn new(target: &str, size: u32) -> Option<Self> {
+    pub(crate) fn new(target: &str, size: u32) -> Option<Self> {
         if target.is_empty()
             || target.len() > 32_768
             || target.contains('\0')
@@ -98,6 +98,7 @@ struct WakeTarget {
     window: Mutex<Option<usize>>,
     message: u32,
     alive: AtomicBool,
+    generation: AtomicU64,
 }
 
 impl WakeTarget {
@@ -152,6 +153,7 @@ impl IconCache {
             window: Mutex::new((!hwnd.is_null()).then_some(hwnd as usize)),
             message,
             alive: AtomicBool::new(true),
+            generation: AtomicU64::new(0),
         });
         let worker_wake = Arc::clone(&wake);
         thread::Builder::new()
@@ -168,6 +170,16 @@ impl IconCache {
                 while let Ok(request) = request_receiver.recv() {
                     if !worker_wake.alive.load(Ordering::Acquire) {
                         break;
+                    }
+                    // A refresh can leave slow Shell work queued. Skip obsolete
+                    // requests before extraction so current results do not wait
+                    // behind up to 32 icons from an invalidated index.
+                    if request.generation != worker_wake.generation.load(Ordering::Acquire) {
+                        // Clearing a full queue can temporarily reject every new
+                        // request. Wake the UI when space becomes available so
+                        // it retries even if no current-generation response exists.
+                        worker_wake.wake();
+                        continue;
                     }
                     let icon = initialized
                         .then(|| load(&request.target, request.key.size))
@@ -209,15 +221,22 @@ impl IconCache {
 
     /// Requesting a missing icon never waits for Shell, disk or an occupied
     /// worker. Misses and failed extraction are cached just like successful icons.
+    #[cfg(test)]
     pub fn request(&mut self, target: &str, size: u32) {
         let Some(key) = Key::new(target, size) else {
             return;
         };
-        if let Some(entry) = self.entries.get(&key) {
+        self.request_key(target, &key);
+    }
+
+    /// UI result rows prepare their key once, rather than lowercasing and
+    /// allocating the same Shell identity on every repaint or selection.
+    pub(crate) fn request_key(&mut self, target: &str, key: &Key) {
+        if let Some(entry) = self.entries.get(key) {
             entry.last_used.set(self.touch());
             return;
         }
-        if self.pending.contains(&key) || self.pending.len() >= PENDING_LIMIT {
+        if self.pending.contains(key) || self.pending.len() >= PENDING_LIMIT {
             return;
         }
         let request = Request {
@@ -226,15 +245,20 @@ impl IconCache {
             generation: self.generation,
         };
         if self.requests.try_send(request).is_ok() {
-            self.pending.insert(key);
+            self.pending.insert(key.clone());
         }
     }
 
     /// The handle is borrowed from the cache, and only used for immediate UI
     /// drawing. It must not be destroyed or retained across drain/clear calls.
+    #[cfg(test)]
     pub fn get(&self, target: &str, size: u32) -> Option<HICON> {
         let key = Key::new(target, size)?;
-        let entry = self.entries.get(&key)?;
+        self.get_key(&key)
+    }
+
+    pub(crate) fn get_key(&self, key: &Key) -> Option<HICON> {
+        let entry = self.entries.get(key)?;
         entry.last_used.set(self.touch());
         entry.icon.as_ref().map(OwnedIcon::raw)
     }
@@ -280,6 +304,9 @@ impl IconCache {
     /// responses carry a generation and cannot repopulate this cleared cache.
     pub fn clear(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.wake
+            .generation
+            .store(self.generation, Ordering::Release);
         self.entries.clear();
         self.pending.clear();
         while self.responses.try_recv().is_ok() {}
@@ -535,6 +562,39 @@ mod tests {
         assert!(cache
             .entries
             .contains_key(&Key::new("C:\\new.exe", 24).unwrap()));
+    }
+
+    #[test]
+    fn refresh_skips_queued_obsolete_shell_extractions() {
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let worker_calls = Arc::clone(&calls);
+        let mut first = true;
+        let mut cache = IconCache::with_loader(null_mut(), 0, 8, move |target, _| {
+            worker_calls.lock().unwrap().push(target.to_string());
+            if first {
+                first = false;
+                entered_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+            }
+            None
+        })
+        .unwrap();
+        cache.request("C:\\busy.exe", 24);
+        entered_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        for target in ["C:\\obsolete-one.exe", "C:\\obsolete-two.exe"] {
+            cache.request(target, 24);
+        }
+        cache.clear();
+        let current = Key::new("C:\\current.exe", 24).unwrap();
+        cache.request_key("C:\\current.exe", &current);
+        release_sender.send(()).unwrap();
+        wait_for(&mut cache, |cache| cache.pending.is_empty());
+        assert!(cache.entries.contains_key(&current));
+        assert_eq!(*calls.lock().unwrap(), ["C:\\busy.exe", "C:\\current.exe"]);
     }
 
     #[test]

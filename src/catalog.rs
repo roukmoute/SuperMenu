@@ -1,6 +1,7 @@
 //! Local, bounded catalogs and optional private launch/clipboard history.
 use crate::config::{self, Settings};
 use crate::core::{Item, Kind};
+use serde::ser::{SerializeSeq, Serializer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -8,9 +9,15 @@ use std::ffi::c_void;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::fs::MetadataExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::System::Memory::{
+    CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS,
+    PAGE_READONLY,
+};
 
 const CACHE_VERSION: u32 = 1;
 const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
@@ -47,30 +54,121 @@ impl Cache {
 /// Clipboard, shell queries, and dynamic results are never written to this cache.
 pub fn load_cache() -> Vec<Item> {
     let path = config::data_dir().join("index.json");
-    let Ok(metadata) = fs::metadata(&path) else {
+    read_cache_file(&path, &crate::i18n::current_language())
+}
+
+fn read_cache_file(path: &Path, language: &str) -> Vec<Item> {
+    // Disallow in-place writes while the view is alive. Sharing deletion still
+    // permits save_cache's atomic replacement without invalidating this snapshot.
+    let Ok(file) = OpenOptions::new()
+        .read(true)
+        .share_mode(0x1 | 0x4) // FILE_SHARE_READ | FILE_SHARE_DELETE
+        .open(path)
+    else {
         return Vec::new();
     };
-    if metadata.len() > MAX_CACHE_BYTES {
+    let Ok(metadata) = file.metadata() else {
+        return Vec::new();
+    };
+    if !(1..=MAX_CACHE_BYTES).contains(&metadata.len()) {
         return Vec::new();
     }
-    let Ok(file) = File::open(path) else {
+    let Some(mapped) = ReadOnlyMapping::new(&file, metadata.len() as usize) else {
         return Vec::new();
     };
-    let Ok(cache) = serde_json::from_reader::<_, Cache>(BufReader::new(file)) else {
+    // The slice parser avoids byte-at-a-time reader overhead; file-backed pages
+    // require no extra heap copy of the potentially large JSON snapshot.
+    let Ok(mut cache) = serde_json::from_slice::<Cache>(mapped.bytes()) else {
         return Vec::new();
     };
-    if !cache.compatible_with(&crate::i18n::current_language()) {
+    // Deserialized fields own their strings. Release mapped JSON pages before
+    // preparing the search caches, rather than retaining both representations.
+    drop(mapped);
+    drop(file);
+    if !cache.compatible_with(language) {
         return Vec::new();
     }
-    cache
-        .items
-        .into_iter()
-        .filter(is_cacheable)
-        .map(|mut item| {
-            item.prepare();
-            item
-        })
-        .collect()
+    cache.items.retain(is_cacheable);
+    for item in &mut cache.items {
+        item.prepare();
+    }
+    cache.items
+}
+
+struct ReadOnlyMapping {
+    handle: HANDLE,
+    view: MEMORY_MAPPED_VIEW_ADDRESS,
+    length: usize,
+}
+
+impl ReadOnlyMapping {
+    fn new(file: &File, length: usize) -> Option<Self> {
+        // SAFETY: file remains open, read-only and denies shared writes. Both
+        // mapping and view are private, unnamed and owned by the returned guard.
+        unsafe {
+            let handle = CreateFileMappingW(
+                file.as_raw_handle(),
+                std::ptr::null(),
+                PAGE_READONLY,
+                0,
+                0,
+                std::ptr::null(),
+            );
+            if handle.is_null() {
+                return None;
+            }
+            let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, length);
+            if view.Value.is_null() {
+                CloseHandle(handle);
+                return None;
+            }
+            Some(Self {
+                handle,
+                view,
+                length,
+            })
+        }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: the exact validated nonzero length is mapped read-only, shared
+        // writes are denied, and this borrow cannot outlive the owning guard.
+        unsafe { std::slice::from_raw_parts(self.view.Value.cast::<u8>(), self.length) }
+    }
+}
+
+impl Drop for ReadOnlyMapping {
+    fn drop(&mut self) {
+        // SAFETY: these handles are created together and released exactly once.
+        unsafe {
+            UnmapViewOfFile(self.view);
+            CloseHandle(self.handle);
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct CacheSnapshot<'a> {
+    version: u32,
+    language: &'a str,
+    items: CacheItems<'a>,
+}
+
+struct CacheItems<'a>(&'a [Item]);
+
+impl Serialize for CacheItems<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(None)?;
+        for item in self
+            .0
+            .iter()
+            .filter(|item| is_cacheable(item))
+            .take(MAX_FILES + 20_000)
+        {
+            sequence.serialize_element(item)?;
+        }
+        sequence.end()
+    }
 }
 
 /// Tag the snapshot with the language captured when its catalog worker started.
@@ -81,15 +179,12 @@ pub fn save_cache(items: &[Item], language: &str) -> io::Result<()> {
             "unsupported index cache language",
         ));
     }
-    let cache = Cache {
+    // Serialize borrowed entries directly. A deep clone of the whole catalog
+    // also cloned its skipped search fields and could briefly double index RAM.
+    let cache = CacheSnapshot {
         version: CACHE_VERSION,
-        language: language.to_string(),
-        items: items
-            .iter()
-            .filter(|item| is_cacheable(item))
-            .take(MAX_FILES + 20_000)
-            .cloned()
-            .collect(),
+        language,
+        items: CacheItems(items),
     };
     write_json_atomic(&config::data_dir().join("index.json"), &cache)
 }
@@ -112,10 +207,10 @@ pub fn files(settings: &Settings) -> Vec<Item> {
     let started = Instant::now();
     let mut result = Vec::with_capacity(maximum.min(4096));
     let mut pending = VecDeque::new();
-    let mut seen = HashSet::new();
+    let mut seen_directories = HashSet::new();
     for value in settings.file_roots.iter().take(16) {
         if let Some(root) = local_root(value) {
-            if seen.insert(path_key(&root)) {
+            if seen_directories.insert(path_key(&root)) {
                 pending.push_back((root, 0_usize));
             }
         }
@@ -130,6 +225,7 @@ pub fn files(settings: &Settings) -> Vec<Item> {
         let Ok(entries) = fs::read_dir(path) else {
             continue;
         };
+        let mut seen_names = HashSet::new();
         for entry in entries.flatten() {
             entry_count += 1;
             if entry_count > MAX_ENTRIES_EXAMINED
@@ -151,12 +247,23 @@ pub fn files(settings: &Settings) -> Vec<Item> {
             if is_directory && ignored_directory(&name) {
                 continue;
             }
-            if !seen.insert(path_key(&path)) {
+            // Full-path dedup is only needed for directories. Short names are
+            // retained for this directory alone because Unicode folding can map
+            // distinct Windows filenames to the same persistent ID (ß -> SS).
+            if !seen_names.insert(name.to_uppercase()) {
+                continue;
+            }
+            let key = path_key(&path);
+            if if is_directory {
+                !seen_directories.insert(key.clone())
+            } else {
+                seen_directories.contains(&key)
+            } {
                 continue;
             }
             let target = path.to_string_lossy().into_owned();
             result.push(Item::new(
-                format!("file:{}", path_key(&path)),
+                format!("file:{key}"),
                 name,
                 &target,
                 if is_directory { "▱" } else { "▤" },
@@ -179,17 +286,18 @@ pub fn files(settings: &Settings) -> Vec<Item> {
 }
 
 fn ignored_directory(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        ".git"
-            | ".svn"
-            | ".hg"
-            | "node_modules"
-            | "bin"
-            | "obj"
-            | "$recycle.bin"
-            | "system volume information"
-    )
+    [
+        ".git",
+        ".svn",
+        ".hg",
+        "node_modules",
+        "bin",
+        "obj",
+        "$recycle.bin",
+        "system volume information",
+    ]
+    .iter()
+    .any(|ignored| name.eq_ignore_ascii_case(ignored))
 }
 
 fn path_key(path: &Path) -> String {
@@ -289,6 +397,9 @@ impl Usage {
     }
 
     pub fn snapshot_for(&self, items: &[Item]) -> HashMap<String, u32> {
+        if self.counts.is_empty() {
+            return HashMap::new();
+        }
         items
             .iter()
             .filter_map(|item| {
@@ -560,6 +671,14 @@ mod tests {
         let mut bounded = settings.clone();
         bounded.max_indexed_files = 1;
         let small = files(&bounded);
+        let mut overlapping = settings.clone();
+        overlapping
+            .file_roots
+            .push(root.join("keep").to_string_lossy().into_owned());
+        overlapping
+            .file_roots
+            .push(root.to_string_lossy().into_owned());
+        let overlap = files(&overlapping);
         // Resolve and verify the disposable fixture before recursively removing it.
         let verified_root = fs::canonicalize(&root).unwrap();
         let verified_temporary = fs::canonicalize(&temporary_root).unwrap();
@@ -571,6 +690,21 @@ mod tests {
             .iter()
             .any(|item| item.target.contains("node_modules") || item.target.contains(".git")));
         assert_eq!(small.len(), 1);
+        assert_eq!(
+            overlap
+                .iter()
+                .filter(|item| item.title == "document.txt")
+                .count(),
+            1
+        );
+        assert_eq!(
+            overlap
+                .iter()
+                .map(|item| &item.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            overlap.len()
+        );
     }
 
     #[test]
@@ -670,5 +804,236 @@ mod tests {
         assert!(!cache.compatible_with("en"));
         let restored: Cache = serde_json::from_slice(&serde_json::to_vec(&cache).unwrap()).unwrap();
         assert_eq!(restored.language, "unknown");
+    }
+
+    struct CacheFixture(PathBuf);
+
+    impl CacheFixture {
+        fn new(contents: &[u8]) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "SuperMenu-cache-test-{}-{nonce}.json",
+                std::process::id()
+            ));
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(contents).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for CacheFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn distinct_unicode_filenames_never_publish_duplicate_folded_ids() {
+        let fixture = CacheFixture::new(b"");
+        let root = fixture.0.with_extension("files");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("Straße.txt"), "one").unwrap();
+        fs::write(root.join("STRASSE.txt"), "two").unwrap();
+        // Windows permits both names; the launcher's Unicode uppercase ID key
+        // deliberately treats them as the same identity, as previous caches did.
+        let actual_count = fs::read_dir(&root).unwrap().count();
+        let items = files(&Settings {
+            file_roots: vec![root.to_string_lossy().into_owned()],
+            max_indexed_files: 100,
+            ..Settings::default()
+        });
+        fs::remove_file(root.join("Straße.txt")).unwrap();
+        fs::remove_file(root.join("STRASSE.txt")).unwrap();
+        fs::remove_dir(&root).unwrap();
+        assert_eq!(actual_count, 2);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| &item.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            items.len()
+        );
+    }
+
+    #[test]
+    fn borrowed_cache_snapshot_preserves_format_and_excludes_private_data() {
+        let items = [
+            Item::new(
+                "app",
+                "Résumé",
+                "Application Windows",
+                "□",
+                Kind::Application,
+                "app.exe",
+            ),
+            Item::new(
+                "file",
+                "Budget.xlsx",
+                "Documents",
+                "□",
+                Kind::File,
+                "budget.xlsx",
+            ),
+            Item::new(
+                "uninstall",
+                "Désinstaller Telegram",
+                "",
+                "□",
+                Kind::Application,
+                "remove.exe",
+            ),
+            Item::new(
+                "private",
+                "Secret clipboard",
+                "",
+                "□",
+                Kind::Clipboard,
+                "secret",
+            ),
+        ];
+        let snapshot = CacheSnapshot {
+            version: CACHE_VERSION,
+            language: "fr",
+            items: CacheItems(&items),
+        };
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let decoded: Cache = serde_json::from_slice(&bytes).unwrap();
+        assert!(decoded.compatible_with("fr"));
+        assert_eq!(
+            decoded
+                .items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["app", "file"]
+        );
+        assert!(!std::str::from_utf8(&bytes)
+            .unwrap()
+            .contains("search_title"));
+        assert!(!std::str::from_utf8(&bytes).unwrap().contains("secret"));
+        let fixture = CacheFixture::new(&bytes);
+        let restored = read_cache_file(&fixture.0, "fr");
+        assert_eq!(
+            crate::core::rank(&restored, "resume", 9, &HashMap::new())[0].id,
+            "app"
+        );
+        assert!(read_cache_file(&fixture.0, "en").is_empty());
+    }
+
+    #[test]
+    fn mapped_cache_denies_truncation_but_allows_atomic_replacement() {
+        let original = CacheFixture::new(b"original snapshot");
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x4)
+            .open(&original.0)
+            .unwrap();
+        let mapped = ReadOnlyMapping::new(&file, 17).unwrap();
+        assert!(OpenOptions::new().write(true).open(&original.0).is_err());
+        let replacement = CacheFixture::new(b"replacement snapshot");
+        fs::rename(&replacement.0, &original.0).unwrap();
+        assert_eq!(mapped.bytes(), b"original snapshot");
+        assert_eq!(fs::read(&original.0).unwrap(), b"replacement snapshot");
+        drop(mapped);
+        drop(file);
+        assert!(OpenOptions::new().write(true).open(&original.0).is_ok());
+    }
+
+    #[test]
+    fn invalid_cache_releases_mapping_and_can_be_repaired() {
+        let fixture = CacheFixture::new(b"{invalid");
+        assert!(read_cache_file(&fixture.0, "fr").is_empty());
+        fs::write(&fixture.0, b"").unwrap();
+        assert!(read_cache_file(&fixture.0, "fr").is_empty());
+        fs::write(&fixture.0, br#"{"version":1,"language":"fr","items":[]}"#).unwrap();
+        assert!(read_cache_file(&fixture.0, "fr").is_empty());
+        // A write open proves no file or mapped-view handles leaked on errors.
+        assert!(OpenOptions::new().write(true).open(&fixture.0).is_ok());
+    }
+
+    /// Opt-in timing, kept out of the shipped executable and ordinary test runs.
+    /// Run with: cargo test --release cache_performance_comparison -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn cache_performance_comparison() {
+        let items: Vec<_> = (0..20_000)
+            .map(|index| {
+                Item::new(
+                    format!("file:{index:05}"),
+                    format!("Notes techniques {index:05}.txt"),
+                    format!(
+                        "C:\\Users\\User\\Documents\\Projet {}\\Notes techniques {index:05}.txt",
+                        index % 97
+                    ),
+                    "□",
+                    Kind::File,
+                    format!("C:\\Documents\\Notes {index:05}.txt"),
+                )
+            })
+            .collect();
+        let snapshot = CacheSnapshot {
+            version: CACHE_VERSION,
+            language: "fr",
+            items: CacheItems(&items),
+        };
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let fixture = CacheFixture::new(&bytes);
+        let measure = |operation: &mut dyn FnMut()| {
+            for _ in 0..2 {
+                operation();
+            }
+            let mut samples = Vec::with_capacity(16);
+            for _ in 0..16 {
+                let started = Instant::now();
+                operation();
+                samples.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            (samples[8], samples[15])
+        };
+        let reader = measure(&mut || {
+            let file = File::open(&fixture.0).unwrap();
+            let mut cache: Cache = serde_json::from_reader(BufReader::new(file)).unwrap();
+            cache.items.retain(is_cacheable);
+            for item in &mut cache.items {
+                item.prepare();
+            }
+            std::hint::black_box(cache.items);
+        });
+        let mapped = measure(&mut || {
+            std::hint::black_box(read_cache_file(&fixture.0, "fr"));
+        });
+        let cloned = measure(&mut || {
+            let cache = Cache {
+                version: CACHE_VERSION,
+                language: "fr".into(),
+                items: items.clone(),
+            };
+            std::hint::black_box(serde_json::to_vec(&cache).unwrap());
+        });
+        let borrowed = measure(&mut || {
+            std::hint::black_box(serde_json::to_vec(&snapshot).unwrap());
+        });
+        println!(
+            "20,000 items, {} JSON bytes, 2 warmups + 16 samples. Median / p95 ms:",
+            bytes.len()
+        );
+        println!(
+            "Reader restore: {:.3} / {:.3}; mapped restore: {:.3} / {:.3}",
+            reader.0, reader.1, mapped.0, mapped.1
+        );
+        println!(
+            "Cloned serialization: {:.3} / {:.3}; borrowed serialization: {:.3} / {:.3}",
+            cloned.0, cloned.1, borrowed.0, borrowed.1
+        );
     }
 }

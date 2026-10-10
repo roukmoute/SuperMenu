@@ -81,6 +81,23 @@ impl Item {
 fn normalize(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut space = true;
+    // Most application names and paths are ASCII. Avoid Unicode decomposition,
+    // category lookup and lowercase expansion for this common index-building path.
+    if text.is_ascii() {
+        for byte in text.bytes() {
+            if byte.is_ascii_alphanumeric() {
+                result.push(byte.to_ascii_lowercase() as char);
+                space = false;
+            } else if !space {
+                result.push(' ');
+                space = true;
+            }
+        }
+        if space {
+            result.pop();
+        }
+        return result;
+    }
     for character in text
         .nfd()
         .filter(|character| !is_combining_mark(*character))
@@ -133,6 +150,7 @@ pub fn rank_filtered(
         .map(|text| Token {
             text,
             mask: character_mask(text),
+            ascii: text.is_ascii(),
         })
         .collect();
     let mut heap: BinaryHeap<Candidate<'_>> = BinaryHeap::with_capacity(limit);
@@ -166,6 +184,7 @@ pub fn rank_filtered(
 struct Token<'a> {
     text: &'a str,
     mask: u64,
+    ascii: bool,
 }
 
 fn character_mask(text: &str) -> u64 {
@@ -181,6 +200,9 @@ fn character_mask(text: &str) -> u64 {
     mask
 }
 
+// Keep the per-item scoring chain inline even in the size-optimized release.
+// The release profile is selected using the reproducible 20,000-entry benchmark.
+#[inline(always)]
 fn score(item: &Item, query: &str, tokens: &[Token<'_>]) -> Option<i32> {
     if tokens.is_empty() {
         return Some(0);
@@ -188,7 +210,7 @@ fn score(item: &Item, query: &str, tokens: &[Token<'_>]) -> Option<i32> {
     let mut score = 0;
     for token in tokens {
         let title = if item.title_mask & token.mask == token.mask {
-            match_token(&item.search_title, token.text).map(|score| score * 4)
+            match_token(&item.search_title, token).map(|score| score * 4)
         } else {
             None
         };
@@ -198,7 +220,7 @@ fn score(item: &Item, query: &str, tokens: &[Token<'_>]) -> Option<i32> {
             continue;
         }
         let subtitle = if item.subtitle_mask & token.mask == token.mask {
-            match_token(&item.search_subtitle, token.text)
+            match_token(&item.search_subtitle, token)
         } else {
             None
         };
@@ -221,7 +243,9 @@ fn score(item: &Item, query: &str, tokens: &[Token<'_>]) -> Option<i32> {
     Some(score)
 }
 
-fn match_token(source: &str, token: &str) -> Option<i32> {
+#[inline(always)]
+fn match_token(source: &str, query: &Token<'_>) -> Option<i32> {
+    let token = query.text;
     if source.is_empty() || token.len() > source.len() {
         return None;
     }
@@ -237,15 +261,15 @@ fn match_token(source: &str, token: &str) -> Option<i32> {
     }
     // Ignore word separators, never intervening letters: Firefox still matches
     // "Fire Fox", but Steam cannot match "Stream" by silently dropping its r.
-    if let Some(score) = match_joined_words(source, token) {
+    if let Some(score) = match_joined_words(source, token, query.ascii) {
         return Some(score);
     }
-    if let Some(score) = match_initials(source, token) {
+    if let Some(score) = match_initials(source, token, query.ascii) {
         return Some(score);
     }
     // Short, word-anchored contractions remain useful (ffx -> Firefox). Longer
     // contractions need an explicit alias rather than arbitrary subsequences.
-    if token.is_ascii() {
+    if query.ascii {
         return match_ascii_abbreviation(source.as_bytes(), token.as_bytes());
     }
     let length = token.chars().count();
@@ -284,8 +308,45 @@ fn match_token(source: &str, token: &str) -> Option<i32> {
     best
 }
 
-fn match_joined_words(source: &str, token: &str) -> Option<i32> {
+fn match_joined_words(source: &str, token: &str, ascii: bool) -> Option<i32> {
     if !source.as_bytes().contains(&b' ') {
+        return None;
+    }
+    if ascii {
+        // ASCII bytes never occur inside a multi-byte UTF-8 character, so byte
+        // matching is also valid for Unicode source strings with an ASCII token.
+        let source = source.as_bytes();
+        let token = token.as_bytes();
+        let first = *token.first()?;
+        for (start, &byte) in source.iter().enumerate() {
+            if byte != first {
+                continue;
+            }
+            let mut candidate = source[start..]
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte != b' ');
+            let mut end = start;
+            let mut matched = true;
+            for sought in token {
+                match candidate.next() {
+                    Some((position, byte)) if byte == sought => end = start + position + 1,
+                    _ => {
+                        matched = false;
+                        break;
+                    }
+                }
+            }
+            if matched {
+                let boundary = start == 0 || source[start - 1] == b' ';
+                let end_boundary = end == source.len() || source[end] == b' ';
+                return Some(
+                    145 + i32::from(boundary) * 55
+                        + i32::from(end_boundary) * 20
+                        + i32::from(start == 0) * 15,
+                );
+            }
+        }
         return None;
     }
     let first = token.chars().next()?;
@@ -320,9 +381,27 @@ fn match_joined_words(source: &str, token: &str) -> Option<i32> {
     None
 }
 
-fn match_initials(source: &str, token: &str) -> Option<i32> {
+fn match_initials(source: &str, token: &str, ascii: bool) -> Option<i32> {
+    if ascii {
+        let token = token.as_bytes();
+        let first = *token.first()?;
+        let mut words = source.as_bytes().split(|byte| *byte == b' ');
+        while let Some(word) = words.next() {
+            if word.first() != Some(&first) {
+                continue;
+            }
+            let mut candidate = words.clone();
+            if token[1..]
+                .iter()
+                .all(|character| candidate.next().and_then(|word| word.first()) == Some(character))
+            {
+                return Some(110);
+            }
+        }
+        return None;
+    }
     let first = token.chars().next()?;
-    let mut words = source.split_whitespace();
+    let mut words = source.split(' ');
     while let Some(word) = words.next() {
         if !word.starts_with(first) {
             continue;
@@ -1096,5 +1175,130 @@ mod tests {
         assert_eq!(rank(&items, "редактор", 9, &usage)[0].id, "ru");
         assert!(rank(&items, "рктр", 9, &usage).is_empty());
         assert_eq!(rank(&items, "coeur strasse", 9, &usage)[0].id, "ligature");
+    }
+
+    #[test]
+    fn normalization_collapses_ascii_separators_without_changing_unicode() {
+        assert_eq!(normalize(""), "");
+        assert_eq!(normalize(" \t\r\n_/:.\0"), "");
+        assert_eq!(
+            normalize("  C:\\Program Files\\My_APP-v2.0.EXE\r\n"),
+            "c program files my app v2 0 exe"
+        );
+        assert_eq!(normalize("ASCII 123\tOK"), "ascii 123 ok");
+        assert_eq!(
+            normalize("ÉCOLE / Cœur / Æsir / Straße / Øresund"),
+            "ecole coeur aesir strasse oresund"
+        );
+        assert_eq!(normalize("Cafe\u{301}\t文書 １２３"), "cafe 文書 １２３");
+    }
+
+    #[test]
+    fn byte_word_matching_preserves_character_reference_scores() {
+        fn joined_reference(source: &str, token: &str) -> Option<i32> {
+            if !source.contains(' ') {
+                return None;
+            }
+            let first = token.chars().next()?;
+            for (start, character) in source.char_indices() {
+                if character != first {
+                    continue;
+                }
+                let mut candidate = source[start..].char_indices().filter(|(_, c)| *c != ' ');
+                let mut end = start;
+                let mut matched = true;
+                for sought in token.chars() {
+                    match candidate.next() {
+                        Some((position, character)) if character == sought => {
+                            end = start + position + character.len_utf8()
+                        }
+                        _ => {
+                            matched = false;
+                            break;
+                        }
+                    }
+                }
+                if matched {
+                    let boundary = start == 0 || source.as_bytes()[start - 1] == b' ';
+                    let end_boundary = end == source.len() || source.as_bytes()[end] == b' ';
+                    return Some(
+                        145 + i32::from(boundary) * 55
+                            + i32::from(end_boundary) * 20
+                            + i32::from(start == 0) * 15,
+                    );
+                }
+            }
+            None
+        }
+        fn initials_reference(source: &str, token: &str) -> Option<i32> {
+            let first = token.chars().next()?;
+            let mut words = source.split_whitespace();
+            while let Some(word) = words.next() {
+                if !word.starts_with(first) {
+                    continue;
+                }
+                let mut candidate = words.clone();
+                if token.chars().skip(1).all(|character| {
+                    candidate.next().and_then(|word| word.chars().next()) == Some(character)
+                }) {
+                    return Some(110);
+                }
+            }
+            None
+        }
+        for raw in [
+            "",
+            "Firefox",
+            "Fire Fox Toolkit",
+            "Microsoft Visual Studio Code",
+            "Alpha Alpha Beta Code",
+            "Windows Remote Desktop Connection",
+            "C:\\Users\\Élise\\Documents\\Résumé réunion.txt",
+            "文書 Editor Alpha",
+            "Редактор Документов Code",
+            "Word 文書 Editor",
+            "alpha 文書 beta code",
+        ] {
+            let source = normalize(raw);
+            let compact: String = source
+                .chars()
+                .filter(|character| *character != ' ')
+                .collect();
+            let mut tokens: Vec<String> = [
+                "",
+                "ffx",
+                "firefox",
+                "vsc",
+                "mvsc",
+                "abc",
+                "wrdc",
+                "qqqqq",
+                "editoralpha",
+                "résumé",
+                "рд",
+                "文書",
+            ]
+            .iter()
+            .map(|token| normalize(token))
+            .collect();
+            tokens.extend(
+                compact
+                    .char_indices()
+                    .skip(1)
+                    .map(|(end, _)| compact[..end].to_string()),
+            );
+            for token in tokens {
+                assert_eq!(
+                    match_joined_words(&source, &token, token.is_ascii()),
+                    joined_reference(&source, &token),
+                    "joined {source:?} / {token:?}"
+                );
+                assert_eq!(
+                    match_initials(&source, &token, token.is_ascii()),
+                    initials_reference(&source, &token),
+                    "initials {source:?} / {token:?}"
+                );
+            }
+        }
     }
 }

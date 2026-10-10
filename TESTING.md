@@ -55,6 +55,35 @@ On peut aussi exécuter séparément une suite :
 
 Un ancien exécutable publié peut ne pas contenir les diagnostics ajoutés depuis sa publication : compiler le checkout testé. `--smoke-fixture`, le message de snapshot des résultats et le diagnostic Ctrl+Retour arrière sont réservés au mode de test. Le diagnostic de clavier modifie seulement l'état de la file d'entrée du thread UI de ce processus, puis le restaure ; il ne simule pas une touche globale.
 
+## Mesurer les performances
+
+Les mesures de latence sont facultatives et séparées des assertions fonctionnelles. Pour comparer deux exécutables sur le même PC :
+
+```powershell
+.\scripts\measure-performance.ps1 -Executable .\target\release\supermenu.exe -Report .\artifacts\performance.json
+```
+
+Le script utilise `tests/fixtures/launcher.json`, des cibles fictives `fixture://` et le même support de fenêtres isolées que les tests natifs. Il lance neuf processus successifs, puis mesure le dessin seul et la recherche suivie du dessin dans le dernier processus : trente échauffements et trois cents échantillons pour chaque série. `-StartupRuns`, `-WarmupRounds`, `-Rounds`, `-Theme` et `-Fixture` permettent de reproduire une autre configuration ; une fixture est limitée à 256 entrées fictives. Chaque HWND est vérifié par son PID avant l'envoi d'un message. Aucun logiciel n'est activé, installé ou désinstallé, et aucun téléchargement de langue n'est demandé.
+
+Le chronométrage des séries se fait dans une boucle C#, hors du coût de dispatch de PowerShell. `WM_SETTEXT` traverse le vrai contrôle EDIT et actualise les résultats ; `WM_PRINTCLIENT` dessine le menu dans un bitmap hors écran réutilisé, suivi d'un `GdiFlush` côté appelant. Un snapshot vérifie aussi la requête réellement traitée. Le rapport JSON contient la taille et le SHA-256 du binaire, l'empreinte de la fixture, le thème, la langue, le DPI, les dimensions, les échantillons, leurs médianes et p95, la mémoire privée et résidente et les compteurs GDI/USER.
+
+Pour interpréter le rapport :
+
+- `first_frame_ms` vient de l'horloge interne démarrée dans `ui::run`, jusqu'au premier `WM_PAINT` terminé. Il exclut la création du processus, le chargement initial du binaire et la présentation des pixels par DWM.
+- Les lancements répétés utilisent généralement les caches de fichiers et DLL de Windows déjà chauds. Leur état n'est pas contrôlé ; ce n'est pas une mesure de démarrage à froid du PC.
+- Les séries du menu incluent les contrôles de propriété des fenêtres et les messages Win32 synchrones entre processus. Le dessin hors écran exclut le contrôle EDIT enfant et la présentation à l'écran par DWM.
+- La petite fixture mesure le travail du menu. Le diagnostic `--benchmark` mesure séparément le classement sur un index de 20 000 éléments ; il ne mesure pas l'ouverture d'un logiciel ou les accès disque.
+
+Comparer des exécutables avec la même fixture, les mêmes options, le même DPI et des conditions machine proches. Les outils n'imposent aucun seuil arbitraire de performance et ne sont pas exécutés systématiquement par la CI.
+
+Un benchmark supplémentaire mesure la restauration et la sérialisation du cache sur 20 000 entrées. Il compare la lecture JSON via lecteur tamponné à la vue de fichier en lecture seule, puis la sérialisation d'une copie profonde à celle d'éléments empruntés :
+
+```powershell
+cargo test --release --locked cache_performance_comparison -- --ignored --nocapture
+```
+
+Ce test marqué `#[ignore]` utilise un fichier temporaire, deux échauffements et seize échantillons par opération. Il est absent des exécutions ordinaires de `cargo test`, et son code n'est pas inclus dans l'exécutable distribué. Ses chiffres restent sensibles au compilateur, au profil de compilation, à la machine et aux caches Windows. Il ne remplace pas les tests fonctionnels du format, de la compatibilité et de la libération du cache.
+
 ## Ajouter une régression
 
 Pour un bug du moteur, ajouter un test Rust près du module concerné avec le cas qui échouait. Pour un bug d'interaction, ajouter une assertion dans la suite Windows appropriée et une donnée dans la fixture si nécessaire. Vérifier que le test échoue lorsque le comportement est volontairement régressé, puis restaurer le code. Garder les tests indépendants du profil Windows, des applications réelles et du temps d'exécution du PC.
