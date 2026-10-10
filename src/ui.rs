@@ -21,7 +21,6 @@ const INDEX: u32 = WM_APP + 2;
 const REFRESH: u32 = WM_APP + 3;
 const TRAY: u32 = WM_APP + 4;
 const LAUNCH_DONE: u32 = WM_APP + 6;
-const LAUNCH_FEEDBACK_DURATION: Duration = Duration::from_secs(4);
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
 const ROW_HEIGHT: i32 = 48;
@@ -133,7 +132,7 @@ struct LaunchRequests {
 impl LaunchRequests {
     fn start(&mut self, item: &Item, now: Instant) -> Result<LaunchStart, &'static str> {
         self.recent.retain(|_, (_, started)| {
-            now.saturating_duration_since(*started) < LAUNCH_FEEDBACK_DURATION
+            now.saturating_duration_since(*started) < launch_feedback::DURATION
         });
         let duplicate = self
             .pending
@@ -2520,11 +2519,11 @@ mod tests {
             Ok(LaunchStart::Duplicate(1))
         );
         assert_eq!(
-            requests.start(&item, now + Duration::from_millis(5999)),
+            requests.start(&item, now + Duration::from_millis(3999)),
             Ok(LaunchStart::Duplicate(1))
         );
         assert_eq!(
-            requests.start(&item, now + Duration::from_millis(9999)),
+            requests.start(&item, now + Duration::from_millis(5999)),
             Ok(LaunchStart::Started(2))
         );
     }

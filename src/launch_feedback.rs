@@ -15,7 +15,7 @@ use windows_sys::Win32::{
 
 const CLASS: &str = "SuperMenuLaunchFeedback";
 const TIMER: usize = 1;
-const DURATION: Duration = Duration::from_secs(4);
+pub const DURATION: Duration = Duration::from_secs(2);
 const SUBTITLE: &str = "Ouverture demandée";
 const TEXT_FLAGS: u32 = DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX;
 
@@ -585,7 +585,8 @@ mod tests {
             String::from_utf16(&caption[..length as usize]).unwrap(),
             "Lancement de Deuxième lancement…"
         );
-        let limit = Instant::now() + Duration::from_secs(5);
+        // The requested two-second feedback must expire before a longer delay.
+        let limit = Instant::now() + Duration::from_secs(3);
         while unsafe { IsWindowVisible(hwnd) } != 0 && Instant::now() < limit {
             let mut message: MSG = unsafe { zeroed() };
             unsafe {
