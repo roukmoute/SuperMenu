@@ -1549,6 +1549,37 @@ mod tests {
     }
 
     #[test]
+    fn software_search_does_not_mix_steam_with_other_products_or_their_removal() {
+        let index = [
+            app("Steam"),
+            app("Steam Support Center"),
+            app("Stream Deck"),
+            app("StreamFab (x64)"),
+            app("Register GameSpy Arcade"),
+            app("Désinstaller Telegram"),
+            app("Désinstaller Alice Madness Returns - The Complete Collection"),
+            app("Microsoft Teams"),
+        ];
+        let registry = [
+            "Steam".into(),
+            "Telegram Desktop".into(),
+            "Elgato Stream Deck".into(),
+            "Alice Madness Returns - The Complete Collection".into(),
+        ];
+        let hits = managed_results(&index, &registry, "steam");
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].title, "Steam");
+        assert_eq!(hits[1].title, "Steam Support Center");
+        assert_eq!(hits[2].kind, Kind::Uninstall);
+        assert_eq!(hits[2].target, "id:Valve.Steam");
+        let launch_only = managed_results(&index, &registry, "@ steam");
+        assert_eq!(launch_only.len(), 2);
+        assert!(launch_only
+            .iter()
+            .all(|item| item.kind == Kind::Application));
+    }
+
+    #[test]
     fn launch_results_lead_removal_results_then_fuzzy_launches() {
         let index = [app("Firefox"), app("Fire Fox Toolkit")];
         let results = managed_results(&index, &[], "Firefox");

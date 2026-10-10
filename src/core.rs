@@ -235,79 +235,138 @@ fn match_token(source: &str, token: &str) -> Option<i32> {
                 + i32::from(position == 0) * 15,
         );
     }
-    if token.is_ascii() {
-        return match_ascii_subsequence(source.as_bytes(), token.as_bytes());
+    // Ignore word separators, never intervening letters: Firefox still matches
+    // "Fire Fox", but Steam cannot match "Stream" by silently dropping its r.
+    if let Some(score) = match_joined_words(source, token) {
+        return Some(score);
     }
-    // Linear subsequence matching accepts abbreviations without a dynamic programming matrix.
-    let mut sought = token.chars();
-    let mut next = sought.next()?;
-    let mut first = None;
-    let mut last = None;
-    let mut consecutive = 0;
-    let mut boundaries = 0;
-    let mut matched = 0;
-    let mut previous = ' ';
-    for (position, character) in source.chars().enumerate() {
-        if character == next {
-            first.get_or_insert(position);
+    if let Some(score) = match_initials(source, token) {
+        return Some(score);
+    }
+    // Short, word-anchored contractions remain useful (ffx -> Firefox). Longer
+    // contractions need an explicit alias rather than arbitrary subsequences.
+    if token.is_ascii() {
+        return match_ascii_abbreviation(source.as_bytes(), token.as_bytes());
+    }
+    let length = token.chars().count();
+    if !(2..=3).contains(&length) {
+        return None;
+    }
+    let mut best = None;
+    for word in source.split_whitespace() {
+        if word.chars().next() != token.chars().next() {
+            continue;
+        }
+        let mut sought = token.chars();
+        let mut next = sought.next()?;
+        let mut last = None;
+        let mut consecutive = 0;
+        let mut matched = 0;
+        for (position, character) in word.chars().take(length * 3).enumerate() {
+            if character != next {
+                continue;
+            }
             if last.is_some_and(|last| position == last + 1) {
                 consecutive += 1;
-            }
-            if previous == ' ' {
-                boundaries += 1;
             }
             last = Some(position);
             matched += 1;
             if let Some(character) = sought.next() {
                 next = character;
             } else {
-                let first = first?;
-                let gaps = position - first + 1 - matched;
-                return Some(
-                    (75 + consecutive * 9 + boundaries * 16
-                        - (gaps as i32 * 3).min(65)
-                        - (first as i32).min(15))
-                    .max(1),
-                );
+                let gaps = position + 1 - matched;
+                let score = 91 + consecutive * 9 - gaps as i32 * 3;
+                best = Some(best.map_or(score, |previous: i32| previous.max(score)));
+                break;
             }
         }
-        previous = character;
     }
-    None
+    best
 }
 
-fn match_ascii_subsequence(source: &[u8], token: &[u8]) -> Option<i32> {
-    let mut sought = 0;
-    let mut first = 0;
-    let mut last = usize::MAX;
-    let mut consecutive = 0;
-    let mut boundaries = 0;
-    for (position, &byte) in source.iter().enumerate() {
-        if byte != token[sought] {
+fn match_joined_words(source: &str, token: &str) -> Option<i32> {
+    if !source.as_bytes().contains(&b' ') {
+        return None;
+    }
+    let first = token.chars().next()?;
+    for (start, character) in source.char_indices() {
+        if character != first {
             continue;
         }
-        if sought == 0 {
-            first = position;
+        let mut candidate = source[start..].char_indices().filter(|(_, c)| *c != ' ');
+        let mut end = start;
+        let mut matched = true;
+        for sought in token.chars() {
+            match candidate.next() {
+                Some((position, character)) if character == sought => {
+                    end = start + position + character.len_utf8();
+                }
+                _ => {
+                    matched = false;
+                    break;
+                }
+            }
         }
-        if last != usize::MAX && position == last + 1 {
-            consecutive += 1;
-        }
-        if position == 0 || source[position - 1] == b' ' {
-            boundaries += 1;
-        }
-        last = position;
-        sought += 1;
-        if sought == token.len() {
-            let gaps = position - first + 1 - token.len();
+        if matched {
+            let boundary = start == 0 || source.as_bytes()[start - 1] == b' ';
+            let end_boundary = end == source.len() || source.as_bytes()[end] == b' ';
             return Some(
-                (75 + consecutive * 9 + boundaries * 16
-                    - (gaps as i32 * 3).min(65)
-                    - (first as i32).min(15))
-                .max(1),
+                145 + i32::from(boundary) * 55
+                    + i32::from(end_boundary) * 20
+                    + i32::from(start == 0) * 15,
             );
         }
     }
     None
+}
+
+fn match_initials(source: &str, token: &str) -> Option<i32> {
+    let first = token.chars().next()?;
+    let mut words = source.split_whitespace();
+    while let Some(word) = words.next() {
+        if !word.starts_with(first) {
+            continue;
+        }
+        let mut candidate = words.clone();
+        if token.chars().skip(1).all(|character| {
+            candidate.next().and_then(|word| word.chars().next()) == Some(character)
+        }) {
+            return Some(110);
+        }
+    }
+    None
+}
+
+fn match_ascii_abbreviation(source: &[u8], token: &[u8]) -> Option<i32> {
+    if !(2..=3).contains(&token.len()) {
+        return None;
+    }
+    let mut best = None;
+    for word in source.split(|byte| *byte == b' ') {
+        if word.first() != token.first() {
+            continue;
+        }
+        let mut sought = 0;
+        let mut last = usize::MAX;
+        let mut consecutive = 0;
+        for (position, &byte) in word.iter().take(token.len() * 3).enumerate() {
+            if byte != token[sought] {
+                continue;
+            }
+            if last != usize::MAX && position == last + 1 {
+                consecutive += 1;
+            }
+            last = position;
+            sought += 1;
+            if sought == token.len() {
+                let gaps = position + 1 - token.len();
+                let score = 91 + consecutive * 9 - gaps as i32 * 3;
+                best = Some(best.map_or(score, |previous: i32| previous.max(score)));
+                break;
+            }
+        }
+    }
+    best
 }
 
 #[derive(Debug)]
@@ -900,6 +959,97 @@ mod tests {
         assert!(rank(&ties, "", 0, &usage).is_empty());
     }
     #[test]
+    fn full_application_names_reject_scattered_letters_and_action_descriptions() {
+        let mut telegram = item(
+            "telegram-action",
+            "Telegram",
+            "Désinstaller et nettoyer · Messagerie",
+        );
+        telegram.kind = Kind::Uninstall;
+        let items = [
+            item("steam", "Steam", "Application Windows"),
+            item("steam-client", "Steam Client", "Jeux"),
+            item("stream", "Stream Deck", "Application Windows"),
+            item("gamespy", "Register GameSpy Arcade", "Application Windows"),
+            item("teams", "Microsoft Teams", "Application Windows"),
+            item(
+                "telegram-title",
+                "Désinstaller Telegram",
+                "Application Windows",
+            ),
+            telegram,
+        ];
+        let usage = items
+            .iter()
+            .map(|item| (item.id.clone(), u32::MAX))
+            .collect();
+        let hits = rank(&items, "steam", 20, &usage);
+        assert_eq!(
+            hits.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            ["steam", "steam-client"]
+        );
+        assert_eq!(rank(&items, "teams", 20, &usage)[0].id, "teams");
+        assert!(rank(&items, "telgram", 20, &usage).is_empty());
+    }
+    #[test]
+    fn word_initials_and_compact_names_preserve_useful_abbreviations() {
+        let items = [
+            item("code", "Microsoft Visual Studio Code", "Éditeur"),
+            item("terminal", "Windows Terminal", "Console"),
+            item("browser", "Firefox", "Navigateur"),
+            item("split-browser", "Fire Fox Toolkit", "Navigateur"),
+            item("initials", "Alpha Alpha Beta Code", ""),
+            item("long-initials", "Windows Remote Desktop Connection", ""),
+        ];
+        for (query, expected) in [
+            ("vsc", "code"),
+            ("mvsc", "code"),
+            ("wt", "terminal"),
+            ("ffx", "browser"),
+            ("abc", "initials"),
+            ("wrdc", "long-initials"),
+        ] {
+            assert_eq!(
+                rank(&items, query, 9, &HashMap::new())[0].id,
+                expected,
+                "{query}"
+            );
+        }
+        let browsers = rank(&items, "firefox", 9, &HashMap::new());
+        assert_eq!(
+            browsers
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["browser", "split-browser"]
+        );
+    }
+    #[test]
+    fn short_contractions_are_word_anchored_and_bounded() {
+        let items = [
+            item("browser", "Firefox", ""),
+            item("inside-word", "Xfirefox", ""),
+            item("scattered", "Faaaaaaaafaaaaaaaax", ""),
+            item("cross-word", "Fire Fantastic Example", ""),
+        ];
+        assert_eq!(
+            rank(&items, "ffx", 9, &HashMap::new())
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["browser"]
+        );
+        assert!(rank(&items, "frfx", 9, &HashMap::new()).is_empty());
+        // Initials are consecutive words, not arbitrary letters or word skips.
+        assert!(rank(
+            &[item("initials", "Visual Other Studio Code", "")],
+            "vsc",
+            9,
+            &HashMap::new()
+        )
+        .is_empty());
+    }
+    #[test]
     fn search_top_k_agrees_with_full_ordering() {
         let mut items: Vec<Item> = (0..2000)
             .map(|index| {
@@ -942,7 +1092,9 @@ mod tests {
             item("ligature", "Cœur Straße", ""),
         ];
         let usage = HashMap::new();
-        assert_eq!(rank(&items, "рктр", 9, &usage)[0].id, "ru");
+        assert_eq!(rank(&items, "ркт", 9, &usage)[0].id, "ru");
+        assert_eq!(rank(&items, "редактор", 9, &usage)[0].id, "ru");
+        assert!(rank(&items, "рктр", 9, &usage).is_empty());
         assert_eq!(rank(&items, "coeur strasse", 9, &usage)[0].id, "ligature");
     }
 }

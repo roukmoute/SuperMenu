@@ -73,7 +73,11 @@ pub fn save_cache(items: &[Item]) -> io::Result<()> {
 }
 
 fn is_cacheable(item: &Item) -> bool {
-    matches!(item.kind, Kind::Application | Kind::File | Kind::Folder)
+    match item.kind {
+        Kind::Application => !crate::native::is_uninstall_shortcut_title(&item.title),
+        Kind::File | Kind::Folder => true,
+        _ => false,
+    }
 }
 
 /// Runs on the catalog worker. Explicit roots only, never drive-wide or network crawls.
@@ -558,6 +562,36 @@ mod tests {
         let command = Item::new("command", "command", "", "", Kind::Command, "cmd.exe");
         assert!(!is_cacheable(&private));
         assert!(!is_cacheable(&command));
+    }
+
+    #[test]
+    fn old_cached_uninstall_shortcuts_are_not_launchable_applications() {
+        let entries = [
+            ("Steam", Kind::Application),
+            ("Désinstaller Telegram", Kind::Application),
+            ("Telegram Uninstall", Kind::Application),
+            ("Bulk Crap Uninstaller", Kind::Application),
+            ("Uninstall notes.txt", Kind::File),
+        ];
+        let cache = Cache {
+            version: CACHE_VERSION,
+            items: entries
+                .into_iter()
+                .map(|(title, kind)| Item::new(title, title, "", "", kind, title))
+                .collect(),
+        };
+        let restored: Cache =
+            serde_json::from_str(&serde_json::to_string(&cache).unwrap()).unwrap();
+        let titles: Vec<_> = restored
+            .items
+            .iter()
+            .filter(|item| is_cacheable(item))
+            .map(|item| item.title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            ["Steam", "Bulk Crap Uninstaller", "Uninstall notes.txt"]
+        );
     }
 
     #[test]

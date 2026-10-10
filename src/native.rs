@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
 use windows_sys::Win32::Storage::FileSystem::{
@@ -44,6 +45,96 @@ fn win_error(context: &str) -> String {
     format!("{} : {}", context, std::io::Error::last_os_error())
 }
 
+/// A named uninstall action is not a launchable application. AppsFolder can
+/// include these actions alongside real apps, and Start menu links repeat them.
+/// Check only explicit action words at title boundaries; never resolve links or
+/// treat an uninstall utility/product name containing the word as an action.
+pub(crate) fn is_uninstall_shortcut_title(title: &str) -> bool {
+    fn unwrap_title(mut title: &str) -> &str {
+        loop {
+            title = title.trim();
+            let (open, close) = match title.chars().next() {
+                Some('(') => ('(', ')'),
+                Some('[') => ('[', ']'),
+                _ => return title,
+            };
+            let mut depth = 0;
+            let mut encloses_all = false;
+            for (offset, character) in title.char_indices() {
+                if character == open {
+                    depth += 1;
+                } else if character == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        encloses_all = offset + character.len_utf8() == title.len();
+                        break;
+                    }
+                }
+            }
+            if !encloses_all {
+                return title;
+            }
+            title = &title[1..title.len() - 1];
+        }
+    }
+    fn known_utility_suffix(suffix: &str) -> bool {
+        fn architecture(value: &str) -> bool {
+            matches!(
+                unwrap_title(value),
+                "x64" | "x86" | "x32" | "arm64" | "64-bit" | "32-bit" | "64 bit" | "32 bit"
+            )
+        }
+        fn version(value: &str) -> bool {
+            let value = value.strip_prefix('v').unwrap_or(value);
+            !value.is_empty()
+                && value.len() <= 32
+                && value.split('.').all(|part| {
+                    !part.is_empty() && part.bytes().all(|character| character.is_ascii_digit())
+                })
+        }
+        let suffix = unwrap_title(suffix);
+        suffix.is_empty()
+            || architecture(suffix)
+            || version(suffix)
+            || suffix
+                .split_once(char::is_whitespace)
+                .is_some_and(|(release, platform)| version(release) && architecture(platform))
+    }
+    let normalized: String = title
+        .nfd()
+        .filter(|character| !is_combining_mark(*character))
+        .flat_map(char::to_lowercase)
+        .collect();
+    let title = unwrap_title(&normalized);
+    // This is a program's own name, unlike "Uninstall Uninstall Tool".
+    if title.strip_prefix("uninstall tool").is_some_and(|suffix| {
+        (suffix.is_empty() || suffix.starts_with(char::is_whitespace))
+            && known_utility_suffix(suffix)
+    }) {
+        return false;
+    }
+    let boundary = |character: char| {
+        character.is_whitespace()
+            || matches!(
+                character,
+                ':' | '-' | '–' | '—' | '(' | ')' | '[' | ']' | '.'
+            )
+    };
+    let title = title.trim_matches(|character: char| {
+        character.is_whitespace() || matches!(character, '(' | ')' | '[' | ']')
+    });
+    ["uninstall", "desinstaller", "desinstallation"]
+        .iter()
+        .any(|word| {
+            title
+                .strip_prefix(word)
+                .is_some_and(|rest| rest.is_empty() || rest.chars().next().is_some_and(boundary))
+                || title.strip_suffix(word).is_some_and(|rest| {
+                    rest.is_empty() || rest.chars().next_back().is_some_and(boundary)
+                })
+        })
+}
+
 pub fn app_catalog() -> Vec<Item> {
     let mut items = shell_applications();
     let mut titles: HashSet<String> = items.iter().map(|item| item.title.to_lowercase()).collect();
@@ -53,6 +144,7 @@ pub fn app_catalog() -> Vec<Item> {
         .collect();
     let mut add = |title: String, target: String, subtitle: &str, glyph: &str| {
         if title.trim().is_empty()
+            || is_uninstall_shortcut_title(&title)
             || target.is_empty()
             || titles.contains(&title.to_lowercase())
             || targets.contains(&target.to_lowercase())
@@ -193,6 +285,9 @@ fn shell_applications() -> Vec<Item> {
             let Some(title) = display_name(&item, SIGDN_NORMALDISPLAY) else {
                 continue;
             };
+            if is_uninstall_shortcut_title(&title) {
+                continue;
+            }
             let Some(parsing) = display_name(&item, SIGDN_DESKTOPABSOLUTEPARSING) else {
                 continue;
             };
@@ -939,6 +1034,57 @@ pub fn lock_workstation() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uninstall_shortcut_titles_are_excluded_from_launchable_apps() {
+        for title in [
+            "Désinstaller Telegram",
+            "Désinstaller Alice Madness Returns - The Complete Collection",
+            "Désinstaller",
+            "  DÉSINSTALLER qBittorrent  ",
+            "De\u{301}sinstaller Telegram",
+            "Désinstallation de Ready or Not",
+            "Uninstall",
+            "Uninstall  Focusrite Drivers",
+            "Uninstall: Node.js",
+            "Uninstall-Beeftext",
+            "Uninstall Uninstall Tool",
+            "Uninstall Uninstall Tool (x64)",
+            "(Uninstall Uninstall Tool)",
+            "Uninstall Tool - Uninstall",
+            "ShareX - Uninstall",
+            "Telegram (Désinstaller)",
+        ] {
+            assert!(is_uninstall_shortcut_title(title), "{title}");
+        }
+    }
+
+    #[test]
+    fn uninstall_utilities_and_nonaction_word_boundaries_remain_launchable() {
+        for title in [
+            "Telegram",
+            "Alice Madness Returns",
+            "BCUninstaller",
+            "Bulk Crap Uninstaller",
+            "Revo Uninstaller",
+            "IObit Uninstaller",
+            "Uninstall Tool",
+            "Uninstall Tool (x64)",
+            "Uninstall Tool 3.7",
+            "Uninstall Tool v3.7.4 (64-bit)",
+            "(Uninstall Tool)",
+            "[Uninstall Tool (x86)]",
+            "UninstallTool",
+            "Uninstalled Life",
+            "My Uninstall Experiment",
+            "Désinstallerette",
+            "Remove.bg",
+            "Remove Empty Directories",
+            "Remove",
+        ] {
+            assert!(!is_uninstall_shortcut_title(title), "{title}");
+        }
+    }
+
     #[test]
     fn hotkey_parser_accepts_modifiers_letters_digits_functions_and_named_keys() {
         for (input, modifiers, key) in [
