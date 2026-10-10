@@ -130,8 +130,7 @@ pub fn app_catalog() -> Vec<Item> {
             }
         }
     }
-    items
-        .sort_unstable_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+    items.sort_unstable_by_key(|item| item.title.to_lowercase());
     items
 }
 
