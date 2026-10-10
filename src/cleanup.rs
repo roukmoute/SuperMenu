@@ -1759,15 +1759,38 @@ mod tests {
 
     struct Fixture {
         root: PathBuf,
+        temp_root: PathBuf,
+        root_name: String,
         roots: Roots,
     }
+
+    fn fixture_temp_root(directory: &Path) -> PathBuf {
+        // GitHub's Windows TMP can contain RUNNER~1. Normalize that existing
+        // alias before exercising the production policy, which rejects unknown
+        // short names. A verbatim DOS prefix is unnecessary for these fixtures.
+        let canonical = fs::canonicalize(directory).expect("fixture temporary directory exists");
+        let text = canonical.to_str().expect("fixture temporary path is UTF-8");
+        let path = PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(text));
+        assert!(
+            path_components(&path).is_some(),
+            "fixture temporary directory must have an unambiguous local long path"
+        );
+        path
+    }
+
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
+            Self::in_temp_directory(&std::env::temp_dir())
+        }
+
+        fn in_temp_directory(directory: &Path) -> Self {
+            let temp_root = fixture_temp_root(directory);
+            let root_name = format!(
                 "supermenu-cleanup-fixture-{}-{}",
                 std::process::id(),
                 NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
-            ));
+            );
+            let root = temp_root.join(&root_name);
             let programs = root.join("Programs");
             let local = root.join("Local");
             let roaming = root.join("Roaming");
@@ -1776,6 +1799,8 @@ mod tests {
             }
             Self {
                 root,
+                temp_root,
+                root_name,
                 roots: Roots {
                     programs: vec![programs],
                     local: Some(local),
@@ -1805,15 +1830,46 @@ mod tests {
         fn drop(&mut self) {
             // Only this test's freshly created and verified absolute directory is
             // removed. No production cleanup API is invoked by fixture tests.
-            assert!(self
-                .root
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("supermenu-cleanup-fixture-"));
-            assert!(is_within(&self.root, &std::env::temp_dir()));
-            fs::remove_dir_all(&self.root).unwrap();
+            // Never panic while unwinding another test failure: it would abort
+            // the whole test process before libtest can report the first panic.
+            if std::thread::panicking() {
+                return;
+            }
+            // Compare against the exact frozen parent and nonce captured during
+            // creation; an environment change cannot widen the deletion scope.
+            if self.root.parent() != Some(self.temp_root.as_path())
+                || self.root.file_name() != Some(std::ffi::OsStr::new(&self.root_name))
+                || !self.root_name.starts_with("supermenu-cleanup-fixture-")
+            {
+                eprintln!("Invalid fixture cleanup scope; fixture retained.");
+                return;
+            }
+            if let Err(error) = fs::remove_dir_all(&self.root) {
+                eprintln!("Own fixture cleanup failed; fixture retained: {error}");
+            }
         }
+    }
+
+    #[test]
+    fn temporary_short_alias_is_normalized_before_fixture_ownership() {
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let original = std::env::temp_dir();
+        let encoded: Vec<u16> = original.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut output = vec![0u16; 32_768];
+        let length = unsafe {
+            GetShortPathNameW(encoded.as_ptr(), output.as_mut_ptr(), output.len() as u32)
+        };
+        assert!(length > 0 && (length as usize) < output.len());
+        let alias = PathBuf::from(String::from_utf16(&output[..length as usize]).unwrap());
+        let fixture = Fixture::in_temp_directory(&alias);
+        assert!(same_path(&fixture.temp_root, &fixture_temp_root(&original)));
+        assert!(!fixture.root.to_string_lossy().contains('~'));
+        let entry = fixture.entry("Fixture App", "Fixture App", "fixture.exe");
+        let plan = fixture_plan(&fixture, entry);
+        assert!(
+            !plan.files.is_empty(),
+            "canonical fixture must exercise positive program ownership"
+        );
     }
     fn inventory(entries: Vec<InstalledEntry>) -> Inventory {
         Inventory {
