@@ -550,6 +550,11 @@ unsafe extern "system" fn edit_proc(
     _id: usize,
     _data: usize,
 ) -> isize {
+    // Do not borrow State here: EM_REPLACESEL synchronously sends EN_CHANGE.
+    if msg == WM_KEYDOWN && wp == VK_BACK as usize && GetKeyState(VK_CONTROL as i32) < 0 {
+        delete_previous_word(hwnd);
+        return 0;
+    }
     if msg == WM_KEYDOWN {
         if let Some(cell) = state(GetParent(hwnd)) {
             let Ok(mut borrowed) = cell.try_borrow_mut() else {
@@ -568,11 +573,37 @@ unsafe extern "system" fn edit_proc(
         }
     }
     if msg == WM_CHAR
-        && (wp == VK_RETURN as usize || wp == VK_ESCAPE as usize || wp == VK_TAB as usize)
+        && (wp == VK_RETURN as usize
+            || wp == VK_ESCAPE as usize
+            || wp == VK_TAB as usize
+            || wp == 0x7f)
     {
         return 0;
     }
     DefSubclassProc(hwnd, msg, wp, lp)
+}
+
+unsafe fn delete_previous_word(hwnd: HWND) {
+    let mut start = 0u32;
+    let mut end = 0u32;
+    SendMessageW(
+        hwnd,
+        EM_GETSEL,
+        (&mut start as *mut u32) as usize,
+        (&mut end as *mut u32) as isize,
+    );
+    if start == end {
+        if start == 0 {
+            return;
+        }
+        // Reuse the edit control's Ctrl+Left word boundaries and UTF-16 offsets.
+        DefSubclassProc(hwnd, WM_KEYDOWN, VK_LEFT as usize, 0);
+        SendMessageW(hwnd, EM_GETSEL, (&mut start as *mut u32) as usize, 0);
+    }
+    if start < end {
+        SendMessageW(hwnd, EM_SETSEL, start as usize, end as isize);
+        SendMessageW(hwnd, EM_REPLACESEL, 1, [0u16].as_ptr() as isize);
+    }
 }
 
 unsafe fn key(s: &mut State, key: u32) {
@@ -2069,6 +2100,124 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    thread_local! { static EDIT_CHANGES: Cell<usize> = const { Cell::new(0) }; }
+
+    unsafe extern "system" fn edit_test_parent(
+        hwnd: HWND,
+        msg: u32,
+        wp: usize,
+        lp: isize,
+    ) -> isize {
+        if msg == WM_COMMAND && (wp >> 16) & 0xffff == EN_CHANGE as usize {
+            EDIT_CHANGES.with(|count| count.set(count.get() + 1));
+        }
+        DefWindowProcW(hwnd, msg, wp, lp)
+    }
+
+    #[test]
+    fn native_ctrl_backspace_deletes_words_and_preserves_editing() {
+        unsafe {
+            let mut original_keys = [0u8; 256];
+            assert_ne!(GetKeyboardState(original_keys.as_mut_ptr()), 0);
+            struct Controls {
+                parent: HWND,
+                keys: [u8; 256],
+                class: Vec<u16>,
+                instance: HINSTANCE,
+            }
+            impl Drop for Controls {
+                fn drop(&mut self) {
+                    unsafe {
+                        SetKeyboardState(self.keys.as_ptr());
+                        DestroyWindow(self.parent);
+                        UnregisterClassW(self.class.as_ptr(), self.instance);
+                    }
+                }
+            }
+            let instance = GetModuleHandleW(null());
+            let class = wide("SuperMenuEditRegression");
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(edit_test_parent),
+                hInstance: instance,
+                lpszClassName: class.as_ptr(),
+                ..zeroed()
+            };
+            assert_ne!(RegisterClassW(&wc), 0);
+            let parent = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                null(),
+                WS_OVERLAPPED,
+                0,
+                0,
+                400,
+                100,
+                null_mut(),
+                null_mut(),
+                instance,
+                null(),
+            );
+            assert!(!parent.is_null());
+            let _controls = Controls {
+                parent,
+                keys: original_keys,
+                class,
+                instance,
+            };
+            let edit = CreateWindowExW(
+                0,
+                wide("EDIT").as_ptr(),
+                null(),
+                WS_CHILD | ES_AUTOHSCROLL as u32,
+                0,
+                0,
+                300,
+                30,
+                parent,
+                EDIT_ID as _,
+                instance,
+                null(),
+            );
+            assert!(!edit.is_null());
+            assert_ne!(SetWindowSubclass(edit, Some(edit_proc), 1, 0), 0);
+            SetFocus(edit);
+            for (input, start, end, expected) in [
+                ("hello world", 11, 11, "hello "),
+                ("hello world   ", 14, 14, "hello "),
+                ("bonjour café", 12, 12, "bonjour "),
+                ("bonjour 🦀", 10, 10, "bonjour "),
+                ("one three tail", 6, 6, "one ree tail"),
+                ("hello world", 6, 11, "hello "),
+                ("hello world", 11, 6, "hello "),
+                ("hello", 0, 0, "hello"),
+                ("", 0, 0, ""),
+            ] {
+                SetWindowTextW(edit, wide(input).as_ptr());
+                SendMessageW(edit, EM_SETSEL, start, end);
+                let mut keys = [0u8; 256];
+                keys[VK_CONTROL as usize] = 0x80;
+                assert_ne!(SetKeyboardState(keys.as_ptr()), 0);
+                let before = EDIT_CHANGES.with(Cell::get);
+                SendMessageW(edit, WM_KEYDOWN, VK_BACK as usize, 0);
+                // The translated DEL character may arrive after Ctrl is released.
+                assert_ne!(SetKeyboardState([0u8; 256].as_ptr()), 0);
+                SendMessageW(edit, WM_CHAR, 0x7f, 0);
+                assert_eq!(control_text(edit), expected, "input: {input:?}");
+                if expected != input {
+                    assert!(EDIT_CHANGES.with(Cell::get) > before);
+                    assert_ne!(SendMessageW(edit, EM_UNDO, 0, 0), 0);
+                    assert_eq!(control_text(edit), input, "undo: {input:?}");
+                } else {
+                    assert_eq!(EDIT_CHANGES.with(Cell::get), before);
+                }
+            }
+            SetWindowTextW(edit, wide("hello").as_ptr());
+            SendMessageW(edit, EM_SETSEL, 5, 5);
+            SendMessageW(edit, WM_CHAR, VK_BACK as usize, 0);
+            assert_eq!(control_text(edit), "hell");
+        }
+    }
+
     #[test]
     fn web_query_encoding() {
         assert_eq!(encode("a&b é"), "a%26b%20%C3%A9");

@@ -4,15 +4,17 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. L'exécutable autonome de cette première version fait **914 432 octets, soit 0,87 Mio**.
+Windows 10 et 11, x64. L'exécutable autonome fait **moins de 1 Mio** ; sa taille exacte varie légèrement selon la version du compilateur.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 25 Mio de mémoire privée et 54 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,57 ms (p95 2,23 ms) pour le classement en mémoire, et 0,90 ms (p95 2,79 ms) pour les fichiers. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 23 tests automatisés et les 8 contrôles du menu natif passent.
+Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 25 Mio de mémoire privée et 54 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,57 ms (p95 2,23 ms) pour le classement en mémoire, et 0,90 ms (p95 2,79 ms) pour les fichiers. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 24 tests automatisés et les 8 contrôles du menu natif passent.
 
 ## Utiliser
 
 Télécharger l'archive depuis les [releases](https://github.com/roukmoute/SuperMenu/releases), l'extraire et lancer l'exécutable. Au premier lancement, le menu apparaît. Ensuite, **Win + Espace** affiche ou masque le menu. Une icône dans la zone de notification permet aussi de l'ouvrir et de quitter le programme.
+
+Seul `supermenu.exe` est nécessaire pour utiliser l'application. Les autres fichiers de l'archive sont la documentation, la licence, un rapport de performances et un exemple de configuration. **Ctrl + Retour arrière** supprime le mot précédent ou la sélection dans la recherche ; **Ctrl + Z** annule cette suppression.
 
 Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu lui donne la priorité lorsqu'il fonctionne. Choisir un autre raccourci dans les réglages si ce changement de langue doit rester accessible. Le fichier JSON permet aussi un raccourci personnalisé, par exemple `Ctrl+Alt+Space`.
 
