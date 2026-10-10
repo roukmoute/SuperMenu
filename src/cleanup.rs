@@ -2447,6 +2447,48 @@ mod tests {
             };
             assert_eq!(status, ERROR_SUCCESS);
         }
+        fn ensure_fixture_run_key(parent: &RegistryKey) -> OpenKey {
+            assert_eq!(parent.hive, Hive::User);
+            assert_eq!(parent.view, RegistryView::Registry64);
+            let child = RegistryKey {
+                path: format!(r"{}\Run", parent.path),
+                ..parent.clone()
+            };
+            if let Some(handle) = open_key(&child, true).unwrap() {
+                return handle;
+            }
+            // A clean runner profile may not have a Run key. Keep the verified
+            // non-link parent open and create only its literal Run child. Windows
+            // checks parent key creation permission against its security descriptor.
+            let parent = open_key(parent, false)
+                .unwrap()
+                .expect("verified fixture parent exists");
+            let mut handle = null_mut();
+            let status = unsafe {
+                RegCreateKeyExW(
+                    parent.value,
+                    wide("Run").as_ptr(),
+                    0,
+                    null(),
+                    0,
+                    KEY_READ | KEY_SET_VALUE | KEY_WOW64_64KEY,
+                    null(),
+                    &mut handle,
+                    null_mut(),
+                )
+            };
+            assert_eq!(status, ERROR_SUCCESS);
+            let created = OpenKey {
+                value: handle,
+                _ancestors: RegistryChain(Vec::new()),
+            };
+            drop(created);
+            // Reopen through the same component-by-component link checks before
+            // writing even the unique fixture value. Existing values are untouched.
+            open_key(&child, true)
+                .unwrap()
+                .expect("verified Run key now exists")
+        }
         let key = create_own_key(&uninstall_path);
         let guard = OwnRegistryFixture {
             path: uninstall_path,
@@ -2461,14 +2503,39 @@ mod tests {
         );
         set_own_string(key.value, "DisplayIcon", &executable.display().to_string());
         drop(key);
+        // Exercise the missing-child branch on our own disposable product key,
+        // never by deleting or changing anybody's actual shared Run key.
+        let own_parent = RegistryKey {
+            hive: Hive::User,
+            view: RegistryView::Registry64,
+            path: guard.path.clone(),
+        };
+        let temporary_run = ensure_fixture_run_key(&own_parent);
+        assert!(read_value(temporary_run.value, &nonce).unwrap().is_none());
+        drop(temporary_run);
+        let temporary_run_path = format!(r"{}\Run", guard.path);
+        assert!(temporary_run_path.starts_with(&format!(r"{UNINSTALL}\SuperMenuCleanupFixture-")));
+        assert_eq!(
+            unsafe {
+                RegDeleteKeyExW(
+                    HKEY_CURRENT_USER,
+                    wide(&temporary_run_path).as_ptr(),
+                    KEY_WOW64_64KEY,
+                    0,
+                )
+            },
+            ERROR_SUCCESS
+        );
         let run_key = RegistryKey {
             hive: Hive::User,
             view: RegistryView::Registry64,
             path: RUN.into(),
         };
-        let run = open_key(&run_key, true)
-            .unwrap()
-            .expect("Windows user Run key exists");
+        let run_parent = RegistryKey {
+            path: RUN.rsplit_once('\\').unwrap().0.into(),
+            ..run_key.clone()
+        };
+        let run = ensure_fixture_run_key(&run_parent);
         assert!(read_value(run.value, &nonce).unwrap().is_none());
         set_own_string(
             run.value,
