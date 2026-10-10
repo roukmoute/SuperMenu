@@ -6,6 +6,9 @@ mod installer;
 mod launch_feedback;
 mod native;
 mod packages;
+mod timer;
+mod timer_alert;
+mod timer_runtime;
 mod ui;
 
 fn main() {

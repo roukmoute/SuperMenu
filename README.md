@@ -8,7 +8,7 @@ Windows 10 et 11, x64. L'exécutable autonome fait **environ 1 Mio** ; sa taille
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 28 Mio de mémoire privée et 59 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,39 ms) pour le classement en mémoire, de 0,65 ms (p95 2,20 ms) pour les fichiers et de 0,63 ms (p95 1,06 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 74 tests automatisés et les 15 contrôles du menu natif avec le diagnostic de lancement passent.
+Mesures locales de la version Release, avec 337 applications et 20 000 fichiers/dossiers : environ 28 Mio de mémoire privée et 59 Mio de mémoire résidente, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,39 ms) pour le classement en mémoire, de 0,65 ms (p95 2,20 ms) pour les fichiers et de 0,63 ms (p95 1,06 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 92 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
 
 ## Utiliser
 
@@ -32,6 +32,7 @@ Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu
 | --- | --- |
 | `firefox` | Application puis désinstallation, ou installation si Firefox est absent |
 | `;` | Menu des fournisseurs |
+| `minuteur 5m Thé` | Compte à rebours avec alerte |
 | `@` | Applications déjà installées |
 | `+ firefox` | Logiciels du catalogue à installer |
 | `- firefox` | Logiciels installés à désinstaller |
@@ -67,6 +68,23 @@ Choisir **Désinstaller** dans le menu, ou saisir `- chrome`, pour parcourir les
 Les actions utilisent les identifiants exacts du catalogue ou les noms exacts du registre Windows pour les autres logiciels, y compris ceux installés autrement qu'avec WinGet. Les composants `SystemComponent` ou `NoRemove` sont exclus. Les variantes telles que Firefox ESR et VS Code Insiders gardent leur propre identité. Le helper vérifie à nouveau la présence du logiciel ; une cible inconnue, protégée ou ambiguë n'est pas supprimée. La commande n'utilise ni `--force`, ni `--purge`, ni `--all`.
 
 ![Une action de désinstallation dans Super Menu](docs/remove.png)
+
+## Minuteurs
+
+Choisir **Minuteur** dans l'accueil ou saisir `minuteur 5m` puis **Entrée**. Un aperçu affiche la durée avant de démarrer ; la frappe seule ne crée aucun minuteur. `timer` est aussi accepté. Les raccourcis proposés dans le module démarrent cinq, dix, vingt-cinq ou soixante minutes.
+
+- `minuteur 5m Thé` : cinq minutes avec le nom « Thé ».
+- `minuteur 90s` ou `minuteur 01:30` : une minute trente.
+- `minuteur 1h 30m` ou `minuteur 1:30:00` : une heure trente.
+- `minuteur 10` : dix minutes, l'unité par défaut.
+
+Le compte à rebours apparaît dans la liste **Minuteur**. **Entrée** sur un minuteur ouvre ses actions : **Mettre en pause**, **Reprendre** et **Annuler**. **Échap** revient à la liste. Jusqu'à huit minuteurs peuvent coexister, avec une durée maximale de vingt-quatre heures.
+
+À l'échéance, un court son Windows accompagne une alerte qui reste visible jusqu'à **Fermer**, sans prendre le focus. Plusieurs fins sont regroupées et peuvent aussi être acquittées individuellement dans le module. Les minuteurs continuent avec le menu masqué et pendant les dialogues de paramètres ou d'aide. Le temps passé en veille compte ; une échéance passée est signalée au réveil de Windows. L'application ne réveille pas l'ordinateur.
+
+Les minuteurs restent en mémoire : **quitter Super Menu les annule**. Aucun service ni fichier supplémentaire n'est nécessaire. Sans minuteur en cours, aucune minuterie de compte à rebours n'est active.
+
+![Minuteur dans Super Menu](docs/timer.png)
 
 ## Réglages et index
 

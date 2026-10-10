@@ -1,9 +1,13 @@
-use crate::{catalog, config, core, installer, launch_feedback, native, packages};
+use crate::{
+    catalog, config, core, installer, launch_feedback, native, packages, timer, timer_alert,
+    timer_runtime,
+};
 use core::{Item, Kind};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
+use std::rc::Rc;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Mutex,
@@ -21,6 +25,7 @@ const INDEX: u32 = WM_APP + 2;
 const REFRESH: u32 = WM_APP + 3;
 const TRAY: u32 = WM_APP + 4;
 const LAUNCH_DONE: u32 = WM_APP + 6;
+const TIMER_TICK: usize = 43;
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
 const ROW_HEIGHT: i32 = 48;
@@ -29,6 +34,7 @@ const CF_UNICODETEXT: u32 = 13;
 thread_local! { static DEFERRED:Cell<u8>=const {Cell::new(0)}; }
 thread_local! { static DEFERRED_INSTALL:RefCell<Vec<(usize,isize)>>=const {RefCell::new(Vec::new())}; }
 thread_local! { static DEFERRED_REMOVE:RefCell<Vec<(usize,isize)>>=const {RefCell::new(Vec::new())}; }
+thread_local! { static DEFERRED_TIMER_ACK:RefCell<Vec<usize>>=const {RefCell::new(Vec::new())}; }
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -92,6 +98,8 @@ struct State {
     catalog_ready: Arc<AtomicUsize>,
     feedback: Option<launch_feedback::LaunchFeedback>,
     feedback_request: Option<usize>,
+    timers: Rc<RefCell<timer_runtime::TimerRuntime>>,
+    timer_focus: Option<timer::TimerId>,
     launches: LaunchRequests,
     launch_results: mpsc::Receiver<(usize, Result<(), String>)>,
     launch_sender: mpsc::Sender<(usize, Result<(), String>)>,
@@ -295,6 +303,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let usage = catalog::Usage::new();
         let weights = usage.snapshot_for(&cache);
         let (launch_sender, launch_results) = mpsc::channel();
+        let timers = Rc::new(RefCell::new(timer_runtime::TimerRuntime::new(
+            settings.clone(),
+            smoke,
+        )));
         let state_cell = Box::new(RefCell::new(State {
             hwnd: null_mut(),
             edit: null_mut(),
@@ -312,6 +324,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
             catalog_ready: Arc::new(AtomicUsize::new(0)),
             feedback: None,
             feedback_request: None,
+            timers,
+            timer_focus: None,
             launches: LaunchRequests::default(),
             launch_results,
             launch_sender,
@@ -363,6 +377,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let mut state = state_cell.borrow_mut();
         state.hwnd = hwnd;
         state.feedback = launch_feedback::LaunchFeedback::new().ok();
+        timer_runtime::bind(&state.timers, hwnd);
         let dark: i32 = if state.settings.theme == "light" {
             0
         } else {
@@ -457,6 +472,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                         "index_items":items.len(),"applications":items.iter().filter(|i|i.kind==Kind::Application).count(),
                         "files":items.iter().filter(|i|matches!(i.kind,Kind::File|Kind::Folder)).count(),
                         "visible_results":state.items.len(),"indexing_finished":!state.indexing.load(Ordering::Relaxed),
+                        "timer_count":state.timers.borrow().book.snapshots(Instant::now()).len(),
+                        "timer_alert_visible":state.timers.borrow().alert_visible(),
+                        "timer_alert_hwnd":state.timers.borrow().alert_hwnd() as usize,
                         "first_frame_ms":state.first_frame_ms,"private_bytes":memory.PrivateUsage,"working_set_bytes":memory.WorkingSetSize,"checks":state.checks});
                     let _ = std::fs::write(path, serde_json::to_string_pretty(&report).unwrap());
                 }
@@ -466,6 +484,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         state.hotkey.take();
         state.watcher.take();
         state.feedback.take();
+        state.timers.borrow_mut().shutdown();
+        timer_runtime::unbind();
+        KillTimer(hwnd, TIMER_TICK);
         tray(&state, NIM_DELETE);
         DestroyWindow(hwnd);
         for font in state.fonts {
@@ -495,6 +516,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
     let Some(cell) = state(hwnd) else {
         return DefWindowProcW(hwnd, msg, wp, lp);
     };
+    if timer_runtime::handle_message(hwnd, msg, wp) {
+        if let Ok(mut s) = cell.try_borrow_mut() {
+            let available = s.timers.try_borrow().is_ok();
+            if available {
+                refresh_timer_view(&mut s);
+            }
+        } else {
+            DEFERRED.with(|d| d.set(d.get() | 8));
+        }
+        return if msg == WM_POWERBROADCAST { 1 } else { 0 };
+    }
     let Ok(mut borrowed) = cell.try_borrow_mut() else {
         if msg == INDEX || msg == REFRESH {
             DEFERRED.with(|d| d.set(d.get() | if msg == INDEX { 1 } else { 2 }));
@@ -504,6 +536,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             DEFERRED_REMOVE.with(|d| d.borrow_mut().push((wp, lp)));
         } else if msg == LAUNCH_DONE {
             DEFERRED.with(|d| d.set(d.get() | 4));
+        } else if msg == WM_TIMER && wp == TIMER_TICK {
+            DEFERRED.with(|d| d.set(d.get() | 8));
+        } else if msg == timer_alert::WM_TIMER_ALERT_DISMISSED {
+            // The alert can be dismissed during a nested Windows modal loop.
+            DEFERRED_TIMER_ACK.with(|d| d.borrow_mut().push(wp));
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     };
@@ -741,6 +778,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             process_launch_results(s);
             0
         }
+        timer_alert::WM_TIMER_ALERT_DISMISSED => {
+            acknowledge_timer_alert(s, wp);
+            0
+        }
         TRAY => {
             if lp as u32 == WM_LBUTTONUP || lp as u32 == WM_LBUTTONDBLCLK {
                 show(s);
@@ -749,6 +790,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 AppendMenuW(menu, MF_STRING, 1, wide("Ouvrir Super Menu").as_ptr());
                 AppendMenuW(menu, MF_STRING, 2, wide("Paramètres").as_ptr());
                 AppendMenuW(menu, MF_STRING, 3, wide("Actualiser l'index").as_ptr());
+                AppendMenuW(menu, MF_STRING, 5, wide("Minuteurs").as_ptr());
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
                 AppendMenuW(menu, MF_STRING, 4, wide("Quitter").as_ptr());
                 let mut p: POINT = zeroed();
@@ -771,6 +813,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                         settings(s);
                     }
                     3 => reindex(s),
+                    5 => {
+                        show(s);
+                        set_query(s, "minuteur ");
+                    }
                     4 => {
                         PostQuitMessage(0);
                     }
@@ -780,7 +826,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             0
         }
         WM_TIMER => {
-            if wp == 98 && s.feedback_test {
+            if wp == TIMER_TICK {
+                tick_timers(s);
+            } else if wp == 98 && s.feedback_test {
                 KillTimer(hwnd, 98);
                 let item = Item::new(
                     "feedback-test",
@@ -800,6 +848,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             }
             0
         }
+        WM_POWERBROADCAST => {
+            // Windows' monotonic clock includes sleep; check overdue timers on
+            // resume without waking the computer or keeping it awake.
+            if wp == 0x12 || wp == 0x07 {
+                tick_timers(s);
+            }
+            1
+        }
         WM_CLOSE => {
             hide(s);
             0
@@ -807,6 +863,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
         WM_DESTROY => {
             KillTimer(hwnd, 1);
             KillTimer(hwnd, 99);
+            KillTimer(hwnd, TIMER_TICK);
             PostQuitMessage(0);
             0
         }
@@ -888,7 +945,9 @@ unsafe fn key(s: &mut State, key: u32) {
         VK_DOWN => select(s, 1),
         VK_RETURN => execute(s, GetKeyState(VK_CONTROL as i32) < 0),
         VK_ESCAPE => {
-            if s.query.is_empty() {
+            if s.timer_focus.take().is_some() {
+                update_results(s);
+            } else if s.query.is_empty() {
                 hide(s);
             } else {
                 set_query(s, "");
@@ -898,7 +957,7 @@ unsafe fn key(s: &mut State, key: u32) {
         VK_F5 => reindex(s),
         VK_F1 => {
             s.settings_open = true;
-            MessageBoxW(s.hwnd,wide("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer / désinstaller\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications, installation ou désinstallation\n@ applications à lancer    + installer    - désinstaller\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\n\nInstaller : Entrée ouvre la progression WinGet.\nDésinstaller : confirmation puis progression WinGet.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.").as_ptr(),wide("Super Menu · Aide").as_ptr(),MB_OK);
+            MessageBoxW(s.hwnd,wide("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer / désinstaller\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications, installation ou désinstallation\n@ applications à lancer    + installer    - désinstaller\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\nminuteur 5m Thé · timer 90s : compte à rebours\n\nInstaller : Entrée ouvre la progression WinGet.\nDésinstaller : confirmation puis progression WinGet.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.").as_ptr(),wide("Super Menu · Aide").as_ptr(),MB_OK);
             s.settings_open = false;
             finish_modal(s);
             SetFocus(s.edit);
@@ -953,6 +1012,12 @@ fn navigation() -> Vec<Item> {
             "=",
             "= ",
         ),
+        (
+            "Minuteur",
+            "Compte à rebours · essaie minuteur 5m Thé",
+            "\u{E916}",
+            "minuteur ",
+        ),
         ("Recherche web", "Chercher dans ton navigateur", "⌕", "? "),
         (
             "Commandes",
@@ -991,7 +1056,11 @@ unsafe fn update_results(s: &mut State) {
     let len = GetWindowTextLengthW(s.edit).max(0) as usize;
     let mut text = vec![0u16; len + 1];
     GetWindowTextW(s.edit, text.as_mut_ptr(), text.len() as i32);
-    s.query = String::from_utf16_lossy(&text[..len]);
+    let query = String::from_utf16_lossy(&text[..len]);
+    if query != s.query {
+        s.timer_focus = None;
+    }
+    s.query = query;
     let start = Instant::now();
     let trimmed = s.query.trim();
     let prefix = trimmed.chars().next().unwrap_or('\0');
@@ -1002,194 +1071,210 @@ unsafe fn update_results(s: &mut State) {
     };
     let limit = s.settings.max_results.max(1);
     let weights = &s.weights;
-    s.items = match prefix {
-        '\0' | ';' => {
-            s.section = "EXPLORER".into();
-            if body.is_empty() {
-                navigation()
-            } else {
-                core::rank(&navigation(), body, limit, weights)
+    s.items = if let Some(body) = timer_query(trimmed) {
+        s.section = "MINUTEURS".into();
+        timer_items(&s.timers.borrow().book, body, s.timer_focus, start)
+    } else {
+        match prefix {
+            '\0' | ';' => {
+                s.section = "EXPLORER".into();
+                if body.is_empty() {
+                    navigation()
+                } else {
+                    core::rank(&navigation(), body, limit, weights)
+                }
             }
-        }
-        '=' => {
-            s.section = "CALCULATRICE".into();
-            match core::calculate(body) {
-                Some(result) => vec![Item::new(
-                    "calc",
-                    result.clone(),
-                    format!("{body} · Entrée pour copier"),
-                    "=",
-                    Kind::Calculator,
-                    result,
-                )],
-                None if body.is_empty() => vec![Item::new(
-                    "example",
-                    "Essaie = (12 + 8) × 3",
-                    "Opérateurs + - * / ^ %, fonctions sqrt, sin, cos",
-                    "=",
-                    Kind::Navigation,
-                    "= (12 + 8) * 3",
-                )],
-                None => vec![],
+            '=' => {
+                s.section = "CALCULATRICE".into();
+                match core::calculate(body) {
+                    Some(result) => vec![Item::new(
+                        "calc",
+                        result.clone(),
+                        format!("{body} · Entrée pour copier"),
+                        "=",
+                        Kind::Calculator,
+                        result,
+                    )],
+                    None if body.is_empty() => vec![Item::new(
+                        "example",
+                        "Essaie = (12 + 8) × 3",
+                        "Opérateurs + - * / ^ %, fonctions sqrt, sin, cos",
+                        "=",
+                        Kind::Navigation,
+                        "= (12 + 8) * 3",
+                    )],
+                    None => vec![],
+                }
             }
-        }
-        '?' => {
-            s.section = "RECHERCHE WEB".into();
-            if body.is_empty() {
-                vec![]
-            } else {
-                let url = s
+            '?' => {
+                s.section = "RECHERCHE WEB".into();
+                if body.is_empty() {
+                    vec![]
+                } else {
+                    let url = s
+                        .settings
+                        .web_search_template
+                        .replace("{query}", &encode(body));
+                    vec![Item::new(
+                        "web",
+                        format!("Rechercher « {body} »"),
+                        "Ouvrir dans le navigateur par défaut",
+                        "⌕",
+                        Kind::Web,
+                        url,
+                    )]
+                }
+            }
+            '>' => {
+                s.section = "COMMANDES".into();
+                let commands: Vec<Item> = s
                     .settings
-                    .web_search_template
-                    .replace("{query}", &encode(body));
-                vec![Item::new(
-                    "web",
-                    format!("Rechercher « {body} »"),
-                    "Ouvrir dans le navigateur par défaut",
-                    "⌕",
-                    Kind::Web,
-                    url,
-                )]
-            }
-        }
-        '>' => {
-            s.section = "COMMANDES".into();
-            let commands: Vec<Item> = s
-                .settings
-                .commands
-                .iter()
-                .map(|c| {
-                    let mut i = Item::new(
-                        format!("command:{}", c.name),
-                        &c.name,
-                        &c.file_name,
+                    .commands
+                    .iter()
+                    .map(|c| {
+                        let mut i = Item::new(
+                            format!("command:{}", c.name),
+                            &c.name,
+                            &c.file_name,
+                            "›",
+                            Kind::Command,
+                            &c.file_name,
+                        );
+                        i.arguments = c.arguments.clone();
+                        i
+                    })
+                    .collect();
+                let mut found = core::rank(&commands, body, limit, weights);
+                if !body.is_empty() && found.len() < limit {
+                    let mut cmd = Item::new(
+                        "shell",
+                        format!("Exécuter : {body}"),
+                        "Commande Windows · exécutée uniquement avec Entrée",
                         "›",
                         Kind::Command,
-                        &c.file_name,
+                        "cmd.exe",
                     );
-                    i.arguments = c.arguments.clone();
-                    i
+                    cmd.arguments = format!("/D /C {body}");
+                    found.push(cmd);
+                }
+                found
+            }
+            ':' => {
+                s.section = "PRESSE-PAPIERS".into();
+                if !s.settings.clipboard_enabled {
+                    vec![Item::new(
+                        "clipboard-settings",
+                        "Activer l'historique du presse-papiers",
+                        "Désactivé par défaut · conservé uniquement en mémoire",
+                        "▤",
+                        Kind::System,
+                        "settings",
+                    )]
+                } else {
+                    core::rank(&s.clipboard.items(), body, limit, weights)
+                }
+            }
+            '.' => {
+                s.section = "SYMBOLES".into();
+                let items: Vec<Item> = [
+                    ("→", "flèche droite"),
+                    ("←", "flèche gauche"),
+                    ("✓", "coche"),
+                    ("×", "multiplication"),
+                    ("—", "tiret cadratin"),
+                    ("€", "euro"),
+                    ("°", "degré"),
+                    ("π", "pi"),
+                    ("©", "copyright"),
+                    ("∞", "infini"),
+                    ("♥", "cœur"),
+                    ("…", "points de suspension"),
+                ]
+                .into_iter()
+                .map(|(symbol, title)| {
+                    Item::new(
+                        format!("symbol:{symbol}"),
+                        format!("{symbol}  {title}"),
+                        "Entrée pour copier",
+                        symbol,
+                        Kind::Symbol,
+                        symbol,
+                    )
                 })
                 .collect();
-            let mut found = core::rank(&commands, body, limit, weights);
-            if !body.is_empty() && found.len() < limit {
-                let mut cmd = Item::new(
-                    "shell",
-                    format!("Exécuter : {body}"),
-                    "Commande Windows · exécutée uniquement avec Entrée",
-                    "›",
-                    Kind::Command,
-                    "cmd.exe",
-                );
-                cmd.arguments = format!("/D /C {body}");
-                found.push(cmd);
+                core::rank(&items, body, limit, weights)
             }
-            found
-        }
-        ':' => {
-            s.section = "PRESSE-PAPIERS".into();
-            if !s.settings.clipboard_enabled {
-                vec![Item::new(
-                    "clipboard-settings",
-                    "Activer l'historique du presse-papiers",
-                    "Désactivé par défaut · conservé uniquement en mémoire",
-                    "▤",
-                    Kind::System,
-                    "settings",
-                )]
-            } else {
-                core::rank(&s.clipboard.items(), body, limit, weights)
+            '~' => {
+                s.section = "FENÊTRES OUVERTES".into();
+                core::rank(&native::windows(), body, limit, weights)
             }
-        }
-        '.' => {
-            s.section = "SYMBOLES".into();
-            let items: Vec<Item> = [
-                ("→", "flèche droite"),
-                ("←", "flèche gauche"),
-                ("✓", "coche"),
-                ("×", "multiplication"),
-                ("—", "tiret cadratin"),
-                ("€", "euro"),
-                ("°", "degré"),
-                ("π", "pi"),
-                ("©", "copyright"),
-                ("∞", "infini"),
-                ("♥", "cœur"),
-                ("…", "points de suspension"),
-            ]
-            .into_iter()
-            .map(|(symbol, title)| {
-                Item::new(
-                    format!("symbol:{symbol}"),
-                    format!("{symbol}  {title}"),
-                    "Entrée pour copier",
-                    symbol,
-                    Kind::Symbol,
-                    symbol,
-                )
-            })
-            .collect();
-            core::rank(&items, body, limit, weights)
-        }
-        '~' => {
-            s.section = "FENÊTRES OUVERTES".into();
-            core::rank(&native::windows(), body, limit, weights)
-        }
-        '!' => {
-            s.section = "SYSTÈME".into();
-            core::rank(
-                &system_items(),
-                body,
-                if body.is_empty() { 20 } else { limit },
-                weights,
-            )
-        }
-        _ => {
-            s.section = if prefix == '/' {
-                "FICHIERS"
-            } else {
-                "APPLICATIONS"
-            }
-            .into();
-            let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
-            if prefix == '/' {
-                search_catalog(&index, trimmed, limit, weights)
-            } else {
-                if prefix == '+' {
-                    s.section = "INSTALLER AVEC WINGET".into();
-                } else if prefix == '-' {
-                    s.section = "DÉSINSTALLER UN LOGICIEL".into();
-                }
-                let visible_apps: Vec<Item> = if s.removals.completed.is_empty() {
-                    Vec::new()
-                } else {
-                    index
-                        .iter()
-                        .filter(|item| {
-                            item.kind == Kind::Application
-                                && !s.removals.completed.iter().any(|target| {
-                                    packages::application_matches_removal(item, target)
-                                })
-                        })
-                        .cloned()
-                        .collect()
-                };
-                let search_index = if s.removals.completed.is_empty() {
-                    index.as_slice()
-                } else {
-                    visible_apps.as_slice()
-                };
-                packages::search_with_removals(
-                    search_index,
-                    &s.missing_packages,
-                    &s.removable_packages,
-                    trimmed,
-                    limit,
+            '!' => {
+                s.section = "SYSTÈME".into();
+                core::rank(
+                    &system_items(),
+                    body,
+                    if body.is_empty() { 20 } else { limit },
                     weights,
                 )
             }
+            _ => {
+                s.section = if prefix == '/' {
+                    "FICHIERS"
+                } else {
+                    "APPLICATIONS"
+                }
+                .into();
+                let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
+                if prefix == '/' {
+                    search_catalog(&index, trimmed, limit, weights)
+                } else {
+                    if prefix == '+' {
+                        s.section = "INSTALLER AVEC WINGET".into();
+                    } else if prefix == '-' {
+                        s.section = "DÉSINSTALLER UN LOGICIEL".into();
+                    }
+                    let visible_apps: Vec<Item> = if s.removals.completed.is_empty() {
+                        Vec::new()
+                    } else {
+                        index
+                            .iter()
+                            .filter(|item| {
+                                item.kind == Kind::Application
+                                    && !s.removals.completed.iter().any(|target| {
+                                        packages::application_matches_removal(item, target)
+                                    })
+                            })
+                            .cloned()
+                            .collect()
+                    };
+                    let search_index = if s.removals.completed.is_empty() {
+                        index.as_slice()
+                    } else {
+                        visible_apps.as_slice()
+                    };
+                    packages::search_with_removals(
+                        search_index,
+                        &s.missing_packages,
+                        &s.removable_packages,
+                        trimmed,
+                        limit,
+                        weights,
+                    )
+                }
+            }
         }
     };
+    for item in &mut s.items {
+        if item.kind == Kind::Navigation && item.target == "minuteur " {
+            let timers = s.timers.borrow().book.snapshots(start);
+            if !timers.is_empty() {
+                item.subtitle = format!(
+                    "{} minuteur(s) · Entrée pour voir les comptes à rebours",
+                    timers.len()
+                );
+            }
+        }
+    }
     for item in &mut s.items {
         if item.kind == Kind::Install && s.installations.is_pending(&item.target) {
             item.subtitle = "Installation en cours · progression dans la console".into();
@@ -1220,7 +1305,264 @@ fn search_catalog(
     })
 }
 
+fn timer_query(query: &str) -> Option<&str> {
+    let mut parts = query.trim().splitn(2, char::is_whitespace);
+    let name = parts.next()?;
+    if ["minuteur", "minuteurs", "timer", "timers"]
+        .iter()
+        .any(|alias| name.eq_ignore_ascii_case(alias))
+    {
+        Some(parts.next().unwrap_or("").trim())
+    } else {
+        None
+    }
+}
+
+fn timer_clock(seconds: u64) -> String {
+    if seconds >= 3600 {
+        format!(
+            "{:02}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("{:02}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
+fn timer_item(
+    title: impl Into<String>,
+    subtitle: impl Into<String>,
+    target: impl Into<String>,
+) -> Item {
+    let target = target.into();
+    Item::new(
+        format!("timer:{target}"),
+        title,
+        subtitle,
+        "\u{E916}",
+        Kind::Timer,
+        target,
+    )
+}
+
+fn timer_items(
+    book: &timer::TimerBook,
+    body: &str,
+    focus: Option<timer::TimerId>,
+    now: Instant,
+) -> Vec<Item> {
+    let snapshots = book.snapshots(now);
+    if let Some(snapshot) = snapshots.iter().find(|snapshot| Some(snapshot.id) == focus) {
+        let caption = format!(
+            "{} · {}",
+            snapshot.label,
+            timer_clock(snapshot.remaining_seconds)
+        );
+        let mut items = vec![timer_item(
+            &caption,
+            match snapshot.status {
+                timer::TimerStatus::Running => "En cours",
+                timer::TimerStatus::Paused => "En pause",
+                timer::TimerStatus::Finished => "Terminé",
+            },
+            "help",
+        )];
+        items[0].subtitle = format!(
+            "{} · Durée initiale {}",
+            items[0].subtitle,
+            timer_clock(snapshot.total_seconds)
+        );
+        match snapshot.status {
+            timer::TimerStatus::Running => items.push(timer_item(
+                "Mettre en pause",
+                &snapshot.label,
+                format!("pause:{}", snapshot.id),
+            )),
+            timer::TimerStatus::Paused => items.push(timer_item(
+                "Reprendre",
+                &snapshot.label,
+                format!("resume:{}", snapshot.id),
+            )),
+            timer::TimerStatus::Finished => items.push(timer_item(
+                "Fermer cette alerte",
+                &snapshot.label,
+                format!("ack:{}", snapshot.id),
+            )),
+        }
+        if snapshot.status != timer::TimerStatus::Finished {
+            items.push(timer_item(
+                "Annuler ce minuteur",
+                &snapshot.label,
+                format!("cancel:{}", snapshot.id),
+            ));
+        }
+        items.push(timer_item(
+            "Tous les minuteurs",
+            "Revenir à la liste",
+            "back",
+        ));
+        return items;
+    }
+    if !body.is_empty() {
+        return vec![match timer::parse(body) {
+            Ok(spec) if snapshots.len() < timer::MAX_TIMERS => timer_item(
+                format!("Démarrer · {}", timer_clock(spec.duration.as_secs())),
+                format!("{} · Entrée pour démarrer", spec.label),
+                format!("start:{body}"),
+            ),
+            Ok(_) => timer_item(
+                "Huit minuteurs maximum",
+                "Annule ou ferme un minuteur dans la liste pour en ajouter un",
+                "back",
+            ),
+            Err(error) => timer_item(
+                error.to_string(),
+                "Exemples : minuteur 5m Thé · minuteur 01:30 · minuteur 1h 30m",
+                "help",
+            ),
+        }];
+    }
+    let mut items: Vec<Item> = snapshots
+        .iter()
+        .map(|snapshot| {
+            timer_item(
+                format!(
+                    "{} · {}",
+                    snapshot.label,
+                    if snapshot.status == timer::TimerStatus::Finished {
+                        "Terminé".into()
+                    } else {
+                        timer_clock(snapshot.remaining_seconds)
+                    }
+                ),
+                match snapshot.status {
+                    timer::TimerStatus::Running => "En cours · Entrée pour gérer",
+                    timer::TimerStatus::Paused => "En pause · Entrée pour gérer",
+                    timer::TimerStatus::Finished => "Entrée pour fermer l'alerte",
+                },
+                format!("view:{}", snapshot.id),
+            )
+        })
+        .collect();
+    if snapshots.len() < timer::MAX_TIMERS {
+        for (minutes, label) in [
+            (5, "Minuteur"),
+            (10, "Minuteur"),
+            (25, "Concentration"),
+            (60, "Minuteur"),
+        ] {
+            items.push(timer_item(
+                format!("Démarrer · {minutes} minutes"),
+                if label == "Minuteur" {
+                    "Entrée pour démarrer"
+                } else {
+                    label
+                },
+                format!("start:{minutes}m {label}"),
+            ));
+        }
+    }
+    items.push(timer_item(
+        "Choisir une durée",
+        "Tape minuteur 5m Thé · 90s · 01:30 · 1h 30m (24 h maximum)",
+        "help",
+    ));
+    items
+}
+
+unsafe fn refresh_timer_view(s: &mut State) {
+    if IsWindowVisible(s.hwnd) == 0
+        || !(timer_query(&s.query).is_some()
+            || s.query.trim().is_empty()
+            || s.query.trim().starts_with(';'))
+    {
+        return;
+    }
+    let selected = s.items.get(s.selected).map(|item| item.id.clone());
+    update_results(s);
+    if let Some(index) = selected.and_then(|id| s.items.iter().position(|item| item.id == id)) {
+        s.selected = index;
+    }
+}
+
+unsafe fn schedule_timer_tick(s: &mut State) {
+    s.timers.borrow_mut().synchronize();
+}
+
+unsafe fn refresh_timer_alert(s: &mut State) {
+    s.timers.borrow_mut().refresh_alert();
+}
+
+unsafe fn tick_timers(s: &mut State) {
+    s.timers.borrow_mut().tick();
+    refresh_timer_view(s);
+}
+
+unsafe fn acknowledge_timer_alert(s: &mut State, generation: usize) {
+    s.timers.borrow_mut().acknowledge_alert(generation);
+    refresh_timer_view(s);
+}
+unsafe fn execute_timer(s: &mut State, item: &Item) {
+    tick_timers(s);
+    if let Some(body) = item.target.strip_prefix("start:") {
+        let result = timer::parse(body)
+            .map_err(|error| error.to_string())
+            .and_then(|spec| {
+                s.timers
+                    .borrow_mut()
+                    .book
+                    .start(spec, Instant::now())
+                    .map_err(|error| error.to_string())
+            });
+        match result {
+            Ok(id) => {
+                set_query(s, "minuteur");
+                s.timer_focus = Some(id);
+                update_results(s);
+            }
+            Err(error) => {
+                s.status = error;
+            }
+        }
+    } else if item.target == "back" {
+        s.timer_focus = None;
+        set_query(s, "minuteur");
+    } else if let Some((action, id)) = item
+        .target
+        .split_once(':')
+        .and_then(|(action, id)| id.parse::<timer::TimerId>().ok().map(|id| (action, id)))
+    {
+        let now = Instant::now();
+        let result = match action {
+            "view" => {
+                s.timer_focus = Some(id);
+                Ok(())
+            }
+            "pause" => s.timers.borrow_mut().book.pause(id, now),
+            "resume" => s.timers.borrow_mut().book.resume(id, now),
+            "cancel" => s.timers.borrow_mut().book.cancel(id),
+            "ack" => s.timers.borrow_mut().book.acknowledge(id, now),
+            _ => return,
+        };
+        if let Err(error) = result {
+            s.status = error.to_string();
+        }
+        if matches!(action, "cancel" | "ack") {
+            s.timer_focus = None;
+        }
+        refresh_timer_alert(s);
+        update_results(s);
+    }
+    schedule_timer_tick(s);
+    InvalidateRect(s.hwnd, null(), 0);
+}
+
 fn active_tab(query: &str) -> &'static str {
+    if timer_query(query).is_some() {
+        return "Modules  ;";
+    }
     match query.trim().chars().next() {
         None => "Accueil",
         Some('/') => "Fichiers",
@@ -1317,6 +1659,10 @@ unsafe fn execute(s: &mut State, parent: bool) {
         }
         Kind::Uninstall => {
             start_remove(s, &item);
+            return;
+        }
+        Kind::Timer => {
+            execute_timer(s, &item);
             return;
         }
         Kind::Navigation => {
@@ -2124,6 +2470,7 @@ unsafe fn paint(s: &State, dc: HDC) {
         match s.items.get(s.selected).map(|item| &item.kind) {
             Some(Kind::Install) => "↑ ↓ naviguer   ↵ installer   Échap fermer   F1 aide",
             Some(Kind::Uninstall) => "↑ ↓ naviguer   ↵ désinstaller   Échap fermer",
+            Some(Kind::Timer) => "↑ ↓ naviguer   ↵ sélectionner   Échap fermer",
             _ => "↑ ↓ naviguer   ↵ ouvrir   Échap fermer   F1 aide",
         },
         scale(28),
@@ -2268,6 +2615,7 @@ unsafe fn settings(s: &mut State) {
     s.settings_open = true;
     if let Some(settings) = settings_dialog(s) {
         s.settings = settings;
+        s.timers.borrow_mut().settings = s.settings.clone();
         s.palette = Palette::from(&s.settings);
         s.clipboard.clear();
         if let Err(e) = config::save(&s.settings) {
@@ -2305,7 +2653,28 @@ unsafe fn smoke_checks(s: &mut State) {
         ));
     }
     set_query(s, "");
-    s.checks.push(("all_providers".into(), s.items.len() == 11));
+    s.checks.push(("all_providers".into(), s.items.len() == 12));
+    s.checks.push((
+        "timer_menu_entry".into(),
+        s.items.iter().any(|item| item.target == "minuteur "),
+    ));
+    let existing_timers = s.timers.borrow().book.snapshots(Instant::now()).len();
+    set_query(s, "minuteur 5m Thé");
+    s.checks.push((
+        "timer_preview_without_start".into(),
+        s.items
+            .first()
+            .is_some_and(|item| item.kind == Kind::Timer && item.target == "start:5m Thé")
+            && s.timers.borrow().book.snapshots(Instant::now()).len() == existing_timers,
+    ));
+    set_query(s, "minuteur -5s");
+    s.checks.push((
+        "timer_invalid_duration".into(),
+        s.items
+            .first()
+            .is_some_and(|item| item.kind == Kind::Timer && item.target == "help"),
+    ));
+    set_query(s, "");
     s.checks.push((
         "package_menu_entries".into(),
         s.items
@@ -2410,6 +2779,14 @@ unsafe fn replay_deferred(hwnd: HWND) {
     if deferred & 4 != 0 {
         PostMessageW(hwnd, LAUNCH_DONE, 0, 0);
     }
+    if deferred & 8 != 0 {
+        PostMessageW(hwnd, WM_TIMER, TIMER_TICK, 0);
+    }
+    DEFERRED_TIMER_ACK.with(|d| {
+        for generation in d.borrow_mut().drain(..) {
+            PostMessageW(hwnd, timer_alert::WM_TIMER_ALERT_DISMISSED, generation, 0);
+        }
+    });
     DEFERRED_INSTALL.with(|d| {
         for (wp, lp) in d.borrow_mut().drain(..) {
             PostMessageW(hwnd, installer::INSTALL_DONE, wp, lp);
@@ -3135,7 +3512,59 @@ mod tests {
     #[test]
     fn home_providers() {
         let menu = navigation();
-        assert_eq!(menu.len(), 11);
+        assert_eq!(menu.len(), 12);
         assert!(menu.iter().all(|i| i.kind == Kind::Navigation));
+    }
+
+    #[test]
+    fn timer_words_are_explicit_and_preserve_application_and_provider_search() {
+        assert_eq!(timer_query(" Minuteur 5m Thé "), Some("5m Thé"));
+        assert_eq!(timer_query("timer"), Some(""));
+        assert_eq!(timer_query("MINUTEURS"), Some(""));
+        for query in [
+            "TimerTool",
+            "minuteur.exe",
+            "5m",
+            "@ timer",
+            "/ minuteur.txt",
+            "+ timer",
+        ] {
+            assert_eq!(timer_query(query), None, "{query}");
+        }
+        assert_eq!(active_tab("minuteur 5m"), "Modules  ;");
+    }
+
+    #[test]
+    fn timer_preview_never_creates_a_countdown_and_invalid_input_never_launches() {
+        let book = timer::TimerBook::new();
+        let now = Instant::now();
+        let rows = timer_items(&book, "5m Thé", None, now);
+        assert_eq!(rows[0].kind, Kind::Timer);
+        assert_eq!(rows[0].target, "start:5m Thé");
+        assert!(rows[0].title.contains("05:00"));
+        assert!(book.snapshots(now).is_empty());
+        for query in ["0", "-5m", "25h", "1:99", "5ms"] {
+            let rows = timer_items(&book, query, None, now);
+            assert_eq!(rows[0].kind, Kind::Timer);
+            assert_eq!(rows[0].target, "help");
+        }
+    }
+
+    #[test]
+    fn timer_rows_track_pause_resume_and_finished_actions() {
+        let now = Instant::now();
+        let mut book = timer::TimerBook::new();
+        let id = book.start(timer::parse("5s Thé").unwrap(), now).unwrap();
+        let rows = timer_items(&book, "", Some(id), now);
+        assert!(rows.iter().any(|row| row.target == format!("pause:{id}")));
+        book.pause(id, now + Duration::from_secs(2)).unwrap();
+        let rows = timer_items(&book, "", Some(id), now + Duration::from_secs(100));
+        assert!(rows[0].title.contains("00:03"));
+        assert!(rows.iter().any(|row| row.target == format!("resume:{id}")));
+        book.resume(id, now + Duration::from_secs(100)).unwrap();
+        book.update(now + Duration::from_secs(104));
+        let rows = timer_items(&book, "", Some(id), now + Duration::from_secs(104));
+        assert!(rows.iter().any(|row| row.target == format!("ack:{id}")));
+        assert!(!rows.iter().any(|row| row.target == format!("cancel:{id}")));
     }
 }

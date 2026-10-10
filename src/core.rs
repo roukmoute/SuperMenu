@@ -14,6 +14,7 @@ pub enum Kind {
     Command,
     Web,
     Calculator,
+    Timer,
     Clipboard,
     Symbol,
     Window,
