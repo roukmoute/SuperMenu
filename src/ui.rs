@@ -1,6 +1,6 @@
 use crate::{
-    about, app_icons, catalog, config, core, installer, launch_feedback, native, packages, timer,
-    timer_alert, timer_runtime,
+    about, app_icons, catalog, config, core, i18n, installer, language_dialog, launch_feedback,
+    native, packages, timer, timer_alert, timer_runtime,
 };
 use core::{Item, Kind};
 use std::cell::{Cell, RefCell};
@@ -29,6 +29,7 @@ const ICONS_READY: u32 = WM_APP + 8;
 const ABOUT: u32 = WM_APP + 9;
 const SMOKE_STATE: u32 = WM_APP + 10;
 const SMOKE_CTRL_BACKSPACE: u32 = WM_APP + 11;
+const SMOKE_LANGUAGE_PICKER: u32 = WM_APP + 12;
 const TIMER_TICK: usize = 43;
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
@@ -131,6 +132,7 @@ struct State {
     smoke: bool,
     smoke_fixture: bool,
     smoke_report: Option<String>,
+    language_cache: Option<std::path::PathBuf>,
     fixture_activation_attempts: usize,
     feedback_test: bool,
     feedback_test_finished: bool,
@@ -239,7 +241,7 @@ pub fn show_error(error: &str) {
     unsafe {
         MessageBoxW(
             null_mut(),
-            wide(error).as_ptr(),
+            wide(&i18n::tr(error)).as_ptr(),
             wide("Super Menu").as_ptr(),
             MB_ICONERROR | MB_OK,
         );
@@ -350,6 +352,7 @@ unsafe fn write_smoke_report(state: &State) -> Result<(), String> {
     let report = serde_json::json!({
         "native_window_created":true,"edit_created":!state.edit.is_null(),
         "fixture_mode":state.smoke_fixture,
+        "language":i18n::current_language(),
         "fixture_activation_attempts":state.fixture_activation_attempts,
         "query":state.query,"selected":state.selected,"section":state.section,"items":state.items,
         "index_items":index.len(),"applications":index.iter().filter(|item|item.kind==Kind::Application).count(),
@@ -376,6 +379,28 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let fixture = load_smoke_fixture(args)?;
     let fixture_mode = fixture.is_some();
+    let smoke_first_language_choice = args
+        .iter()
+        .any(|argument| argument == "--smoke-first-run-language");
+    if smoke_first_language_choice && !fixture_mode {
+        return Err("Le choix de langue de test nécessite une fixture.".into());
+    }
+    for flag in ["--smoke-language", "--smoke-language-dir"] {
+        if let Some(position) = args.iter().position(|argument| argument == flag) {
+            if !fixture_mode
+                || args
+                    .iter()
+                    .filter(|argument| argument.as_str() == flag)
+                    .count()
+                    != 1
+                || args
+                    .get(position + 1)
+                    .is_none_or(|value| value.trim().is_empty() || value.starts_with("--"))
+            {
+                return Err("Les options de traduction de test nécessitent une fixture et une valeur unique.".into());
+            }
+        }
+    }
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let smoke = args.iter().any(|a| a == "--smoke-test");
@@ -402,9 +427,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             ..zeroed()
         };
         if RegisterClassExW(&wc) == 0 {
-            return Err(format!(
-                "Création de la fenêtre impossible ({})",
-                GetLastError()
+            return Err(i18n::fmt(
+                "Création de la fenêtre impossible ({error})",
+                &[("error", GetLastError().to_string())],
             ));
         }
         let mut settings = if fixture_mode {
@@ -424,6 +449,55 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 settings.theme = theme.clone();
             }
         }
+        let language_cache = if fixture_mode {
+            args.iter()
+                .position(|argument| argument == "--smoke-language-dir")
+                .and_then(|position| args.get(position + 1))
+                .map(std::path::PathBuf::from)
+        } else {
+            Some(config::data_dir().join("languages"))
+        };
+        if fixture_mode
+            && language_cache
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
+        {
+            return Err("Le cache de traduction de test doit être absolu.".into());
+        }
+        if smoke_first_language_choice && language_cache.is_none() {
+            return Err("Le premier choix de test nécessite un cache isolé.".into());
+        }
+        let needs_language_choice = if smoke {
+            settings.language = args
+                .iter()
+                .position(|argument| argument == "--smoke-language")
+                .and_then(|position| args.get(position + 1))
+                .cloned()
+                .unwrap_or_else(|| "fr".into());
+            if !i18n::is_supported(&settings.language)
+                || (settings.language != "fr" && !fixture_mode)
+            {
+                return Err("La langue de test nécessite une fixture et un code valide.".into());
+            }
+            if settings.language != "fr"
+                && language_cache
+                    .as_ref()
+                    .is_none_or(|path| !path.is_absolute())
+            {
+                return Err("La traduction de test nécessite un cache absolu isolé.".into());
+            }
+            i18n::init_cached(
+                &settings.language,
+                language_cache
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new("")),
+            )?;
+            smoke_first_language_choice
+        } else {
+            settings.language.is_empty()
+                || i18n::init_cached(&settings.language, language_cache.as_deref().unwrap())
+                    .is_err()
+        };
         let cache = fixture.unwrap_or_default();
         let usage = if fixture_mode {
             catalog::Usage {
@@ -467,9 +541,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             items: vec![],
             selected: 0,
             query: String::new(),
-            section: "EXPLORER".into(),
+            section: i18n::tr("EXPLORER"),
             timing: String::new(),
-            status: "Index local".into(),
+            status: i18n::tr("Index local"),
             fonts: [null_mut(); 6],
             edit_bg: null_mut(),
             icon,
@@ -488,6 +562,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .position(|argument| argument == "--report")
                 .and_then(|position| args.get(position + 1))
                 .cloned(),
+            language_cache,
             fixture_activation_attempts: 0,
             feedback_test: smoke && args.iter().any(|arg| arg == "--launch-feedback-test"),
             feedback_test_finished: false,
@@ -554,16 +629,42 @@ pub fn run(args: &[String]) -> Result<(), String> {
             state.edit,
             EM_SETCUEBANNER,
             1,
-            wide("Où veux-tu aller ?").as_ptr() as isize,
+            wide(&i18n::tr("Où veux-tu aller ?")).as_ptr() as isize,
         );
         rebuild_fonts(&mut state);
         place(&mut state);
+        if needs_language_choice {
+            if let Some(language) = language_dialog::choose(
+                hwnd,
+                state.fonts[1],
+                state.dpi,
+                &state.settings.language,
+                state.language_cache.as_ref().unwrap().clone(),
+            ) {
+                let mut candidate = state.settings.clone();
+                candidate.language = language.clone();
+                let saved = if state.smoke_fixture {
+                    Ok(())
+                } else {
+                    config::save(&candidate)
+                };
+                match saved {
+                    Ok(()) => {
+                        i18n::load_cached(&language, state.language_cache.as_ref().unwrap())?;
+                        state.settings = candidate;
+                        state.timers.borrow_mut().settings = state.settings.clone();
+                    }
+                    Err(error) => show_error(&error.to_string()),
+                }
+            }
+        }
+        refresh_language(&mut state);
         update_results(&mut state);
         if !smoke {
             match native::install_hotkey(hwnd, &state.settings.hotkey) {
                 Ok(h) => state.hotkey = Some(h),
                 Err(e) => {
-                    state.status = "Raccourci indisponible · icône de notification".into();
+                    state.status = i18n::tr("Raccourci indisponible · icône de notification");
                     show_error(&e);
                 }
             }
@@ -703,6 +804,26 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
     let s = &mut *borrowed;
     match msg {
         SMOKE_STATE if s.smoke_fixture => isize::from(write_smoke_report(s).is_ok()),
+        SMOKE_LANGUAGE_PICKER if s.smoke_fixture => {
+            if let Some(cache) = s.language_cache.clone() {
+                if let Some(language) = language_dialog::choose(
+                    s.hwnd,
+                    s.fonts[1],
+                    s.dpi,
+                    &s.settings.language,
+                    cache.clone(),
+                ) {
+                    if i18n::load_cached(&language, &cache).is_ok() {
+                        s.settings.language = language;
+                        s.about.take();
+                        refresh_language(s);
+                        reindex(s);
+                        update_results(s);
+                    }
+                }
+            }
+            0
+        }
         ABOUT => {
             show_about(s);
             0
@@ -890,9 +1011,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 .collect();
             drop(removable_names);
             s.status = if s.indexing.load(Ordering::Relaxed) {
-                format!("{apps} applis · indexation…")
+                i18n::fmt("{apps} applis · indexation…", &[("apps", apps.to_string())])
             } else {
-                format!("{apps} applis · {} entrées", index.len())
+                i18n::fmt(
+                    "{apps} applis · {entries} entrées",
+                    &[
+                        ("apps", apps.to_string()),
+                        ("entries", index.len().to_string()),
+                    ],
+                )
             };
             drop(index);
             update_results(s);
@@ -922,7 +1049,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                         );
                         reindex(s);
                     } else {
-                        s.status = format!("Installation de {} interrompue", package.name);
+                        s.status = i18n::fmt(
+                            "Installation de {name} interrompue",
+                            &[("name", package.name.into())],
+                        );
                     }
                     update_results(s);
                 }
@@ -944,7 +1074,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                     }
                     reindex(s);
                 } else {
-                    s.status = "Désinstallation interrompue · détails dans la console".into();
+                    s.status = i18n::tr("Désinstallation interrompue · détails dans la console");
                     reindex(s);
                 }
                 update_results(s);
@@ -964,20 +1094,35 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 show(s);
             } else if lp as u32 == WM_RBUTTONUP {
                 let menu = CreatePopupMenu();
-                AppendMenuW(menu, MF_STRING, 1, wide("Ouvrir Super Menu").as_ptr());
-                AppendMenuW(menu, MF_STRING, 2, wide("Paramètres").as_ptr());
-                AppendMenuW(menu, MF_STRING, 3, wide("Actualiser l'index").as_ptr());
-                AppendMenuW(menu, MF_STRING, 5, wide("Minuteurs").as_ptr());
-                AppendMenuW(menu, MF_STRING, 7, wide("À propos de Super Menu").as_ptr());
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    1,
+                    wide(&i18n::tr("Ouvrir Super Menu")).as_ptr(),
+                );
+                AppendMenuW(menu, MF_STRING, 2, wide(&i18n::tr("Paramètres")).as_ptr());
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    3,
+                    wide(&i18n::tr("Actualiser l'index")).as_ptr(),
+                );
+                AppendMenuW(menu, MF_STRING, 5, wide(&i18n::tr("Minuteurs")).as_ptr());
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    7,
+                    wide(&i18n::tr("À propos de Super Menu")).as_ptr(),
+                );
                 let reports = config::data_dir().join("uninstall-reports");
                 AppendMenuW(
                     menu,
                     MF_STRING | if reports.is_dir() { 0 } else { MF_GRAYED },
                     6,
-                    wide("Rapports de désinstallation").as_ptr(),
+                    wide(&i18n::tr("Rapports de désinstallation")).as_ptr(),
                 );
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
-                AppendMenuW(menu, MF_STRING, 4, wide("Quitter").as_ptr());
+                AppendMenuW(menu, MF_STRING, 4, wide(&i18n::tr("Quitter")).as_ptr());
                 let mut p: POINT = zeroed();
                 GetCursorPos(&mut p);
                 SetForegroundWindow(hwnd);
@@ -1150,7 +1295,7 @@ unsafe fn key(s: &mut State, key: u32) {
         VK_F5 => refresh_index_and_icons(s),
         VK_F1 => {
             s.settings_open = true;
-            MessageBoxW(s.hwnd,wide("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer / désinstaller\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications, installation ou désinstallation\n@ applications à lancer    + installer    - désinstaller\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\nminuteur 5m Thé · timer 90s : compte à rebours\n\nInstaller : Entrée ouvre la progression WinGet.\nDésinstaller : une confirmation, puis désinstallation et nettoyage automatique.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.").as_ptr(),wide("Super Menu · Aide").as_ptr(),MB_OK);
+            MessageBoxW(s.hwnd,wide(&i18n::tr("Win + Espace : ouvrir / masquer\n↑ ↓ : sélectionner · Entrée : ouvrir / installer / désinstaller\nCtrl + Entrée : dossier parent d'un fichier\nÉchap : effacer puis masquer · F5 : réindexer\nCtrl + , : paramètres · Tab / ; : modules\n\nNom seul : applications, installation ou désinstallation\n@ applications à lancer    + installer    - désinstaller\n/ fichiers    = calcul    ? recherche web\n> commandes    : presse-papiers    . symboles\n~ fenêtres    ! système\nminuteur 5m Thé · timer 90s : compte à rebours\n\nInstaller : Entrée ouvre la progression WinGet.\nDésinstaller : une confirmation, puis désinstallation et nettoyage automatique.\nLa recherche et l'index restent locaux.\nLe presse-papiers est désactivé par défaut.")).as_ptr(),wide(&i18n::tr("Super Menu · Aide")).as_ptr(),MB_OK);
             s.settings_open = false;
             finish_modal(s);
             SetFocus(s.edit);
@@ -1241,8 +1386,8 @@ fn navigation() -> Vec<Item> {
     .map(|(title, sub, glyph, target)| {
         Item::new(
             format!("nav:{target}"),
-            title,
-            sub,
+            i18n::tr(title),
+            i18n::tr(sub),
             glyph,
             Kind::Navigation,
             target,
@@ -1274,12 +1419,12 @@ unsafe fn update_results(s: &mut State) {
     let limit = s.settings.max_results.max(1);
     let weights = &s.weights;
     s.items = if let Some(body) = timer_query(trimmed) {
-        s.section = "MINUTEURS".into();
+        s.section = i18n::tr("MINUTEURS");
         timer_items(&s.timers.borrow().book, body, s.timer_focus, start)
     } else {
         match prefix {
             '\0' | ';' => {
-                s.section = "EXPLORER".into();
+                s.section = i18n::tr("EXPLORER");
                 if body.is_empty() {
                     navigation()
                 } else {
@@ -1287,20 +1432,20 @@ unsafe fn update_results(s: &mut State) {
                 }
             }
             '=' => {
-                s.section = "CALCULATRICE".into();
+                s.section = i18n::tr("CALCULATRICE");
                 match core::calculate(body) {
                     Some(result) => vec![Item::new(
                         "calc",
                         result.clone(),
-                        format!("{body} · Entrée pour copier"),
+                        i18n::fmt("{body} · Entrée pour copier", &[("body", body.to_string())]),
                         "=",
                         Kind::Calculator,
                         result,
                     )],
                     None if body.is_empty() => vec![Item::new(
                         "example",
-                        "Essaie = (12 + 8) × 3",
-                        "Opérateurs + - * / ^ %, fonctions sqrt, sin, cos",
+                        i18n::tr("Essaie = (12 + 8) × 3"),
+                        i18n::tr("Opérateurs + - * / ^ %, fonctions sqrt, sin, cos"),
                         "=",
                         Kind::Navigation,
                         "= (12 + 8) * 3",
@@ -1309,7 +1454,7 @@ unsafe fn update_results(s: &mut State) {
                 }
             }
             '?' => {
-                s.section = "RECHERCHE WEB".into();
+                s.section = i18n::tr("RECHERCHE WEB");
                 if body.is_empty() {
                     vec![]
                 } else {
@@ -1319,8 +1464,8 @@ unsafe fn update_results(s: &mut State) {
                         .replace("{query}", &encode(body));
                     vec![Item::new(
                         "web",
-                        format!("Rechercher « {body} »"),
-                        "Ouvrir dans le navigateur par défaut",
+                        i18n::fmt("Rechercher « {body} »", &[("body", body.to_string())]),
+                        i18n::tr("Ouvrir dans le navigateur par défaut"),
                         "⌕",
                         Kind::Web,
                         url,
@@ -1328,7 +1473,7 @@ unsafe fn update_results(s: &mut State) {
                 }
             }
             '>' => {
-                s.section = "COMMANDES".into();
+                s.section = i18n::tr("COMMANDES");
                 let commands: Vec<Item> = s
                     .settings
                     .commands
@@ -1350,8 +1495,8 @@ unsafe fn update_results(s: &mut State) {
                 if !body.is_empty() && found.len() < limit {
                     let mut cmd = Item::new(
                         "shell",
-                        format!("Exécuter : {body}"),
-                        "Commande Windows · exécutée uniquement avec Entrée",
+                        i18n::fmt("Exécuter : {body}", &[("body", body.to_string())]),
+                        i18n::tr("Commande Windows · exécutée uniquement avec Entrée"),
                         "›",
                         Kind::Command,
                         "cmd.exe",
@@ -1362,12 +1507,12 @@ unsafe fn update_results(s: &mut State) {
                 found
             }
             ':' => {
-                s.section = "PRESSE-PAPIERS".into();
+                s.section = i18n::tr("PRESSE-PAPIERS");
                 if !s.settings.clipboard_enabled {
                     vec![Item::new(
                         "clipboard-settings",
-                        "Activer l'historique du presse-papiers",
-                        "Désactivé par défaut · conservé uniquement en mémoire",
+                        i18n::tr("Activer l'historique du presse-papiers"),
+                        i18n::tr("Désactivé par défaut · conservé uniquement en mémoire"),
                         "▤",
                         Kind::System,
                         "settings",
@@ -1377,7 +1522,7 @@ unsafe fn update_results(s: &mut State) {
                 }
             }
             '.' => {
-                s.section = "SYMBOLES".into();
+                s.section = i18n::tr("SYMBOLES");
                 let items: Vec<Item> = [
                     ("→", "flèche droite"),
                     ("←", "flèche gauche"),
@@ -1396,8 +1541,8 @@ unsafe fn update_results(s: &mut State) {
                 .map(|(symbol, title)| {
                     Item::new(
                         format!("symbol:{symbol}"),
-                        format!("{symbol}  {title}"),
-                        "Entrée pour copier",
+                        format!("{symbol}  {}", i18n::tr(title)),
+                        i18n::tr("Entrée pour copier"),
                         symbol,
                         Kind::Symbol,
                         symbol,
@@ -1407,11 +1552,11 @@ unsafe fn update_results(s: &mut State) {
                 core::rank(&items, body, limit, weights)
             }
             '~' => {
-                s.section = "FENÊTRES OUVERTES".into();
+                s.section = i18n::tr("FENÊTRES OUVERTES");
                 core::rank(&native::windows(), body, limit, weights)
             }
             '!' => {
-                s.section = "SYSTÈME".into();
+                s.section = i18n::tr("SYSTÈME");
                 core::rank(
                     &system_items(),
                     body,
@@ -1420,20 +1565,19 @@ unsafe fn update_results(s: &mut State) {
                 )
             }
             _ => {
-                s.section = if prefix == '/' {
+                s.section = i18n::tr(if prefix == '/' {
                     "FICHIERS"
                 } else {
                     "APPLICATIONS"
-                }
-                .into();
+                });
                 let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
                 if prefix == '/' {
                     search_catalog(&index, trimmed, limit, weights)
                 } else {
                     if prefix == '+' {
-                        s.section = "INSTALLER AVEC WINGET".into();
+                        s.section = i18n::tr("INSTALLER AVEC WINGET");
                     } else if prefix == '-' {
-                        s.section = "DÉSINSTALLER UN LOGICIEL".into();
+                        s.section = i18n::tr("DÉSINSTALLER UN LOGICIEL");
                     }
                     let visible_apps: Vec<Item> = if s.removals.completed.is_empty() {
                         Vec::new()
@@ -1470,18 +1614,22 @@ unsafe fn update_results(s: &mut State) {
         if item.kind == Kind::Navigation && item.target == "minuteur " {
             let timers = s.timers.borrow().book.snapshots(start);
             if !timers.is_empty() {
-                item.subtitle = format!(
-                    "{} minuteur(s) · Entrée pour voir les comptes à rebours",
-                    timers.len()
+                item.subtitle = i18n::fmt(
+                    "{count} minuteur(s) · Entrée pour voir les comptes à rebours",
+                    &[("count", timers.len().to_string())],
                 );
             }
         }
     }
     for item in &mut s.items {
+        if item.kind == Kind::Application {
+            item.subtitle = i18n::tr(&item.subtitle);
+            item.prepare();
+        }
         if item.kind == Kind::Install && s.installations.is_pending(&item.target) {
-            item.subtitle = "Installation en cours · progression dans la console".into();
+            item.subtitle = i18n::tr("Installation en cours · progression dans la console");
         } else if item.kind == Kind::Uninstall && s.removals.is_pending(&item.target) {
-            item.subtitle = "Désinstallation en cours · progression dans la console".into();
+            item.subtitle = i18n::tr("Désinstallation en cours · progression dans la console");
         }
     }
     s.selected = 0;
@@ -1559,8 +1707,8 @@ fn timer_item(
     let target = target.into();
     Item::new(
         format!("timer:{target}"),
-        title,
-        subtitle,
+        i18n::tr(&title.into()),
+        i18n::tr(&subtitle.into()),
         "\u{E916}",
         Kind::Timer,
         target,
@@ -1589,10 +1737,12 @@ fn timer_items(
             },
             "help",
         )];
-        items[0].subtitle = format!(
-            "{} · Durée initiale {}",
-            items[0].subtitle,
-            timer_clock(snapshot.total_seconds)
+        items[0].subtitle = i18n::fmt(
+            "{status} · Durée initiale {duration}",
+            &[
+                ("status", items[0].subtitle.clone()),
+                ("duration", timer_clock(snapshot.total_seconds)),
+            ],
         );
         match snapshot.status {
             timer::TimerStatus::Running => items.push(timer_item(
@@ -1628,8 +1778,14 @@ fn timer_items(
     if !body.is_empty() {
         return vec![match timer::parse(body) {
             Ok(spec) if snapshots.len() < timer::MAX_TIMERS => timer_item(
-                format!("Démarrer · {}", timer_clock(spec.duration.as_secs())),
-                format!("{} · Entrée pour démarrer", spec.label),
+                i18n::fmt(
+                    "Démarrer · {duration}",
+                    &[("duration", timer_clock(spec.duration.as_secs()))],
+                ),
+                i18n::fmt(
+                    "{label} · Entrée pour démarrer",
+                    &[("label", spec.label.clone())],
+                ),
                 format!("start:{body}"),
             ),
             Ok(_) => timer_item(
@@ -1652,7 +1808,7 @@ fn timer_items(
                     "{} · {}",
                     snapshot.label,
                     if snapshot.status == timer::TimerStatus::Finished {
-                        "Terminé".into()
+                        i18n::tr("Terminé")
                     } else {
                         timer_clock(snapshot.remaining_seconds)
                     }
@@ -1674,7 +1830,10 @@ fn timer_items(
             (60, "Minuteur"),
         ] {
             items.push(timer_item(
-                format!("Démarrer · {minutes} minutes"),
+                i18n::fmt(
+                    "Démarrer · {minutes} minutes",
+                    &[("minutes", minutes.to_string())],
+                ),
                 if label == "Minuteur" {
                     "Entrée pour démarrer"
                 } else {
@@ -1848,8 +2007,8 @@ fn system_items() -> Vec<Item> {
     .map(|(title, sub, target)| {
         Item::new(
             format!("system:{target}"),
-            title,
-            sub,
+            i18n::tr(title),
+            i18n::tr(sub),
             "⏻",
             Kind::System,
             target,
@@ -1875,7 +2034,7 @@ unsafe fn execute(s: &mut State, parent: bool) {
     };
     if s.smoke_fixture && !fixture_action_allowed(&item) {
         s.fixture_activation_attempts += 1;
-        s.status = "Activation externe désactivée pendant les tests".into();
+        s.status = i18n::tr("Activation externe désactivée pendant les tests");
         InvalidateRect(s.hwnd, null(), 0);
         return;
     }
@@ -2019,7 +2178,10 @@ unsafe fn start_application(s: &mut State, item: &Item) {
     if let Err(error) = spawned {
         let _ = s.launch_sender.send((
             token,
-            Err(format!("Impossible de lancer l'application : {error}")),
+            Err(i18n::fmt(
+                "Impossible de lancer l'application : {error}",
+                &[("error", error.to_string())],
+            )),
         ));
         process_launch_results(s);
     }
@@ -2048,7 +2210,10 @@ unsafe fn process_launch_results(s: &mut State) {
                     }
                     s.feedback_request = None;
                 }
-                s.status = format!("Lancement de {} impossible", item.title);
+                s.status = i18n::fmt(
+                    "Lancement de {name} impossible",
+                    &[("name", item.title.clone())],
+                );
                 s.settings_open = true;
                 show_error(&error);
                 s.settings_open = false;
@@ -2082,7 +2247,7 @@ unsafe fn start_install(s: &mut State, id: &str) {
                 // a forcibly closed console or a helper that exits unexpectedly.
                 installer::notify(hwnd as HWND, parent_pid, request, result);
             });
-            s.status = "Installation en cours · console WinGet".into();
+            s.status = i18n::tr("Installation en cours · console WinGet");
             update_results(s);
             hide(s);
         }
@@ -2113,19 +2278,19 @@ unsafe fn start_remove(s: &mut State, item: &Item) {
         .strip_prefix("id:")
         .is_some_and(|id| s.installations.is_pending(id))
     {
-        s.status = "Installation en cours · réessaie après son achèvement".into();
+        s.status = i18n::tr("Installation en cours · réessaie après son achèvement");
         InvalidateRect(s.hwnd, null(), 0);
         return;
     }
     s.settings_open = true;
     let confirmation = MessageBoxW(
         s.hwnd,
-        wide(&format!(
-            "Désinstaller « {} » et nettoyer ses résidus ?\n\nLe logiciel sera retiré, puis ses fichiers de programme, caches reconnus et traces techniques seront recherchés automatiquement.\n\nLe nettoyage conservera les profils, réglages et données personnelles. Les résidus incertains ou partagés seront laissés en place.\n\nLes fichiers retirés iront dans la Corbeille ; un rapport et les sauvegardes du registre resteront disponibles.",
-            item.title
+        wide(&i18n::fmt(
+            "Désinstaller « {name} » et nettoyer ses résidus ?\n\nLe logiciel sera retiré, puis ses fichiers de programme, caches reconnus et traces techniques seront recherchés automatiquement.\n\nLe nettoyage conservera les profils, réglages et données personnelles. Les résidus incertains ou partagés seront laissés en place.\n\nLes fichiers retirés iront dans la Corbeille ; un rapport et les sauvegardes du registre resteront disponibles.",
+            &[("name", item.title.clone())]
         ))
         .as_ptr(),
-        wide("Super Menu · Désinstaller").as_ptr(),
+        wide(&i18n::tr("Super Menu · Désinstaller")).as_ptr(),
         MB_YESNO | MB_DEFBUTTON2 | MB_ICONWARNING,
     );
     s.settings_open = false;
@@ -2149,7 +2314,7 @@ unsafe fn start_remove(s: &mut State, item: &Item) {
                     .unwrap_or(1);
                 installer::notify_remove(hwnd as HWND, parent_pid, request, result);
             });
-            s.status = "Désinstallation et nettoyage en cours · voir la console".into();
+            s.status = i18n::tr("Désinstallation et nettoyage en cours · voir la console");
             update_results(s);
             hide(s);
         }
@@ -2166,19 +2331,19 @@ unsafe fn start_remove(s: &mut State, item: &Item) {
 
 unsafe fn copy_text(hwnd: HWND, text: &str) -> Result<(), String> {
     if OpenClipboard(hwnd) == 0 {
-        return Err("Le presse-papiers est occupé. Réessaie.".into());
+        return Err(i18n::tr("Le presse-papiers est occupé. Réessaie."));
     }
     let value = wide(text);
     let memory = GlobalAlloc(GMEM_MOVEABLE, value.len() * 2);
     if memory.is_null() {
         CloseClipboard();
-        return Err("Mémoire insuffisante.".into());
+        return Err(i18n::tr("Mémoire insuffisante."));
     }
     let ptr = GlobalLock(memory);
     if ptr.is_null() {
         GlobalFree(memory);
         CloseClipboard();
-        return Err("Accès au presse-papiers impossible.".into());
+        return Err(i18n::tr("Accès au presse-papiers impossible."));
     }
     std::ptr::copy_nonoverlapping(value.as_ptr(), ptr as *mut u16, value.len());
     GlobalUnlock(memory);
@@ -2186,7 +2351,7 @@ unsafe fn copy_text(hwnd: HWND, text: &str) -> Result<(), String> {
     if SetClipboardData(CF_UNICODETEXT, memory).is_null() {
         GlobalFree(memory);
         CloseClipboard();
-        return Err("Copie impossible.".into());
+        return Err(i18n::tr("Copie impossible."));
     }
     CloseClipboard();
     Ok(())
@@ -2211,7 +2376,7 @@ unsafe fn reindex(s: &mut State) {
         s.pending_refresh = true;
         return;
     }
-    s.status = "Indexation en arrière-plan…".into();
+    s.status = i18n::tr("Indexation en arrière-plan…");
     InvalidateRect(s.hwnd, null(), 0);
     let index = s.index.clone();
     let installed_names = s.installed_names.clone();
@@ -2221,6 +2386,8 @@ unsafe fn reindex(s: &mut State) {
     let catalog_ready = s.catalog_ready.clone();
     let busy = s.indexing.clone();
     let settings = s.settings.clone();
+    let language = i18n::current_language();
+    let language_revision = i18n::revision();
     let hwnd = s.hwnd as usize;
     std::thread::spawn(move || {
         if index.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
@@ -2236,7 +2403,7 @@ unsafe fn reindex(s: &mut State) {
         let (all_names, remove_names) = packages::installed_inventory();
         *installed_names.lock().unwrap_or_else(|e| e.into_inner()) = all_names;
         *removable_names.lock().unwrap_or_else(|e| e.into_inner()) = remove_names;
-        {
+        if i18n::revision() == language_revision {
             let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
             let previous_files: Vec<Item> = index
                 .iter()
@@ -2252,8 +2419,10 @@ unsafe fn reindex(s: &mut State) {
         }
         let mut items = apps;
         items.extend(catalog::files(&settings));
-        let _ = catalog::save_cache(&items);
-        *index.lock().unwrap_or_else(|e| e.into_inner()) = items;
+        if i18n::revision() == language_revision {
+            let _ = catalog::save_cache(&items, &language);
+            *index.lock().unwrap_or_else(|e| e.into_inner()) = items;
+        }
         busy.store(false, Ordering::Release);
         unsafe {
             PostMessageW(hwnd as HWND, INDEX, 0, 0);
@@ -2508,7 +2677,7 @@ unsafe fn paint(s: &State, dc: HDC) {
         dc,
         s.fonts[2],
         s.palette.muted,
-        "/   À portée de clavier",
+        &i18n::tr("/   À portée de clavier"),
         scale(162),
         scale(20),
         scale(250),
@@ -2592,7 +2761,7 @@ unsafe fn paint(s: &State, dc: HDC) {
             } else {
                 s.palette.muted
             },
-            label,
+            &i18n::tr(label),
             scale(x),
             scale(128),
             scale(width),
@@ -2700,7 +2869,7 @@ unsafe fn paint(s: &State, dc: HDC) {
             dc,
             s.fonts[0],
             s.palette.text,
-            "Aucun résultat",
+            &i18n::tr("Aucun résultat"),
             scale(28),
             scale(y),
             scale(w - 56),
@@ -2711,11 +2880,11 @@ unsafe fn paint(s: &State, dc: HDC) {
             dc,
             s.fonts[2],
             s.palette.muted,
-            if s.indexing.load(Ordering::Relaxed) {
+            &i18n::tr(if s.indexing.load(Ordering::Relaxed) {
                 "L'index se construit en arrière-plan…"
             } else {
                 "Essaie un autre mot ou change de module avec ;"
-            },
+            }),
             scale(28),
             scale(y + 42),
             scale(w - 56),
@@ -2736,12 +2905,12 @@ unsafe fn paint(s: &State, dc: HDC) {
         dc,
         s.fonts[2],
         s.palette.muted,
-        match s.items.get(s.selected).map(|item| &item.kind) {
+        &i18n::tr(match s.items.get(s.selected).map(|item| &item.kind) {
             Some(Kind::Install) => "↑ ↓ naviguer   ↵ installer   Échap fermer   F1 aide",
             Some(Kind::Uninstall) => "↑ ↓ naviguer   ↵ désinstaller   Échap fermer",
             Some(Kind::Timer) => "↑ ↓ naviguer   ↵ sélectionner   Échap fermer",
             _ => "↑ ↓ naviguer   ↵ ouvrir   Échap fermer   F1 aide",
-        },
+        }),
         scale(28),
         scale(h - 39),
         scale(347),
@@ -2835,8 +3004,9 @@ unsafe fn capture_bmp(s: &State) {
     if !bitmap.is_null() {
         let old = SelectObject(mem, bitmap);
         paint(s, mem);
+        let placeholder = i18n::tr("Où veux-tu aller ?");
         let text_value = if s.query.is_empty() {
-            "Où veux-tu aller ?"
+            &placeholder
         } else {
             &s.query
         };
@@ -2917,6 +3087,16 @@ unsafe fn show_about(s: &mut State) {
     }
 }
 
+unsafe fn refresh_language(s: &mut State) {
+    SendMessageW(
+        s.edit,
+        EM_SETCUEBANNER,
+        1,
+        wide(&i18n::tr("Où veux-tu aller ?")).as_ptr() as isize,
+    );
+    s.status = i18n::tr("Index local");
+}
+
 // A native modal settings window. No embedded browser and no UI framework runtime.
 unsafe fn settings(s: &mut State) {
     if s.smoke_fixture {
@@ -2927,13 +3107,26 @@ unsafe fn settings(s: &mut State) {
     }
     s.settings_open = true;
     if let Some(settings) = settings_dialog(s) {
+        let cache = config::data_dir().join("languages");
+        if let Err(error) = i18n::load_cached(&settings.language, &cache) {
+            show_error(&error);
+            s.settings_open = false;
+            finish_modal(s);
+            return;
+        }
+        if let Err(error) = config::save(&settings) {
+            let _ = i18n::load_cached(&s.settings.language, &cache);
+            show_error(&error.to_string());
+            s.settings_open = false;
+            finish_modal(s);
+            return;
+        }
         s.settings = settings;
         s.timers.borrow_mut().settings = s.settings.clone();
         s.palette = Palette::from(&s.settings);
         s.clipboard.clear();
-        if let Err(e) = config::save(&s.settings) {
-            show_error(&format!("Configuration non enregistrée : {e}"));
-        }
+        refresh_language(s);
+        s.about.take();
         s.hotkey.take();
         match native::install_hotkey(s.hwnd, &s.settings.hotkey) {
             Ok(h) => s.hotkey = Some(h),
@@ -2997,10 +3190,10 @@ unsafe fn smoke_checks(s: &mut State) {
         "package_menu_entries".into(),
         s.items
             .iter()
-            .any(|item| item.title == "Installer" && item.target == "+ ")
+            .any(|item| item.id == "nav:+ " && item.target == "+ ")
             && s.items
                 .iter()
-                .any(|item| item.title == "Désinstaller" && item.target == "- "),
+                .any(|item| item.id == "nav:- " && item.target == "- "),
     ));
     set_query(s, "@ ");
     s.checks.push((
@@ -3128,6 +3321,9 @@ struct SettingsDialog {
     result: Option<config::Settings>,
     done: bool,
     controls: Vec<HWND>,
+    font: HFONT,
+    dpi: i32,
+    language_button: HWND,
 }
 unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
     let instance = GetModuleHandleW(null());
@@ -3146,6 +3342,9 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         result: None,
         done: false,
         controls: vec![],
+        font: s.fonts[1],
+        dpi: s.dpi,
+        language_button: null_mut(),
     });
     let mut parent: RECT = zeroed();
     GetWindowRect(s.hwnd, &mut parent);
@@ -3153,12 +3352,12 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
     let hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
         class.as_ptr(),
-        wide("Super Menu · Paramètres").as_ptr(),
+        wide(&i18n::tr("Super Menu · Paramètres")).as_ptr(),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         parent.left + scale(20),
         parent.top + scale(15),
         scale(640),
-        scale(610),
+        scale(650),
         s.hwnd,
         null_mut(),
         instance,
@@ -3172,10 +3371,10 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
             let child = CreateWindowExW(
                 if class == "EDIT" { WS_EX_CLIENTEDGE } else { 0 },
                 wide(class).as_ptr(),
-                wide(label).as_ptr(),
+                wide(&i18n::tr(label)).as_ptr(),
                 WS_CHILD | WS_VISIBLE | style,
                 scale(x),
-                scale(y),
+                scale(if y >= 54 { y + 42 } else { y }),
                 scale(w),
                 scale(h),
                 hwnd,
@@ -3196,6 +3395,46 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         27,
         0,
     );
+    // This row downloads on a worker and only changes the active language on Save.
+    let language_name = i18n::LANGUAGES
+        .iter()
+        .find(|entry| entry.code == s.settings.language)
+        .map_or("Français", |entry| entry.name);
+    let language_button = CreateWindowExW(
+        0,
+        wide("BUTTON").as_ptr(),
+        wide(&i18n::fmt(
+            "{language} · Changer…",
+            &[("language", language_name.to_string())],
+        ))
+        .as_ptr(),
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON as u32 | WS_TABSTOP,
+        scale(187),
+        scale(54),
+        scale(260),
+        scale(30),
+        hwnd,
+        211 as _,
+        instance,
+        null(),
+    );
+    SendMessageW(language_button, WM_SETFONT, s.fonts[1] as usize, 1);
+    dialog.language_button = language_button;
+    let language_label = CreateWindowExW(
+        0,
+        wide("STATIC").as_ptr(),
+        wide(&i18n::tr("Langue")).as_ptr(),
+        WS_CHILD | WS_VISIBLE,
+        scale(22),
+        scale(57),
+        scale(155),
+        scale(23),
+        hwnd,
+        null_mut(),
+        instance,
+        null(),
+    );
+    SendMessageW(language_label, WM_SETFONT, s.fonts[1] as usize, 1);
     control("STATIC", "Raccourci", 0, 22, 57, 155, 23, 0);
     let hotkey = control(
         "COMBOBOX",
@@ -3241,7 +3480,12 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         202,
     );
     for label in ["Sombre", "Clair"] {
-        SendMessageW(theme, CB_ADDSTRING, 0, wide(label).as_ptr() as isize);
+        SendMessageW(
+            theme,
+            CB_ADDSTRING,
+            0,
+            wide(&i18n::tr(label)).as_ptr() as isize,
+        );
     }
     SendMessageW(
         theme,
@@ -3404,6 +3648,30 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: usize, lp: isi
     };
     match msg {
         WM_COMMAND => match wp & 0xffff {
+            211 => {
+                if let Some(language) = language_dialog::choose(
+                    hwnd,
+                    d.font,
+                    d.dpi,
+                    &d.source.language,
+                    config::data_dir().join("languages"),
+                ) {
+                    d.source.language = language;
+                    let name = i18n::LANGUAGES
+                        .iter()
+                        .find(|entry| entry.code == d.source.language)
+                        .map_or("Français", |entry| entry.name);
+                    SetWindowTextW(
+                        d.language_button,
+                        wide(&i18n::fmt(
+                            "{language} · Changer…",
+                            &[("language", name.to_string())],
+                        ))
+                        .as_ptr(),
+                    );
+                }
+                0
+            }
             208 => {
                 let path = config::settings_path();
                 if !path.exists() {
@@ -3435,8 +3703,11 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: usize, lp: isi
                 {
                     MessageBoxW(
                         hwnd,
-                        wide("Utilise une couleur hexadécimale, par exemple #9A8CFF.").as_ptr(),
-                        wide("Couleur").as_ptr(),
+                        wide(&i18n::tr(
+                            "Utilise une couleur hexadécimale, par exemple #9A8CFF.",
+                        ))
+                        .as_ptr(),
+                        wide(&i18n::tr("Couleur")).as_ptr(),
                         MB_OK | MB_ICONWARNING,
                     );
                     return 0;
@@ -3453,7 +3724,7 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: usize, lp: isi
                 if !settings.web_search_template.contains("{query}")
                     || !settings.web_search_template.starts_with("https://")
                 {
-                    MessageBoxW(hwnd,wide("L'adresse de recherche doit commencer par https:// et contenir {query}.").as_ptr(),wide("Recherche web").as_ptr(),MB_OK|MB_ICONWARNING);
+                    MessageBoxW(hwnd,wide(&i18n::tr("L'adresse de recherche doit commencer par https:// et contenir {query}.")).as_ptr(),wide(&i18n::tr("Recherche web")).as_ptr(),MB_OK|MB_ICONWARNING);
                     return 0;
                 }
                 if let Err(e) = native::set_startup(

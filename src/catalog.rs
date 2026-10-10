@@ -26,7 +26,21 @@ const MAX_USAGE_ENTRIES: usize = 10_000;
 #[derive(Serialize, Deserialize)]
 struct Cache {
     version: u32,
+    #[serde(default = "default_cache_language")]
+    language: String,
     items: Vec<Item>,
+}
+
+fn default_cache_language() -> String {
+    "fr".into()
+}
+
+impl Cache {
+    fn compatible_with(&self, language: &str) -> bool {
+        self.version == CACHE_VERSION
+            && self.language == language
+            && self.items.len() <= MAX_FILES + 20_000
+    }
 }
 
 /// Fast startup uses this snapshot; the background catalog refresh reconciles it.
@@ -45,7 +59,7 @@ pub fn load_cache() -> Vec<Item> {
     let Ok(cache) = serde_json::from_reader::<_, Cache>(BufReader::new(file)) else {
         return Vec::new();
     };
-    if cache.version != CACHE_VERSION || cache.items.len() > MAX_FILES + 20_000 {
+    if !cache.compatible_with(&crate::i18n::current_language()) {
         return Vec::new();
     }
     cache
@@ -59,9 +73,17 @@ pub fn load_cache() -> Vec<Item> {
         .collect()
 }
 
-pub fn save_cache(items: &[Item]) -> io::Result<()> {
+/// Tag the snapshot with the language captured when its catalog worker started.
+pub fn save_cache(items: &[Item], language: &str) -> io::Result<()> {
+    if !crate::i18n::is_supported(language) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported index cache language",
+        ));
+    }
     let cache = Cache {
         version: CACHE_VERSION,
+        language: language.to_string(),
         items: items
             .iter()
             .filter(|item| is_cacheable(item))
@@ -348,7 +370,10 @@ impl ClipHistory {
         self.entries.push_front(Item::new(
             format!("clipboard:{}", self.sequence),
             title,
-            format!("Presse-papiers · {} caractères", text.chars().count()),
+            crate::i18n::fmt(
+                "Presse-papiers · {count} caractères",
+                &[("count", text.chars().count().to_string())],
+            ),
             "▤",
             Kind::Clipboard,
             text,
@@ -575,6 +600,7 @@ mod tests {
         ];
         let cache = Cache {
             version: CACHE_VERSION,
+            language: "fr".into(),
             items: entries
                 .into_iter()
                 .map(|(title, kind)| Item::new(title, title, "", "", kind, title))
@@ -618,5 +644,31 @@ mod tests {
             Some(&7)
         );
         assert!(!usage.counts.keys().any(|key| key.contains("private")));
+    }
+
+    #[test]
+    fn old_index_cache_is_french_and_cannot_seed_an_english_session() {
+        let cache: Cache = serde_json::from_str(r#"{"version":1,"items":[]}"#).unwrap();
+        assert_eq!(cache.language, "fr");
+        assert!(cache.compatible_with("fr"));
+        assert!(!cache.compatible_with("en"));
+    }
+
+    #[test]
+    fn index_cache_only_accepts_matching_language_and_schema() {
+        let mut cache = Cache {
+            version: CACHE_VERSION,
+            language: "en".into(),
+            items: Vec::new(),
+        };
+        assert!(cache.compatible_with("en"));
+        assert!(!cache.compatible_with("fr"));
+        cache.version += 1;
+        assert!(!cache.compatible_with("en"));
+        cache.version = CACHE_VERSION;
+        cache.language = "unknown".into();
+        assert!(!cache.compatible_with("en"));
+        let restored: Cache = serde_json::from_slice(&serde_json::to_vec(&cache).unwrap()).unwrap();
+        assert_eq!(restored.language, "unknown");
     }
 }

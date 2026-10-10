@@ -8,7 +8,15 @@ Windows 10 et 11, x64. L'exécutable autonome fait **environ 1,4 Mio** ; sa tail
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 149 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
+Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 165 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
+
+## Langues
+
+Au premier lancement, une petite fenêtre propose **Français** ou **English**. Le français est intégré. L’anglais est un fichier JSON d’environ **41 Ko**, téléchargé uniquement lors de sa première sélection et conservé dans `%LOCALAPPDATA%\SuperMenu\languages\en.json`. Les démarrages suivants utilisent ce cache, sans connexion. Si le téléchargement échoue, il reste possible de choisir le français.
+
+Pour changer : **Paramètres → Langue → Changer…**, puis **Enregistrer**. Le fichier demandé est récupéré en arrière-plan s’il n’est pas déjà disponible. La traduction est appliquée sans redémarrage ; les noms des logiciels et les commandes ne sont pas modifiés. Aucune bibliothèque HTTP ou interface web supplémentaire n’est embarquée : le téléchargement utilise WinHTTP de Windows.
+
+Les traductions sont modifiables et versionnées dans [`locales/`](locales/README.md).
 
 ## Utiliser
 

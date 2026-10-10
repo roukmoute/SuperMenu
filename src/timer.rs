@@ -23,12 +23,12 @@ pub enum ParseError {
 
 impl fmt::Display for ParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
+        formatter.write_str(&crate::i18n::tr(match self {
             Self::Empty => "Indique une durée, par exemple 5m ou 1h 30m.",
             Self::InvalidSyntax => "Durée invalide. Exemples : 5m, 90s, 01:30 ou 1h 30m.",
             Self::Zero => "La durée doit être supérieure à zéro.",
             Self::TooLong => "La durée maximale est de 24 heures.",
-        })
+        }))
     }
 }
 
@@ -139,9 +139,9 @@ fn skip_whitespace(input: &str, mut position: usize) -> usize {
 
 fn unit_multiplier(unit: &str) -> Option<u64> {
     match unit.to_ascii_lowercase().as_str() {
-        "h" | "hr" | "hrs" | "heure" | "heures" => Some(3600),
+        "h" | "hr" | "hrs" | "hour" | "hours" | "heure" | "heures" => Some(3600),
         "m" | "min" | "mins" | "minute" | "minutes" => Some(60),
-        "s" | "sec" | "secs" | "seconde" | "secondes" => Some(1),
+        "s" | "sec" | "secs" | "second" | "seconds" | "seconde" | "secondes" => Some(1),
         _ => None,
     }
 }
@@ -198,7 +198,7 @@ fn specification(seconds: u64, label: &str) -> Result<TimerSpec, ParseError> {
     Ok(TimerSpec {
         duration: Duration::from_secs(seconds),
         label: if label.is_empty() {
-            "Minuteur".to_owned()
+            crate::i18n::tr("Minuteur")
         } else {
             label.to_owned()
         },
@@ -240,7 +240,7 @@ pub enum TimerError {
 
 impl fmt::Display for TimerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
+        formatter.write_str(&crate::i18n::tr(match self {
             Self::Capacity => "Huit minuteurs maximum. Supprime un minuteur pour en ajouter un.",
             Self::InvalidDuration => "La durée doit être comprise entre une seconde et 24 heures.",
             Self::UnknownTimer => "Ce minuteur n'existe plus.",
@@ -248,7 +248,7 @@ impl fmt::Display for TimerError {
             Self::NotPaused => "Ce minuteur n'est pas en pause.",
             Self::NotFinished => "Ce minuteur n'est pas terminé.",
             Self::IdExhausted => "Impossible de créer un nouvel identifiant de minuteur.",
-        })
+        }))
     }
 }
 
@@ -454,6 +454,9 @@ mod tests {
             ("2 Thé", 120, "Thé"),
             ("1h30m", 5400, "Minuteur"),
             ("1 HEURE 2 minutes 3 secondes Repas", 3723, "Repas"),
+            ("1 HOUR 2 minutes 3 seconds Break", 3723, "Break"),
+            ("2 hours Workout", 7200, "Workout"),
+            ("1 second Tea", 1, "Tea"),
             ("24h", 86400, "Minuteur"),
             ("1440:00", 86400, "Minuteur"),
             ("24:00:00", 86400, "Minuteur"),

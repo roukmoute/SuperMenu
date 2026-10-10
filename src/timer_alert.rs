@@ -1,5 +1,6 @@
 //! Persistent, non-activating completion notice owned by the UI thread.
 
+use crate::i18n::{fmt, tr};
 use crate::{config, native::wide};
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
@@ -137,7 +138,7 @@ impl TimerAlert {
     pub fn new() -> Result<Self, String> {
         register_class()?;
         let mut state = Box::new(RefCell::new(State {
-            labels: wide("Minuteur"),
+            labels: wide(&tr("Minuteur")),
             palette: Palette::from(&config::Settings::default()),
             dpi: 96,
             fonts: [null_mut(); 3],
@@ -150,7 +151,7 @@ impl TimerAlert {
             CreateWindowExW(
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 wide(CLASS).as_ptr(),
-                wide(TITLE).as_ptr(),
+                wide(&tr(TITLE)).as_ptr(),
                 WS_POPUP,
                 0,
                 0,
@@ -205,7 +206,14 @@ impl TimerAlert {
         }
         // Do not hold RefCell borrows across synchronous Win32 messages.
         unsafe {
-            SetWindowTextW(self.hwnd, wide(&format!("{TITLE} · {labels}")).as_ptr());
+            SetWindowTextW(
+                self.hwnd,
+                wide(&fmt(
+                    "{title} · {labels}",
+                    &[("title", tr(TITLE)), ("labels", labels.clone())],
+                ))
+                .as_ptr(),
+            );
             if SetWindowPos(
                 self.hwnd,
                 HWND_TOPMOST,
@@ -471,7 +479,7 @@ unsafe fn draw(hwnd: HWND, dc: HDC, state: &State) {
         dc,
         state.fonts[0],
         state.palette.text,
-        &wide(TITLE),
+        &wide(&tr(TITLE)),
         RECT {
             left: text_left,
             top: scale(17, state.dpi),
@@ -501,7 +509,7 @@ unsafe fn draw(hwnd: HWND, dc: HDC, state: &State) {
         } else {
             state.palette.on_accent
         },
-        &wide("Fermer"),
+        &wide(&tr("Fermer")),
         button,
         TEXT_FLAGS | DT_CENTER,
     );
@@ -578,7 +586,7 @@ fn grouped_labels(titles: &[String]) -> String {
                 .take(80)
                 .collect();
             if cleaned.trim().is_empty() {
-                "Minuteur".to_string()
+                tr("Minuteur")
             } else {
                 cleaned.trim().to_string()
             }
@@ -586,7 +594,10 @@ fn grouped_labels(titles: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" · ");
     if titles.len() > 8 {
-        labels.push_str(&format!(" · +{} minuteurs", titles.len() - 8));
+        labels.push_str(&fmt(
+            " · +{count} minuteurs",
+            &[("count", (titles.len() - 8).to_string())],
+        ));
     }
     labels
 }
@@ -612,7 +623,11 @@ fn color(r: u32, g: u32, b: u32) -> COLORREF {
     r | (g << 8) | (b << 16)
 }
 fn win_error(context: &str) -> String {
-    format!("{context} : {}", std::io::Error::last_os_error())
+    let error = std::io::Error::last_os_error().to_string();
+    fmt(
+        "{context} : {error}",
+        &[("context", tr(context)), ("error", error)],
+    )
 }
 
 #[cfg(test)]

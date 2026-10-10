@@ -78,7 +78,9 @@ pub fn capture() -> Inventory {
     for hive in [Hive::User, Hive::Machine] {
         for view in [RegistryView::Registry64, RegistryView::Registry32] {
             if visited >= MAX_ENTRIES {
-                inventory.issue("Limite de l’inventaire du registre atteinte.".into());
+                inventory.issue(crate::i18n::tr(
+                    "Limite de l’inventaire du registre atteinte.",
+                ));
                 return inventory;
             }
             scan_view(hive, view, &mut visited, &mut inventory);
@@ -136,31 +138,45 @@ fn scan_view(hive: Hive, view: RegistryView, visited: &mut usize, inventory: &mu
             return;
         }
         if *visited >= MAX_ENTRIES {
-            inventory.issue("Limite de l’inventaire du registre atteinte.".into());
+            inventory.issue(crate::i18n::tr(
+                "Limite de l’inventaire du registre atteinte.",
+            ));
             return;
         }
         *visited += 1;
         if result != ERROR_SUCCESS || length as usize >= name.len() {
-            inventory.issue(format!(
-                "{hive:?}/{view:?} : énumération impossible ({result})."
+            inventory.issue(crate::i18n::fmt(
+                "{hive}/{view} : énumération impossible ({result}).",
+                &[
+                    ("hive", format!("{hive:?}")),
+                    ("view", format!("{view:?}")),
+                    ("result", result.to_string()),
+                ],
             ));
             // Do not keep advancing through a changing/inaccessible enumeration.
             return;
         }
         let Ok(child_name) = String::from_utf16(&name[..length as usize]) else {
-            inventory.issue(format!("{hive:?}/{view:?} : nom de clé UTF-16 incorrect."));
+            inventory.issue(crate::i18n::fmt(
+                "{hive}/{view} : nom de clé UTF-16 incorrect.",
+                &[("hive", format!("{hive:?}")), ("view", format!("{view:?}"))],
+            ));
             continue;
         };
         if !valid_component(&child_name) {
-            inventory.issue(format!("{hive:?}/{view:?} : nom de clé non sûr."));
+            inventory.issue(crate::i18n::fmt(
+                "{hive}/{view} : nom de clé non sûr.",
+                &[("hive", format!("{hive:?}")), ("view", format!("{view:?}"))],
+            ));
             continue;
         }
         let child = match open_component(root.0, view, &child_name) {
             Ok(Some(key)) => key,
             Ok(None) => {
                 // A key vanished after enumeration; this is not a complete snapshot.
-                inventory.issue(format!(
-                    "{hive:?}/{view:?} : clé disparue pendant la lecture."
+                inventory.issue(crate::i18n::fmt(
+                    "{hive}/{view} : clé disparue pendant la lecture.",
+                    &[("hive", format!("{hive:?}")), ("view", format!("{view:?}"))],
                 ));
                 continue;
             }
@@ -178,7 +194,9 @@ fn scan_view(hive: Hive, view: RegistryView, visited: &mut usize, inventory: &mu
             inventory.entries.push(entry);
         }
     }
-    inventory.issue("Limite d’énumération du registre atteinte.".into());
+    inventory.issue(crate::i18n::tr(
+        "Limite d’énumération du registre atteinte.",
+    ));
 }
 
 fn read_entry(handle: HKEY, key: RegistryKey, inventory: &mut Inventory) -> Option<InstalledEntry> {
@@ -215,7 +233,10 @@ fn read_entry_fields(
         name.clear();
     }
     if (!name.is_empty() && !valid_name(&name)) || publisher.chars().count() > 2048 {
-        inventory.issue(format!("{} : nom ou éditeur incorrect.", key.path));
+        inventory.issue(crate::i18n::fmt(
+            "{path} : nom ou éditeur incorrect.",
+            &[("path", key.path.clone())],
+        ));
         return None;
     }
     if name.is_empty() && install_location.is_none() && display_icon.is_none() {
@@ -295,11 +316,16 @@ fn verify_stamp(
 ) {
     match (before, after) {
         (Ok(before), Ok(after)) if before == after => {}
-        (Ok(_), Ok(_)) => inventory.issue(format!(
-            "{description} : registre modifié pendant la lecture."
+        (Ok(_), Ok(_)) => inventory.issue(crate::i18n::fmt(
+            "{description} : registre modifié pendant la lecture.",
+            &[("description", description.to_string())],
         )),
-        (Err(error), _) | (_, Err(error)) => inventory.issue(format!(
-            "{description} : vérification de stabilité impossible ({error})."
+        (Err(error), _) | (_, Err(error)) => inventory.issue(crate::i18n::fmt(
+            "{description} : vérification de stabilité impossible ({error}).",
+            &[
+                ("description", description.to_string()),
+                ("error", error.to_string()),
+            ],
         )),
     }
 }
@@ -312,7 +338,7 @@ fn open_chain(hive: Hive, view: RegistryView, path: &str) -> Result<Option<OpenK
     let mut owned = None;
     for component in path.split('\\') {
         if !valid_component(component) {
-            return Err("Chemin du registre non sûr.".into());
+            return Err(crate::i18n::tr("Chemin du registre non sûr."));
         }
         let Some(next) = open_component(parent, view, component)? else {
             return Ok(None);
@@ -349,7 +375,10 @@ fn open_component(
         return Ok(None);
     }
     if result != ERROR_SUCCESS {
-        return Err(format!("Ouverture du registre impossible ({result})."));
+        return Err(crate::i18n::fmt(
+            "Ouverture du registre impossible ({result}).",
+            &[("result", result.to_string())],
+        ));
     }
     let key = OpenKey(key);
     let link_name = wide("SymbolicLinkValue");
@@ -368,9 +397,12 @@ fn open_component(
     };
     if result != ERROR_FILE_NOT_FOUND {
         return Err(if result == ERROR_SUCCESS {
-            "Lien de registre refusé.".into()
+            crate::i18n::tr("Lien de registre refusé.")
         } else {
-            format!("Vérification du lien de registre impossible ({result}).")
+            crate::i18n::fmt(
+                "Vérification du lien de registre impossible ({result}).",
+                &[("result", result.to_string())],
+            )
         });
     }
     Ok(Some(key))
@@ -400,13 +432,19 @@ fn read_string(key: HKEY, name: &str) -> Result<Option<RegistryText>, String> {
         return Ok(None);
     }
     if result != ERROR_SUCCESS {
-        return Err(format!("Lecture de {name} impossible ({result})."));
+        return Err(crate::i18n::fmt(
+            "Lecture de {name} impossible ({result}).",
+            &[("name", name.to_string()), ("result", result.to_string())],
+        ));
     }
     if !matches!(kind, REG_SZ | REG_EXPAND_SZ)
         || !size.is_multiple_of(2)
         || size as usize > MAX_VALUE_BYTES
     {
-        return Err(format!("Type ou taille de {name} incorrect."));
+        return Err(crate::i18n::fmt(
+            "Type ou taille de {name} incorrect.",
+            &[("name", name.to_string())],
+        ));
     }
     let mut buffer = vec![0_u16; size as usize / 2 + 1];
     let capacity = buffer.len() * 2;
@@ -428,7 +466,10 @@ fn read_string(key: HKEY, name: &str) -> Result<Option<RegistryText>, String> {
         || size as usize > capacity
         || size as usize > MAX_VALUE_BYTES
     {
-        return Err(format!("Lecture incohérente de {name} ({result})."));
+        return Err(crate::i18n::fmt(
+            "Lecture incohérente de {name} ({result}).",
+            &[("name", name.to_string()), ("result", result.to_string())],
+        ));
     }
     decode_string(&buffer[..size as usize / 2])
         .map(|value| {
@@ -437,7 +478,9 @@ fn read_string(key: HKEY, name: &str) -> Result<Option<RegistryText>, String> {
                 expand: kind == REG_EXPAND_SZ,
             })
         })
-        .ok_or_else(|| format!("Texte de {name} incorrect."))
+        .ok_or_else(|| {
+            crate::i18n::fmt("Texte de {name} incorrect.", &[("name", name.to_string())])
+        })
 }
 
 /// A nonempty but unknown ownership path cannot simply be ignored: it might be
@@ -464,10 +507,7 @@ fn metadata_path(
     if let Some(path) = parsed.and_then(|path| normalize_ownership_path(&path)) {
         return Some(path);
     }
-    inventory.issue(format!(
-        "{} : propriétaire de {field} inconnu ; nettoyage automatique désactivé pour protéger les chemins partagés.",
-        key.path
-    ));
+    inventory.issue(crate::i18n::fmt("{path} : propriétaire de {field} inconnu ; nettoyage automatique désactivé pour protéger les chemins partagés.", &[("path", key.path.clone()), ("field", field.to_string())]));
     None
 }
 
@@ -578,7 +618,10 @@ fn read_flag(key: HKEY, name: &str) -> Result<bool, String> {
         return Ok(false);
     }
     if result != ERROR_SUCCESS || kind != REG_DWORD || size != 4 {
-        return Err(format!("Indicateur {name} incorrect ({result})."));
+        return Err(crate::i18n::fmt(
+            "Indicateur {name} incorrect ({result}).",
+            &[("name", name.to_string()), ("result", result.to_string())],
+        ));
     }
     Ok(value != 0)
 }

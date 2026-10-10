@@ -2,6 +2,7 @@
 //! It uses Windows APIs and an explicit registry allowlist: no processes, WMI,
 //! network requests, account names, serial numbers or persistent background work.
 
+use crate::i18n::{fmt, tr};
 use std::collections::HashSet;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
@@ -83,10 +84,10 @@ fn clean(text: &str) -> Option<String> {
 
 fn row(label: &str, value: Option<String>) -> Row {
     Row {
-        label: label.into(),
+        label: tr(label),
         value: value
             .and_then(|value| clean(&value))
-            .unwrap_or_else(|| UNAVAILABLE.into()),
+            .unwrap_or_else(|| tr(UNAVAILABLE)),
     }
 }
 
@@ -197,9 +198,15 @@ fn cpu() -> Option<String> {
     let count = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) };
     match (name, count) {
         (Some(name), 0) => Some(name),
-        (Some(name), count) => Some(format!("{name} · {count} processeurs logiques")),
+        (Some(name), count) => Some(fmt(
+            "{name} · {count} processeurs logiques",
+            &[("name", name), ("count", count.to_string())],
+        )),
         (None, 0) => None,
-        (None, count) => Some(format!("{count} processeurs logiques")),
+        (None, count) => Some(fmt(
+            "{count} processeurs logiques",
+            &[("count", count.to_string())],
+        )),
     }
 }
 
@@ -256,10 +263,26 @@ fn format_bytes(bytes: u64) -> String {
         (1u64 << 10, "Kio"),
     ] {
         if bytes >= threshold {
-            return format!("{:.1} {unit}", bytes as f64 / threshold as f64).replace('.', ",");
+            let amount = format!("{:.1}", bytes as f64 / threshold as f64);
+            let (whole, fraction) = amount.split_once('.').unwrap_or((&amount, "0"));
+            return fmt(
+                "{whole},{fraction} {unit}",
+                &[
+                    ("whole", whole.into()),
+                    ("fraction", fraction.into()),
+                    ("unit", tr(unit)),
+                ],
+            );
         }
     }
-    format!("{bytes} octet{}", if bytes == 1 { "" } else { "s" })
+    fmt(
+        if bytes == 1 {
+            "{bytes} octet"
+        } else {
+            "{bytes} octets"
+        },
+        &[("bytes", bytes.to_string())],
+    )
 }
 
 fn format_capacity(used: u64, total: u64) -> Option<String> {
@@ -343,7 +366,7 @@ fn architecture() -> Option<String> {
                         IMAGE_FILE_MACHINE_I386 => Some("x86 · 32 bits"),
                         _ => None,
                     } {
-                        return Some(name.into());
+                        return Some(tr(name));
                     }
                 }
             }
@@ -351,9 +374,9 @@ fn architecture() -> Option<String> {
         let mut system: SYSTEM_INFO = zeroed();
         GetNativeSystemInfo(&mut system);
         match system.Anonymous.Anonymous.wProcessorArchitecture {
-            PROCESSOR_ARCHITECTURE_AMD64 => Some("x64 · 64 bits".into()),
-            PROCESSOR_ARCHITECTURE_ARM64 => Some("ARM64 · 64 bits".into()),
-            PROCESSOR_ARCHITECTURE_INTEL => Some("x86 · 32 bits".into()),
+            PROCESSOR_ARCHITECTURE_AMD64 => Some(tr("x64 · 64 bits")),
+            PROCESSOR_ARCHITECTURE_ARM64 => Some(tr("ARM64 · 64 bits")),
+            PROCESSOR_ARCHITECTURE_INTEL => Some(tr("x86 · 32 bits")),
             _ => None,
         }
     }
@@ -364,13 +387,26 @@ fn format_uptime(milliseconds: u64) -> String {
     let hours = minutes / 60;
     let days = hours / 24;
     if days > 0 {
-        format!("{days} j {:02} h {:02} min", hours % 24, minutes % 60)
+        fmt(
+            "{days} j {hours} h {minutes} min",
+            &[
+                ("days", days.to_string()),
+                ("hours", format!("{:02}", hours % 24)),
+                ("minutes", format!("{:02}", minutes % 60)),
+            ],
+        )
     } else if hours > 0 {
-        format!("{hours} h {:02} min", minutes % 60)
+        fmt(
+            "{hours} h {minutes} min",
+            &[
+                ("hours", hours.to_string()),
+                ("minutes", format!("{:02}", minutes % 60)),
+            ],
+        )
     } else if minutes > 0 {
-        format!("{minutes} min")
+        fmt("{minutes} min", &[("minutes", minutes.to_string())])
     } else {
-        "Moins d’une minute".into()
+        tr("Moins d’une minute")
     }
 }
 
@@ -393,9 +429,15 @@ fn format_date(date: &SYSTEMTIME) -> Option<String> {
     if !(1..=31).contains(&date.wDay) || date.wHour > 23 || date.wMinute > 59 {
         return None;
     }
-    Some(format!(
-        "{} {month} {} · {:02} h {:02}",
-        date.wDay, date.wYear, date.wHour, date.wMinute
+    Some(fmt(
+        "{day} {month} {year} · {hour} h {minute}",
+        &[
+            ("day", date.wDay.to_string()),
+            ("month", tr(month)),
+            ("year", date.wYear.to_string()),
+            ("hour", format!("{:02}", date.wHour)),
+            ("minute", format!("{:02}", date.wMinute)),
+        ],
     ))
 }
 

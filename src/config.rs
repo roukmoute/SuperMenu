@@ -12,6 +12,8 @@ static SAVE_LOCK: Mutex<()> = Mutex::new(());
 #[serde(default)]
 pub struct Settings {
     pub hotkey: String,
+    /// Empty until the user chooses a language; old settings remain compatible.
+    pub language: String,
     pub theme: String,
     pub accent_color: String,
     pub max_results: usize,
@@ -36,6 +38,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             hotkey: "Win+Space".into(),
+            language: String::new(),
             theme: "dark".into(),
             accent_color: "#9A8CFF".into(),
             max_results: 9,
@@ -53,6 +56,10 @@ impl Default for Settings {
 impl Settings {
     pub fn normalize(&mut self) {
         self.hotkey = normalize_hotkey(&self.hotkey);
+        self.language = crate::i18n::LANGUAGES
+            .iter()
+            .find(|language| language.code.eq_ignore_ascii_case(self.language.trim()))
+            .map_or_else(String::new, |language| language.code.to_string());
         self.theme = if self.theme.trim().eq_ignore_ascii_case("light") {
             "light"
         } else {
@@ -356,6 +363,7 @@ mod tests {
         let root = temporary.0.to_string_lossy().into_owned();
         let mut settings = Settings {
             hotkey: "control + alt + k".into(),
+            language: " EN ".into(),
             theme: "LIGHT".into(),
             accent_color: "#ab12CD".into(),
             max_results: usize::MAX,
@@ -404,6 +412,7 @@ mod tests {
         assert_eq!(loaded.file_roots, vec![root]);
         assert_eq!(loaded.commands.len(), 1);
         assert_eq!(loaded.commands[0].name, "Terminal");
+        assert_eq!(loaded.language, "en");
         assert!(loaded.clipboard_enabled);
         assert!(loaded.web_search_template.starts_with("https://"));
         settings.hotkey = "Win+Space".into();
@@ -468,6 +477,42 @@ mod tests {
             settings.file_roots = vec![format!("%{variable}%")];
             settings.normalize();
             assert_eq!(settings.file_roots, vec![env::var(variable).unwrap()]);
+        }
+    }
+
+    #[test]
+    fn old_settings_prompt_for_language_and_keep_existing_preferences() {
+        let temporary = Temporary::new();
+        let path = temporary.0.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"hotkey":"Alt+Space","theme":"light","max_results":12}"#,
+        )
+        .unwrap();
+        let settings = load_from(&path);
+        assert!(settings.language.is_empty());
+        assert_eq!(settings.hotkey, "Alt+Space");
+        assert_eq!(settings.theme, "light");
+        assert_eq!(settings.max_results, 12);
+    }
+
+    #[test]
+    fn settings_language_validation_rejects_paths_and_unavailable_languages() {
+        for (input, expected) in [
+            ("FR", "fr"),
+            (" en ", "en"),
+            ("", ""),
+            ("de", ""),
+            ("../en", ""),
+            ("en.json", ""),
+            ("en\0", ""),
+        ] {
+            let mut settings = Settings {
+                language: input.into(),
+                ..Settings::default()
+            };
+            settings.normalize();
+            assert_eq!(settings.language, expected);
         }
     }
 }

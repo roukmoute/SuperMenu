@@ -66,8 +66,9 @@ impl ElevatedProcess {
                 WAIT_OBJECT_0 => {}
                 WAIT_FAILED => return Err(io::Error::last_os_error()),
                 result => {
-                    return Err(io::Error::other(format!(
-                        "État d'attente inattendu du helper : {result}."
+                    return Err(io::Error::other(crate::i18n::fmt(
+                        "État d'attente inattendu du helper : {result}.",
+                        &[("result", result.to_string())],
                     )))
                 }
             }
@@ -149,16 +150,28 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
     {
         return None;
     }
+    // A software-management helper is a separate process. Reuse the language
+    // selected by the launcher, without downloading on this execution path.
+    #[cfg(not(test))]
+    {
+        let settings = config::load();
+        let language = if settings.language.is_empty() {
+            "fr"
+        } else {
+            &settings.language
+        };
+        let _ = crate::i18n::init_cached(language, &config::data_dir().join("languages"));
+    }
     let request = parse_request(args);
     let heading = if request
         .as_ref()
         .is_ok_and(|request| request.remove.is_some())
     {
-        "Super Menu · Désinstallation"
+        crate::i18n::tr("Super Menu · Désinstallation")
     } else {
-        "Super Menu · Installation"
+        crate::i18n::tr("Super Menu · Installation")
     };
-    let console = match Console::open(heading) {
+    let console = match Console::open(&heading) {
         Ok(console) => console,
         Err(error) => {
             if let Ok(request) = &request {
@@ -168,7 +181,7 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
                 MessageBoxW(
                     null_mut(),
                     wide(&error).as_ptr(),
-                    wide(heading).as_ptr(),
+                    wide(&heading).as_ptr(),
                     MB_OK | MB_ICONERROR,
                 );
             }
@@ -182,7 +195,13 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
             // One initial confirmation authorizes the complete removal. Successful
             // unattended removals do not require another Enter just to close a log.
             wait = !request.no_wait;
-            println!("{heading} de {}\n", request.name);
+            println!(
+                "{}\n",
+                crate::i18n::fmt(
+                    "{heading} de {name}",
+                    &[("heading", heading.clone()), ("name", request.name.clone())]
+                )
+            );
             let outcome = if valid_parent(request.parent, request.parent_pid) {
                 let validation = match &request.remove {
                     Some(target) => {
@@ -221,31 +240,28 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
             };
             let result = match outcome {
                 Ok(Outcome::Installed) => {
-                    println!(
-                        "\nInstallation terminée. Le catalogue de Super Menu va être actualisé."
-                    );
+                    println!("{}", crate::i18n::tr("\nInstallation terminée. Le catalogue de Super Menu va être actualisé."));
                     0
                 }
                 Ok(Outcome::AlreadyInstalled) => {
-                    println!(
-                        "\nCe logiciel est déjà installé. Aucune mise à jour n'a été effectuée."
-                    );
+                    println!("{}", crate::i18n::tr("\nCe logiciel est déjà installé. Aucune mise à jour n'a été effectuée."));
                     0
                 }
                 Ok(Outcome::Removed) => {
-                    println!(
-                        "\nDésinstallation terminée. Le catalogue de Super Menu va être actualisé."
-                    );
+                    println!("{}", crate::i18n::tr("\nDésinstallation terminée. Le catalogue de Super Menu va être actualisé."));
                     wait = false;
                     close_after_success = true;
                     0
                 }
                 Ok(Outcome::RemoveChecked) => {
-                    println!("\nLe logiciel est installé. Diagnostic uniquement : aucune désinstallation lancée.");
+                    println!("{}", crate::i18n::tr("\nLe logiciel est installé. Diagnostic uniquement : aucune désinstallation lancée."));
                     0
                 }
                 Err(error) => {
-                    eprintln!("\nÉchec : {}", error.message);
+                    eprintln!(
+                        "{}",
+                        crate::i18n::fmt("\nÉchec : {error}", &[("error", error.message.clone())])
+                    );
                     error.code
                 }
             };
@@ -254,12 +270,21 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
             result
         }
         Err(error) => {
-            eprintln!("Requête de gestion de logiciel refusée : {error}");
+            eprintln!(
+                "{}",
+                crate::i18n::fmt(
+                    "Requête de gestion de logiciel refusée : {error}",
+                    &[("error", error.to_string())]
+                )
+            );
             1
         }
     };
     if wait {
-        println!("\nAppuyez sur Entrée pour fermer cette fenêtre.");
+        println!(
+            "{}",
+            crate::i18n::tr("\nAppuyez sur Entrée pour fermer cette fenêtre.")
+        );
         let _ = io::stdout().flush();
         let _ = io::stderr().flush();
         let _ = io::stdin().read_line(&mut String::new());
@@ -344,13 +369,18 @@ fn spawn_helper(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| {
-            format!("Impossible d'ouvrir la console de gestion de logiciels : {error}")
+            crate::i18n::fmt(
+                "Impossible d'ouvrir la console de gestion de logiciels : {error}",
+                &[("error", error.to_string())],
+            )
         })
 }
 
 fn validate_endpoint(parent: HWND, parent_pid: u32, request: usize) -> Result<(), String> {
     if request == 0 || !valid_parent(parent, parent_pid) {
-        Err("La requête n'a pas de fenêtre Super Menu valide.".into())
+        Err(crate::i18n::tr(
+            "La requête n'a pas de fenêtre Super Menu valide.",
+        ))
     } else {
         Ok(())
     }
@@ -391,9 +421,9 @@ fn spawn_elevated_helper(args: &[String], parent: HWND) -> Result<ElevatedProces
             return Err(elevation_error(&error));
         }
         if info.hProcess.is_null() {
-            return Err(
-                "Le helper administrateur n'a pas retourné de processus vérifiable.".into(),
-            );
+            return Err(crate::i18n::tr(
+                "Le helper administrateur n'a pas retourné de processus vérifiable.",
+            ));
         }
         Ok(ElevatedProcess {
             handle: info.hProcess as usize,
@@ -403,9 +433,14 @@ fn spawn_elevated_helper(args: &[String], parent: HWND) -> Result<ElevatedProces
 
 fn elevation_error(error: &io::Error) -> String {
     if error.raw_os_error() == Some(ERROR_CANCELLED as i32) {
-        "Autorisation administrateur annulée. Aucune désinstallation n'a été lancée.".into()
+        crate::i18n::tr(
+            "Autorisation administrateur annulée. Aucune désinstallation n'a été lancée.",
+        )
     } else {
-        format!("Impossible d'ouvrir la console de désinstallation administrateur : {error}")
+        crate::i18n::fmt(
+            "Impossible d'ouvrir la console de désinstallation administrateur : {error}",
+            &[("error", error.to_string())],
+        )
     }
 }
 
@@ -483,7 +518,7 @@ fn valid_parent(parent: HWND, parent_pid: u32) -> bool {
 fn whitelisted(id: &str) -> Result<&'static packages::Package, String> {
     packages::find(id)
         .filter(|package| package.id.eq_ignore_ascii_case(id))
-        .ok_or_else(|| "Identifiant absent du catalogue d'installation autorisé.".into())
+        .ok_or_else(|| crate::i18n::tr("Identifiant absent du catalogue d'installation autorisé."))
 }
 
 fn helper_args(id: &str, parent: usize, pid: u32, token: usize) -> Vec<String> {
@@ -519,10 +554,9 @@ fn remove_target(target: &str) -> Result<RemoveTarget, String> {
             return Ok(RemoveTarget::Name(name.into()));
         }
     }
-    Err(
-        "Cible de désinstallation invalide : identifiant autorisé ou nom installé exact requis."
-            .into(),
-    )
+    Err(crate::i18n::tr(
+        "Cible de désinstallation invalide : identifiant autorisé ou nom installé exact requis.",
+    ))
 }
 
 fn validate_removal_inventory(
@@ -539,7 +573,7 @@ fn validate_removal_inventory(
         RemoveTarget::Id(_) => true,
     };
     if !exact_name || !packages::removal_is_allowed(&key, all_names, removable_names) {
-        return Err("Ce logiciel est protégé ou son nom exact n'est plus présent parmi les logiciels désinstallables. Aucune désinstallation lancée.".into());
+        return Err(crate::i18n::tr("Ce logiciel est protégé ou son nom exact n'est plus présent parmi les logiciels désinstallables. Aucune désinstallation lancée."));
     }
     Ok(())
 }
@@ -571,16 +605,22 @@ fn parse_request(args: &[String]) -> Result<Request, String> {
             "--notify" => &mut parent,
             "--parent-pid" => &mut pid,
             "--request" => &mut token,
-            _ => return Err(format!("Option inconnue : {flag}")),
+            _ => {
+                return Err(crate::i18n::fmt(
+                    "Option inconnue : {flag}",
+                    &[("flag", flag.to_string())],
+                ))
+            }
         };
         if slot.is_some() {
-            return Err(format!("Option répétée : {flag}"));
+            return Err(crate::i18n::fmt(
+                "Option répétée : {flag}",
+                &[("flag", flag.to_string())],
+            ));
         }
-        *slot = Some(
-            values
-                .next()
-                .ok_or_else(|| format!("Valeur manquante : {flag}"))?,
-        );
+        *slot = Some(values.next().ok_or_else(|| {
+            crate::i18n::fmt("Valeur manquante : {flag}", &[("flag", flag.to_string())])
+        })?);
     }
     let (id, name, remove) = match (id, removal) {
         (Some(id), None) => {
@@ -595,16 +635,24 @@ fn parse_request(args: &[String]) -> Result<Request, String> {
             };
             ("", name, Some(target))
         }
-        _ => return Err("Choisissez exactement un mode : installation ou désinstallation.".into()),
+        _ => {
+            return Err(crate::i18n::tr(
+                "Choisissez exactement un mode : installation ou désinstallation.",
+            ))
+        }
     };
     let parent = parse_number::<usize>(parent, "Fenêtre")?;
     let pid = parse_number::<u32>(pid, "Processus")?;
     let token = parse_number::<usize>(token, "Requête")?;
     if parent == 0 || pid == 0 || token == 0 {
-        return Err("Fenêtre, processus et requête doivent être non nuls.".into());
+        return Err(crate::i18n::tr(
+            "Fenêtre, processus et requête doivent être non nuls.",
+        ));
     }
     if no_wait && !check_only {
-        return Err("--no-wait est réservé au diagnostic --check-only.".into());
+        return Err(crate::i18n::tr(
+            "--no-wait est réservé au diagnostic --check-only.",
+        ));
     }
     Ok(Request {
         id,
@@ -619,11 +667,17 @@ fn parse_request(args: &[String]) -> Result<Request, String> {
 }
 
 fn parse_number<T: std::str::FromStr>(value: Option<&String>, name: &str) -> Result<T, String> {
-    let value = value.ok_or_else(|| format!("{name} manquant."))?;
+    let value = value
+        .ok_or_else(|| crate::i18n::fmt("{name} manquant.", &[("name", crate::i18n::tr(name))]))?;
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(format!("{name} invalide."));
+        return Err(crate::i18n::fmt(
+            "{name} invalide.",
+            &[("name", crate::i18n::tr(name))],
+        ));
     }
-    value.parse().map_err(|_| format!("{name} invalide."))
+    value
+        .parse()
+        .map_err(|_| crate::i18n::fmt("{name} invalide.", &[("name", crate::i18n::tr(name))]))
 }
 
 fn resolve_winget() -> Result<PathBuf, String> {
@@ -642,7 +696,7 @@ fn resolve_winget() -> Result<PathBuf, String> {
             }
         }
     }
-    Err("WinGet est introuvable. Installez ou réparez « App Installer » de Microsoft, puis réessayez. https://aka.ms/getwinget".into())
+    Err(crate::i18n::tr("WinGet est introuvable. Installez ou réparez « App Installer » de Microsoft, puis réessayez. https://aka.ms/getwinget"))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -705,10 +759,10 @@ impl Runner for SystemRunner {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                format!("WinGet ne peut pas être exécuté ({error}). Vérifiez App Installer et l'alias d'exécution des applications dans les paramètres Windows.")
+                crate::i18n::fmt("WinGet ne peut pas être exécuté ({error}). Vérifiez App Installer et l'alias d'exécution des applications dans les paramètres Windows.", &[("error", error.to_string())])
             })?
             .code()
-            .ok_or_else(|| "WinGet a été interrompu sans résultat.".into())
+            .ok_or_else(|| crate::i18n::tr("WinGet a été interrompu sans résultat."))
     }
 }
 
@@ -730,16 +784,19 @@ impl Failure {
     fn local(message: impl Into<String>) -> Self {
         Self {
             code: 1,
-            message: message.into(),
+            message: crate::i18n::tr(&message.into()),
         }
     }
 
     fn winget(code: i32, context: &str) -> Self {
         Self {
             code,
-            message: format!(
-                "{context} (WinGet 0x{:08X}). Consultez le détail affiché ci-dessus.",
-                code as u32
+            message: crate::i18n::fmt(
+                "{context} (WinGet {code}). Consultez le détail affiché ci-dessus.",
+                &[
+                    ("context", crate::i18n::tr(context)),
+                    ("code", format!("0x{:08X}", code as u32)),
+                ],
             ),
         }
     }
@@ -866,7 +923,7 @@ fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
     let _journal_parents = match prepare_report_directory(&directory) {
         Ok(handles) => handles,
         Err(error) => {
-            eprintln!("\nLe logiciel est retiré ; nettoyage ignoré car son journal ne peut pas être enregistré : {error}");
+            eprintln!("{}", crate::i18n::fmt("\nLe logiciel est retiré ; nettoyage ignoré car son journal ne peut pas être enregistré : {error}", &[("error", error.to_string())]));
             return;
         }
     };
@@ -885,7 +942,7 @@ fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
     {
         Ok(file) => file,
         Err(error) => {
-            eprintln!("\nLe logiciel est retiré ; nettoyage ignoré car son journal ne peut pas être créé : {error}");
+            eprintln!("{}", crate::i18n::fmt("\nLe logiciel est retiré ; nettoyage ignoré car son journal ne peut pas être créé : {error}", &[("error", error.to_string())]));
             return;
         }
     };
@@ -902,15 +959,20 @@ fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
         .and_then(|_| writer.flush())
         .and_then(|_| writer.get_ref().sync_all())
     {
-        eprintln!("\nLe logiciel est retiré ; nettoyage ignoré car son plan ne peut pas être sauvegardé : {error}");
+        eprintln!("{}", crate::i18n::fmt("\nLe logiciel est retiré ; nettoyage ignoré car son plan ne peut pas être sauvegardé : {error}", &[("error", error.to_string())]));
         return;
     }
     drop(writer);
     let report = plan.execute_after_success();
     println!(
-        "\nNettoyage : {} résidu(s) retiré(s), {} conservé(s).",
-        report.removed.len(),
-        report.retained.len()
+        "{}",
+        crate::i18n::fmt(
+            "\nNettoyage : {removed} résidu(s) retiré(s), {retained} conservé(s).",
+            &[
+                ("removed", report.removed.len().to_string()),
+                ("retained", report.retained.len().to_string())
+            ]
+        )
     );
     for note in &report.notes {
         println!("  {note}");
@@ -929,10 +991,7 @@ fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
     {
         Ok(file) => file,
         Err(error) => {
-            eprintln!(
-                "Le bilan ne peut pas être créé : {error}. Le plan initial reste disponible : {}",
-                intent_path.display()
-            );
+            eprintln!("{}", crate::i18n::fmt("Le bilan ne peut pas être créé : {error}. Le plan initial reste disponible : {path}", &[("error", error.to_string()), ("path", intent_path.display().to_string())]));
             return;
         }
     };
@@ -942,9 +1001,18 @@ fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
         .and_then(|_| writer.flush())
         .and_then(|_| writer.get_ref().sync_all())
     {
-        eprintln!("Le journal n'a pas pu être finalisé : {error}");
+        eprintln!(
+            "{}",
+            crate::i18n::fmt(
+                "Le journal n'a pas pu être finalisé : {error}",
+                &[("error", error.to_string())]
+            )
+        );
     } else {
-        println!("Rapport : {}", path.display());
+        println!(
+            "{}",
+            crate::i18n::fmt("Rapport : {path}", &[("path", path.display().to_string())])
+        );
     }
 }
 
@@ -953,14 +1021,16 @@ fn prepare_report_directory(path: &std::path::Path) -> io::Result<Vec<std::fs::F
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     };
     if !path.is_absolute() {
-        return Err(io::Error::other("Le dossier du journal n'est pas absolu."));
+        return Err(io::Error::other(crate::i18n::tr(
+            "Le dossier du journal n'est pas absolu.",
+        )));
     }
     for ancestor in path.ancestors() {
         match std::fs::symlink_metadata(ancestor) {
             Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
-                return Err(io::Error::other(
+                return Err(io::Error::other(crate::i18n::tr(
                     "Le dossier du journal traverse un lien ou une jonction.",
-                ));
+                )));
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -979,7 +1049,9 @@ fn prepare_report_directory(path: &std::path::Path) -> io::Result<Vec<std::fs::F
             .open(ancestor)?;
         let metadata = handle.metadata()?;
         if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-            return Err(io::Error::other("Le parent du journal est devenu un lien."));
+            return Err(io::Error::other(crate::i18n::tr(
+                "Le parent du journal est devenu un lien.",
+            )));
         }
         handles.push(handle);
     }
@@ -995,9 +1067,9 @@ impl Console {
     fn open(title: &str) -> Result<Self, String> {
         unsafe {
             if GetConsoleWindow().is_null() && AllocConsole() == 0 {
-                return Err(format!(
-                    "Impossible d'ouvrir la console : {}",
-                    io::Error::last_os_error()
+                return Err(crate::i18n::fmt(
+                    "Impossible d'ouvrir la console : {error}",
+                    &[("error", io::Error::last_os_error().to_string())],
                 ));
             }
             // A GUI executable starts with null standard handles. Explicitly rebind
@@ -1015,9 +1087,9 @@ impl Console {
                 || SetStdHandle(STD_OUTPUT_HANDLE, output) == 0
                 || SetStdHandle(STD_ERROR_HANDLE, output) == 0
             {
-                return Err(format!(
-                    "Console indisponible : {}",
-                    io::Error::last_os_error()
+                return Err(crate::i18n::fmt(
+                    "Console indisponible : {error}",
+                    &[("error", io::Error::last_os_error().to_string())],
                 ));
             }
             SetConsoleTitleW(wide(title).as_ptr());
@@ -1045,9 +1117,9 @@ fn open_console(name: &str) -> Result<HANDLE, String> {
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        Err(format!(
-            "Console indisponible : {}",
-            io::Error::last_os_error()
+        Err(crate::i18n::fmt(
+            "Console indisponible : {error}",
+            &[("error", io::Error::last_os_error().to_string())],
         ))
     } else {
         Ok(handle)

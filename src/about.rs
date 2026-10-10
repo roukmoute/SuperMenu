@@ -1,5 +1,6 @@
 //! A reusable, modeless About window. Hardware collection starts only when shown.
 
+use crate::i18n::{fmt, tr};
 use crate::{native::wide, system_info};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -281,7 +282,7 @@ impl AboutWindow {
             CreateWindowExW(
                 WS_EX_CONTROLPARENT,
                 wide(CLASS).as_ptr(),
-                wide("Super Menu · À propos").as_ptr(),
+                wide(&tr("Super Menu · À propos")).as_ptr(),
                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -493,7 +494,7 @@ unsafe fn create_controls(state: &mut State) -> Result<(), String> {
     ] {
         let label = create_static(
             state,
-            text,
+            &tr(text),
             Style {
                 font,
                 muted,
@@ -506,7 +507,7 @@ unsafe fn create_controls(state: &mut State) -> Result<(), String> {
     for name in ["Matériel", "Windows", "Activité"] {
         let heading = create_static(
             state,
-            name,
+            &tr(name),
             Style {
                 font: 1,
                 muted: false,
@@ -516,7 +517,7 @@ unsafe fn create_controls(state: &mut State) -> Result<(), String> {
         )?;
         let loading = create_static(
             state,
-            "Chargement…",
+            &tr("Chargement…"),
             Style {
                 font: 0,
                 muted: true,
@@ -538,7 +539,7 @@ unsafe fn create_controls(state: &mut State) -> Result<(), String> {
         let button = CreateWindowExW(
             0,
             wide("BUTTON").as_ptr(),
-            wide(text).as_ptr(),
+            wide(&tr(text)).as_ptr(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32,
             0,
             0,
@@ -560,18 +561,62 @@ unsafe fn create_controls(state: &mut State) -> Result<(), String> {
 
 unsafe fn update_context(state: &State) {
     let context = &state.context;
+    SetWindowTextW(state.hwnd, wide(&tr("Super Menu · À propos")).as_ptr());
+    for (index, source) in [
+        (0, "À portée de clavier"),
+        (1, "Un lanceur Windows rapide pour retrouver vos applications, fichiers et outils en quelques touches."),
+        (8, "Natif · Rust · Windows uniquement"),
+    ] {
+        SetWindowTextW(state.left[index], wide(&tr(source)).as_ptr());
+    }
+    for (panel, source) in state.panels.iter().zip(["Matériel", "Windows", "Activité"]) {
+        SetWindowTextW(panel.heading, wide(&tr(source)).as_ptr());
+    }
+    for (button, source) in state.buttons.iter().zip(["GitHub", "Fermer"]) {
+        SetWindowTextW(*button, wide(&tr(source)).as_ptr());
+    }
     for (index, value) in [
-        (2, format!("Version {}", env!("CARGO_PKG_VERSION"))),
-        (3, format!("Raccourci : {}", clean(&context.hotkey, 80))),
-        (4, format!("{} applications", context.applications)),
-        (5, format!("{} fichiers et dossiers", context.files)),
+        (
+            2,
+            fmt(
+                "Version {version}",
+                &[("version", env!("CARGO_PKG_VERSION").into())],
+            ),
+        ),
+        (
+            3,
+            fmt(
+                "Raccourci : {hotkey}",
+                &[("hotkey", clean(&context.hotkey, 80))],
+            ),
+        ),
+        (
+            4,
+            fmt(
+                "{count} applications",
+                &[("count", context.applications.to_string())],
+            ),
+        ),
+        (
+            5,
+            fmt(
+                "{count} fichiers et dossiers",
+                &[("count", context.files.to_string())],
+            ),
+        ),
         (
             6,
-            format!("{} entrées dans l’index local", context.index_items),
+            fmt(
+                "{count} entrées dans l’index local",
+                &[("count", context.index_items.to_string())],
+            ),
         ),
         (
             7,
-            format!("Super Menu ouvert depuis {}", elapsed(context.app_uptime)),
+            fmt(
+                "Super Menu ouvert depuis {duration}",
+                &[("duration", elapsed(context.app_uptime))],
+            ),
         ),
     ] {
         SetWindowTextW(state.left[index], wide(&value).as_ptr());
@@ -607,16 +652,20 @@ fn start_collection(cell: &RefCell<State>) {
                     .ok()
                     .and_then(|path| std::fs::metadata(path).ok())
                     .map(|metadata| {
-                        format!(
-                            "{:.2} Mio ({} octets)",
-                            metadata.len() as f64 / 1_048_576.0,
-                            metadata.len()
+                        let amount = format!("{:.2}", metadata.len() as f64 / 1_048_576.0);
+                        let (whole, fraction) = amount.split_once('.').unwrap_or((&amount, "00"));
+                        fmt(
+                            "{whole},{fraction} Mio ({bytes} octets)",
+                            &[
+                                ("whole", whole.into()),
+                                ("fraction", fraction.into()),
+                                ("bytes", metadata.len().to_string()),
+                            ],
                         )
-                        .replace('.', ",")
                     })
-                    .unwrap_or_else(|| "Indisponible".into());
+                    .unwrap_or_else(|| tr("Indisponible"));
                 snapshot.activity.push(system_info::Row {
-                    label: "Exécutable Super Menu".into(),
+                    label: tr("Exécutable Super Menu"),
                     value: executable_size,
                 });
                 if worker_wake.alive.load(Ordering::Acquire) && sender.try_send(snapshot).is_ok() {
@@ -628,7 +677,7 @@ fn start_collection(cell: &RefCell<State>) {
             state.response = None;
             unsafe {
                 for panel in &state.panels {
-                    SetWindowTextW(panel.loading, wide("Indisponible").as_ptr());
+                    SetWindowTextW(panel.loading, wide(&tr("Indisponible")).as_ptr());
                 }
             }
         }
@@ -674,7 +723,7 @@ unsafe fn accept_snapshot(state: &mut State) {
             );
             let text = clean(&row.value, 512);
             let text = if text.trim().is_empty() {
-                "Indisponible".into()
+                tr("Indisponible")
             } else {
                 text
             };
@@ -705,7 +754,7 @@ unsafe fn accept_snapshot(state: &mut State) {
         }
         let panel = &mut state.panels[index];
         panel.rows = controls;
-        SetWindowTextW(panel.loading, wide("Indisponible").as_ptr());
+        SetWindowTextW(panel.loading, wide(&tr("Indisponible")).as_ptr());
         ShowWindow(
             panel.loading,
             if panel.rows.is_empty() {
@@ -1168,7 +1217,7 @@ unsafe fn draw(hwnd: HWND, dc: HDC, state: &State) {
         };
         DrawTextW(
             dc,
-            wide("Informations locales · Échap fermer").as_ptr(),
+            wide(&tr("Informations locales · Échap fermer")).as_ptr(),
             -1,
             &mut text,
             DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
@@ -1203,11 +1252,11 @@ unsafe fn draw_button(state: &State, button: &DRAWITEMSTRUCT) {
     );
     DrawTextW(
         button.hDC,
-        wide(if button.CtlID as usize == GITHUB {
+        wide(&tr(if button.CtlID as usize == GITHUB {
             "GitHub"
         } else {
             "Fermer"
-        })
+        }))
         .as_ptr(),
         -1,
         &mut bounds,
@@ -1314,13 +1363,25 @@ fn placement(work: RECT, dpi: i32) -> RECT {
 fn elapsed(duration: Duration) -> String {
     let seconds = duration.as_secs();
     if seconds >= 86_400 {
-        format!("{} j {} h", seconds / 86_400, seconds / 3600 % 24)
+        fmt(
+            "{days} j {hours} h",
+            &[
+                ("days", (seconds / 86_400).to_string()),
+                ("hours", (seconds / 3600 % 24).to_string()),
+            ],
+        )
     } else if seconds >= 3600 {
-        format!("{} h {} min", seconds / 3600, seconds / 60 % 60)
+        fmt(
+            "{hours} h {minutes} min",
+            &[
+                ("hours", (seconds / 3600).to_string()),
+                ("minutes", (seconds / 60 % 60).to_string()),
+            ],
+        )
     } else if seconds >= 60 {
-        format!("{} min", seconds / 60)
+        fmt("{minutes} min", &[("minutes", (seconds / 60).to_string())])
     } else {
-        format!("{seconds} s")
+        fmt("{seconds} s", &[("seconds", seconds.to_string())])
     }
 }
 
@@ -1347,7 +1408,11 @@ fn color(red: u32, green: u32, blue: u32) -> COLORREF {
 }
 
 fn win_error(context: &str) -> String {
-    format!("{context} : {}", std::io::Error::last_os_error())
+    let error = std::io::Error::last_os_error().to_string();
+    fmt(
+        "{context} : {error}",
+        &[("context", tr(context)), ("error", error)],
+    )
 }
 
 #[cfg(test)]

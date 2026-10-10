@@ -409,9 +409,9 @@ fn package_item(package: &Package) -> Item {
     Item::new(
         format!("install:{}", package.id),
         package.name,
-        format!(
-            "Installer · {} · WinGet · Entrée pour installer",
-            package.category
+        crate::i18n::fmt(
+            "Installer · {category} · WinGet · Entrée pour installer",
+            &[("category", crate::i18n::tr(package.category))],
         ),
         "↓",
         Kind::Install,
@@ -530,9 +530,9 @@ fn removal_item(package: &Package) -> Item {
     Item::new(
         format!("uninstall:id:{}", package.id),
         package.name,
-        format!(
-            "Désinstaller et nettoyer · {} · données personnelles conservées",
-            package.category
+        crate::i18n::fmt(
+            "Désinstaller et nettoyer · {category} · données personnelles conservées",
+            &[("category", crate::i18n::tr(package.category))],
         ),
         "−",
         Kind::Uninstall,
@@ -544,7 +544,10 @@ fn named_removal_item(name: &str, category: &str) -> Item {
     Item::new(
         format!("uninstall:name:{name}"),
         name,
-        format!("Désinstaller et nettoyer · {category} · données personnelles conservées"),
+        crate::i18n::fmt(
+            "Désinstaller et nettoyer · {category} · données personnelles conservées",
+            &[("category", crate::i18n::tr(category))],
+        ),
         "−",
         Kind::Uninstall,
         format!("name:{name}"),
@@ -840,7 +843,24 @@ fn relevance(package: &PreparedPackage, query: &str) -> Option<u32> {
             .split_whitespace()
             .any(|token| token.starts_with(query_token))
     });
-    all_match.then_some(500)
+    if all_match {
+        return Some(500);
+    }
+    // Keep the prepared French source category for compatibility, while also
+    // accepting the category currently shown by the selected language pack.
+    // This late fallback avoids translation lookups for exact product matches.
+    let category = normalize(&crate::i18n::tr(package.package.category));
+    tokens
+        .iter()
+        .all(|query_token| {
+            package.names.iter().any(|name| {
+                name.split_whitespace()
+                    .any(|token| token.starts_with(query_token))
+            }) || category
+                .split_whitespace()
+                .any(|token| token.starts_with(query_token))
+        })
+        .then_some(500)
 }
 
 fn strongly_matches(title: &str, query: &str) -> bool {

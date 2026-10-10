@@ -252,11 +252,29 @@ function Wait-TestCondition {
 function Start-TestLauncher {
     param([Parameter(Mandatory)][string]$Executable, [Parameter(Mandatory)][string]$Fixture,
         [ValidateSet('dark', 'light')][string]$Theme = 'dark',
+        [ValidateSet('', 'fr', 'en')][string]$Language = '',
+        [string]$LanguageDirectory = '',
+        [switch]$FirstLanguagePicker,
         [ValidateRange(15, 300)][int]$TimeoutSeconds = 90)
     $exe = [IO.Path]::GetFullPath($Executable)
     $fixturePath = [IO.Path]::GetFullPath($Fixture)
     if (-not [IO.File]::Exists($exe) -or -not [IO.File]::Exists($fixturePath)) {
         throw 'The executable and JSON fixture must both exist.'
+    }
+    if ($Language -and -not $LanguageDirectory) {
+        throw 'A test language requires an explicit isolated language-cache directory.'
+    }
+    if ($LanguageDirectory -and -not $Language) {
+        throw 'A test language-cache directory requires an explicit language.'
+    }
+    if ($FirstLanguagePicker -and -not $LanguageDirectory) {
+        throw 'Testing the first language picker requires an explicit isolated cache directory.'
+    }
+    if ($LanguageDirectory) {
+        $LanguageDirectory = [IO.Path]::GetFullPath($LanguageDirectory)
+        if (-not [IO.Directory]::Exists($LanguageDirectory)) {
+            throw 'The isolated language-cache directory does not exist.'
+        }
     }
     $workspace = New-TestWorkspace
     $context = $null
@@ -264,6 +282,10 @@ function Start-TestLauncher {
         $reportPath = Join-Path $workspace.Root 'native-smoke.json'
         $arguments = '--smoke-test --smoke-fixture "' + $fixturePath + '" --smoke-theme ' + $Theme +
             ' --smoke-timeout-ms ' + ($TimeoutSeconds * 1000) + ' --report "' + $reportPath + '"'
+        if ($Language) {
+            $arguments += ' --smoke-language ' + $Language + ' --smoke-language-dir "' + $LanguageDirectory + '"'
+        }
+        if ($FirstLanguagePicker) { $arguments += ' --smoke-first-run-language' }
         $process = Start-Process -FilePath $exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
         $context = [pscustomobject]@{
             Process = $process; Pid = [uint32]$process.Id

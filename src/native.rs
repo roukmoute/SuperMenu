@@ -42,7 +42,13 @@ pub fn wide(text: &str) -> Vec<u16> {
 }
 
 fn win_error(context: &str) -> String {
-    format!("{} : {}", context, std::io::Error::last_os_error())
+    crate::i18n::fmt(
+        "{context} : {error}",
+        &[
+            ("context", crate::i18n::tr(context)),
+            ("error", std::io::Error::last_os_error().to_string()),
+        ],
+    )
 }
 
 /// A named uninstall action is not a launchable application. AppsFolder can
@@ -156,7 +162,7 @@ pub fn app_catalog() -> Vec<Item> {
         items.push(Item::new(
             format!("app:{}", target),
             title,
-            subtitle,
+            crate::i18n::tr(subtitle),
             glyph,
             Kind::Application,
             target,
@@ -202,7 +208,7 @@ pub fn app_catalog() -> Vec<Item> {
         }
     }
     add(
-        "Paramètres Windows".into(),
+        crate::i18n::tr("Paramètres Windows"),
         "ms-settings:".into(),
         "Configuration Windows",
         "\u{E713}",
@@ -221,7 +227,7 @@ pub fn app_catalog() -> Vec<Item> {
             let path = root.join(relative);
             if path.is_file() {
                 add(
-                    title.into(),
+                    crate::i18n::tr(title),
                     path.to_string_lossy().into_owned(),
                     "Application Windows",
                     glyph,
@@ -311,7 +317,7 @@ fn shell_applications() -> Vec<Item> {
             result.push(Item::new(
                 format!("app:{}", target),
                 title,
-                "Application Windows",
+                crate::i18n::tr("Application Windows"),
                 "\u{E71D}",
                 Kind::Application,
                 target,
@@ -365,7 +371,7 @@ pub fn windows() -> Vec<Item> {
         result.push(Item::new(
             format!("window:{}", target),
             title,
-            "Fenêtre ouverte",
+            crate::i18n::tr("Fenêtre ouverte"),
             "\u{E737}",
             Kind::Window,
             target,
@@ -382,7 +388,7 @@ pub fn windows() -> Vec<Item> {
 pub fn activate_window(target: &str) -> Result<(), String> {
     let value = target
         .parse::<usize>()
-        .map_err(|_| "Fenêtre inconnue.".to_string())?;
+        .map_err(|_| crate::i18n::tr("Fenêtre inconnue."))?;
     let hwnd = value as HWND;
     focus_window(hwnd)
 }
@@ -392,19 +398,21 @@ pub fn activate_window(target: &str) -> Result<(), String> {
 pub fn focus_window(hwnd: HWND) -> Result<(), String> {
     unsafe {
         if IsWindow(hwnd) == 0 {
-            return Err("Cette fenêtre est fermée.".into());
+            return Err(crate::i18n::tr("Cette fenêtre est fermée."));
         }
         if IsIconic(hwnd) != 0 {
             ShowWindowAsync(hwnd, SW_RESTORE);
         }
         if SetForegroundWindow(hwnd) == 0 {
-            return Err("Windows a empêché l’activation de cette fenêtre.".into());
+            return Err(crate::i18n::tr(
+                "Windows a empêché l’activation de cette fenêtre.",
+            ));
         }
         let owner = GetWindowThreadProcessId(hwnd, null_mut());
         if owner == GetCurrentThreadId() {
             // Own-thread activation is synchronous. Do not direct typing into a background window.
             if GetForegroundWindow() != hwnd {
-                return Err("Windows n’a pas accordé le focus au menu.".into());
+                return Err(crate::i18n::tr("Windows n’a pas accordé le focus au menu."));
             }
             BringWindowToTop(hwnd);
             SetFocus(hwnd);
@@ -426,7 +434,7 @@ pub fn launch_background(target: &str, arguments: &str) -> Result<(), String> {
 
 fn shell_launch(target: &str, arguments: &str, flags: u32) -> Result<(), String> {
     if target.is_empty() || target.contains('\0') || arguments.contains('\0') {
-        return Err("Cible de lancement invalide.".into());
+        return Err(crate::i18n::tr("Cible de lancement invalide."));
     }
     let file = wide(target);
     let arguments = wide(arguments);
@@ -593,10 +601,9 @@ impl Drop for Hotkey {
 fn parse_hotkey(hotkey: &str) -> Result<(u32, u32), String> {
     let parts: Vec<_> = hotkey.split('+').map(str::trim).collect();
     if !(2..=5).contains(&parts.len()) || parts.iter().any(|part| part.is_empty()) {
-        return Err(
-            "Raccourci invalide : utilisez un modificateur et une touche, par exemple Ctrl+Alt+K."
-                .into(),
-        );
+        return Err(crate::i18n::tr(
+            "Raccourci invalide : utilisez un modificateur et une touche, par exemple Ctrl+Alt+K.",
+        ));
     }
     let mut modifiers = 0;
     for part in &parts[..parts.len() - 1] {
@@ -605,10 +612,18 @@ fn parse_hotkey(hotkey: &str) -> Result<(u32, u32), String> {
             "alt" => MOD_ALT,
             "shift" => MOD_SHIFT,
             "win" | "windows" => MOD_WIN,
-            _ => return Err(format!("Modificateur de raccourci inconnu : {part}.")),
+            _ => {
+                return Err(crate::i18n::fmt(
+                    "Modificateur de raccourci inconnu : {part}.",
+                    &[("part", part.to_string())],
+                ))
+            }
         };
         if modifiers & modifier != 0 {
-            return Err(format!("Modificateur de raccourci répété : {part}."));
+            return Err(crate::i18n::fmt(
+                "Modificateur de raccourci répété : {part}.",
+                &[("part", part.to_string())],
+            ));
         }
         modifiers |= modifier;
     }
@@ -637,21 +652,24 @@ fn parse_hotkey(hotkey: &str) -> Result<(u32, u32), String> {
                 .and_then(|number| number.parse::<u16>().ok())
                 .filter(|number| (1..=24).contains(number))
                 .ok_or_else(|| {
-                    format!("Touche de raccourci inconnue : {}.", parts[parts.len() - 1])
+                    crate::i18n::fmt(
+                        "Touche de raccourci inconnue : {key}.",
+                        &[("key", parts[parts.len() - 1].to_string())],
+                    )
                 })?;
             VK_F1 + function - 1
         }
     };
     if virtual_key == VK_F12 {
-        return Err(
-            "F12 est réservée au débogueur par Windows. Choisissez une autre touche.".into(),
-        );
+        return Err(crate::i18n::tr(
+            "F12 est réservée au débogueur par Windows. Choisissez une autre touche.",
+        ));
     }
     // Win+L is intercepted by Windows security and must never be reported as available.
     if modifiers == MOD_WIN && virtual_key == b'L' as u16 {
-        return Err(
-            "Win+L est réservé au verrouillage de Windows. Choisissez un autre raccourci.".into(),
-        );
+        return Err(crate::i18n::tr(
+            "Win+L est réservé au verrouillage de Windows. Choisissez un autre raccourci.",
+        ));
     }
     Ok((modifiers, virtual_key as u32))
 }
@@ -705,9 +723,9 @@ pub fn install_hotkey(hwnd: HWND, hotkey: &str) -> Result<Hotkey, String> {
                 if RegisterHotKey(null_mut(), 1, modifiers | MOD_NOREPEAT, virtual_key) == 0 {
                     let os_error = std::io::Error::last_os_error();
                     let reserved = if modifiers & MOD_WIN != 0 {
-                        " Windows réserve certaines combinaisons utilisant Win."
-                    } else { "" };
-                    let _ = send.send(Err(format!("Le raccourci {label} est indisponible ou déjà utilisé : {os_error}.{reserved}")));
+                        crate::i18n::tr(" Windows réserve certaines combinaisons utilisant Win.")
+                    } else { String::new() };
+                    let _ = send.send(Err(crate::i18n::fmt("Le raccourci {label} est indisponible ou déjà utilisé : {os_error}.{reserved}", &[("label", label.to_string()), ("os_error", os_error.to_string()), ("reserved", reserved.to_string())])));
                     return;
                 }
                 null_mut()
@@ -743,7 +761,7 @@ pub fn install_hotkey(hwnd: HWND, hotkey: &str) -> Result<Hotkey, String> {
         }
         Err(_) => {
             running.store(false, Ordering::Release);
-            Err("L’initialisation du raccourci a expiré.".into())
+            Err(crate::i18n::tr("L’initialisation du raccourci a expiré."))
         }
     }
 }
@@ -827,8 +845,9 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
             null_mut(),
         );
         if status != ERROR_SUCCESS {
-            return Err(format!(
-                "Impossible de configurer le démarrage Windows ({status})."
+            return Err(crate::i18n::fmt(
+                "Impossible de configurer le démarrage Windows ({status}).",
+                &[("status", status.to_string())],
             ));
         }
         let status = if enabled {
@@ -856,8 +875,9 @@ pub fn set_startup(enabled: bool) -> Result<(), String> {
         };
         RegCloseKey(key);
         if status != ERROR_SUCCESS && (status != ERROR_FILE_NOT_FOUND || enabled) {
-            return Err(format!(
-                "Impossible de configurer le démarrage Windows ({status})."
+            return Err(crate::i18n::fmt(
+                "Impossible de configurer le démarrage Windows ({status}).",
+                &[("status", status.to_string())],
             ));
         }
     }

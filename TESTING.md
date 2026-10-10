@@ -14,6 +14,7 @@ Prérequis : Windows x64, PowerShell 7, Rust MSVC avec `rustfmt` et `clippy`, et
 | --- | --- |
 | `cargo test --locked` | Classement et normalisation de recherche, indexation et cache, configuration, catalogue et correspondances de paquets, plans de nettoyage et préservation des données, minuteurs, état des lancements, icônes, collecte système et contrôles natifs isolés. |
 | `tests/windows/launcher.ps1` | Recherche sur un index fixe, applications par défaut et fichiers explicites, absence de résultats Telegram lors d'une recherche Steam, clavier du menu, préfixe et curseur, suppression de mots/sélection avec Ctrl+Retour arrière et annulation. |
+| `tests/windows/translations.ps1` | Menus et fenêtre À propos en anglais, identité inchangée des applications et paquets, vrai sélecteur français/anglais, réutilisation du cache sans réécriture. |
 | `tests/windows/about.ps1` | Ouverture et contenu de la fenêtre À propos dans les deux thèmes, version et compteurs, fermetures par Échap/croix/bouton, réouverture de la même fenêtre, redimensionnement, défilement, boutons restant accessibles et ressources GDI/USER bornées. |
 
 Les suites Windows conduisent l'exécutable construit, observent ses fenêtres et ses résultats réels, et échouent sur une régression. Elles ne recalculent pas le classement dans le script. Elles vérifient aussi les noms et résultats de tous les contrôles `--smoke-test` ; un simple code de sortie nul ne suffit pas.
@@ -49,6 +50,7 @@ On peut aussi exécuter séparément une suite :
 ```powershell
 .\tests\windows\launcher.ps1 -Executable .\target\release\supermenu.exe
 .\tests\windows\about.ps1 -Executable .\target\release\supermenu.exe
+.\tests\windows\translations.ps1 -Executable .\target\release\supermenu.exe
 ```
 
 Un ancien exécutable publié peut ne pas contenir les diagnostics ajoutés depuis sa publication : compiler le checkout testé. `--smoke-fixture`, le message de snapshot des résultats et le diagnostic Ctrl+Retour arrière sont réservés au mode de test. Le diagnostic de clavier modifie seulement l'état de la file d'entrée du thread UI de ce processus, puis le restaure ; il ne simule pas une touche globale.
@@ -56,3 +58,11 @@ Un ancien exécutable publié peut ne pas contenir les diagnostics ajoutés depu
 ## Ajouter une régression
 
 Pour un bug du moteur, ajouter un test Rust près du module concerné avec le cas qui échouait. Pour un bug d'interaction, ajouter une assertion dans la suite Windows appropriée et une donnée dans la fixture si nécessaire. Vérifier que le test échoue lorsque le comportement est volontairement régressé, puis restaurer le code. Garder les tests indépendants du profil Windows, des applications réelles et du temps d'exécution du PC.
+
+Les tests de traduction copient le pack anglais du dépôt dans leur cache temporaire. Ils ne contactent pas Internet. Les tests Rust valident aussi le vrai pack JSON, les paramètres de texte, les limites, la sauvegarde atomique, la récupération après erreur et l’absence de téléchargement quand le cache est valide. `--smoke-language` et `--smoke-language-dir` nécessitent une fixture ; le second désigne un cache absolu isolé. `--smoke-first-run-language` vérifie le sélecteur avant l’affichage du menu, sans enregistrer de réglages personnels.
+
+Pour vérifier facultativement le téléchargement réel du pack depuis la version publiée sur `main` (accès Internet nécessaire, jamais exécuté par la CI) :
+
+```powershell
+.\tests\windows\translations.ps1 -Executable .\target\release\supermenu.exe -Download
+```

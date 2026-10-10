@@ -1,5 +1,6 @@
 //! A short, non-activating acknowledgement of a launch request, not app readiness.
 
+use crate::i18n::{fmt, tr};
 use crate::{config, native::wide};
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
@@ -130,7 +131,7 @@ impl LaunchFeedback {
     pub fn new() -> Result<Self, String> {
         register_class()?;
         let mut state = Box::new(RefCell::new(State {
-            title: wide("Lancement…"),
+            title: wide(&tr("Lancement…")),
             palette: Palette::from(&config::Settings::default()),
             dpi: 96,
             fonts: [null_mut(); 3],
@@ -144,7 +145,7 @@ impl LaunchFeedback {
                     | WS_EX_LAYERED
                     | WS_EX_TRANSPARENT,
                 wide(CLASS).as_ptr(),
-                wide("Super Menu · Ouverture demandée").as_ptr(),
+                wide(&tr("Super Menu · Ouverture demandée")).as_ptr(),
                 WS_POPUP,
                 0,
                 0,
@@ -407,7 +408,7 @@ unsafe fn draw(hwnd: HWND, dc: HDC, state: &State) {
         dc,
         state.fonts[1],
         state.palette.muted,
-        &wide(SUBTITLE),
+        &wide(&tr(SUBTITLE)),
         RECT {
             left,
             top: scale(45, state.dpi),
@@ -480,7 +481,10 @@ fn title_text(title: &str) -> Vec<u16> {
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .take(160)
         .collect();
-    wide(&format!("Lancement de {}…", title.trim()))
+    wide(&fmt(
+        "Lancement de {title}…",
+        &[("title", title.trim().into())],
+    ))
 }
 
 fn scale(dip: i32, dpi: i32) -> i32 {
@@ -492,7 +496,11 @@ fn color(r: u32, g: u32, b: u32) -> COLORREF {
 }
 
 fn win_error(context: &str) -> String {
-    format!("{context} : {}", std::io::Error::last_os_error())
+    let error = std::io::Error::last_os_error().to_string();
+    fmt(
+        "{context} : {error}",
+        &[("context", tr(context)), ("error", error)],
+    )
 }
 
 #[cfg(test)]
