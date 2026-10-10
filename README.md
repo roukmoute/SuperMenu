@@ -8,7 +8,7 @@ Windows 10 et 11, x64. L'exécutable autonome fait **environ 1,4 Mio** ; sa tail
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
-Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 144 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
+Mesures locales de la version Release : environ 32 Mio de mémoire privée et 62 Mio de mémoire résidente pendant le contrôle du menu, bibliothèques Windows comprises. Le benchmark sur 20 000 éléments donne une médiane de 0,66 ms (p95 2,46 ms) pour le classement en mémoire, de 0,80 ms (p95 3,42 ms) pour les fichiers et de 0,83 ms (p95 1,33 ms) pour les applications avec les actions de gestion en cache. Ces mesures dépendent de la machine ; le benchmark sépare le classement de l'indexation et de l'activation. Les 149 tests automatisés et les contrôles du menu natif, des minuteurs et du diagnostic de lancement passent.
 
 ## Utiliser
 
@@ -116,7 +116,7 @@ L'historique du presse-papiers est **désactivé par défaut**, limité au texte
 
 ## Compiler sous Windows
 
-Installer Rust avec la chaîne **MSVC** et les outils C++ de Visual Studio Build Tools, puis exécuter depuis le dépôt :
+Installer Rust avec la chaîne **MSVC**, les outils C++ de Visual Studio Build Tools et **PowerShell 7**, puis exécuter depuis le dépôt :
 
 ```powershell
 .\scripts\build.ps1 -Archive
@@ -124,9 +124,12 @@ Installer Rust avec la chaîne **MSVC** et les outils C++ de Visual Studio Build
 
 Le script vérifie le formatage, Clippy et les tests, compile en Release, lance le benchmark et prépare `artifacts\SuperMenu-windows-x64.zip`. L'archive inclut le rapport `benchmark.txt`, même si l'exécutable graphique n'affiche rien dans la console. Le runtime C est intégré à l'exécutable. La compilation utilise les options Release du dépôt : optimisation, LTO et suppression des symboles de débogage. L'exécutable distribué n'est pas compressé au lancement.
 
+Le [guide de tests](TESTING.md) décrit les suites Rust et Windows, les données fictives, les rapports et la façon d'ajouter une régression. `scripts/build.ps1` et GitHub Actions exécutent aussi les tests du vrai menu Windows avant de distribuer le binaire. Les rapports restent disponibles comme artefact **SuperMenu-test-results**, y compris après un échec.
+
 Pour développer et mesurer séparément :
 
 ```powershell
+.\scripts\test.ps1
 cargo test --locked
 cargo run --release --locked
 cargo run --release --locked -- --benchmark

@@ -38,6 +38,7 @@ pub struct Context {
     pub files: usize,
     pub index_items: usize,
     pub app_uptime: Duration,
+    pub external_links: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -411,6 +412,10 @@ impl AboutWindow {
         self.state.borrow().loaded
     }
 
+    pub fn is_collecting(&self) -> bool {
+        self.state.borrow().collecting
+    }
+
     /// Call before TranslateMessage/DispatchMessage in the main message loop.
     pub fn handle_message(&self, message: &MSG) -> bool {
         unsafe { IsWindowVisible(self.hwnd) != 0 && IsDialogMessageW(self.hwnd, message) != 0 }
@@ -752,14 +757,19 @@ unsafe extern "system" fn window_proc(
                 return 0;
             }
             GITHUB => {
-                ShellExecuteW(
-                    hwnd,
-                    wide("open").as_ptr(),
-                    wide(REPOSITORY).as_ptr(),
-                    null(),
-                    null(),
-                    SW_SHOWNORMAL,
-                );
+                if cell
+                    .try_borrow()
+                    .is_ok_and(|state| state.context.external_links)
+                {
+                    ShellExecuteW(
+                        hwnd,
+                        wide("open").as_ptr(),
+                        wide(REPOSITORY).as_ptr(),
+                        null(),
+                        null(),
+                        SW_SHOWNORMAL,
+                    );
+                }
                 return 0;
             }
             _ => {}

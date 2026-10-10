@@ -27,6 +27,8 @@ const TRAY: u32 = WM_APP + 4;
 const LAUNCH_DONE: u32 = WM_APP + 6;
 const ICONS_READY: u32 = WM_APP + 8;
 const ABOUT: u32 = WM_APP + 9;
+const SMOKE_STATE: u32 = WM_APP + 10;
+const SMOKE_CTRL_BACKSPACE: u32 = WM_APP + 11;
 const TIMER_TICK: usize = 43;
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
@@ -127,6 +129,9 @@ struct State {
     previous: HWND,
     settings_open: bool,
     smoke: bool,
+    smoke_fixture: bool,
+    smoke_report: Option<String>,
+    fixture_activation_attempts: usize,
     feedback_test: bool,
     feedback_test_finished: bool,
     pending_refresh: bool,
@@ -266,11 +271,111 @@ fn clear_removal_for_install(
     refresh_after.remove(&target);
 }
 
+fn parse_smoke_fixture(bytes: &[u8]) -> Result<Vec<Item>, String> {
+    if bytes.len() > 1024 * 1024 {
+        return Err("Fixture de test supérieure à 1 Mio.".into());
+    }
+    let mut items: Vec<Item> =
+        serde_json::from_slice(bytes).map_err(|error| format!("Fixture invalide : {error}"))?;
+    if items.len() > 256 {
+        return Err("Fixture limitée à 256 éléments.".into());
+    }
+    let mut ids = HashSet::new();
+    for item in &mut items {
+        if !matches!(item.kind, Kind::Application | Kind::File | Kind::Folder)
+            || item.id.is_empty()
+            || !ids.insert(item.id.clone())
+            || !item.arguments.is_empty()
+            || [
+                &item.id,
+                &item.title,
+                &item.subtitle,
+                &item.glyph,
+                &item.target,
+            ]
+            .iter()
+            .any(|text| text.len() > 4096 || text.contains('\0'))
+        {
+            return Err(
+                "Fixture : types indexables, identifiants uniques et textes bornés requis.".into(),
+            );
+        }
+        item.prepare();
+    }
+    Ok(items)
+}
+
+fn load_smoke_fixture(args: &[String]) -> Result<Option<Vec<Item>>, String> {
+    let Some(position) = args
+        .iter()
+        .position(|argument| argument == "--smoke-fixture")
+    else {
+        return Ok(None);
+    };
+    if !args.iter().any(|argument| argument == "--smoke-test") {
+        return Err("--smoke-fixture nécessite --smoke-test.".into());
+    }
+    let path = args
+        .get(position + 1)
+        .filter(|path| !path.starts_with("--"))
+        .ok_or("Chemin de --smoke-fixture manquant.")?;
+    let file =
+        std::fs::File::open(path).map_err(|error| format!("Fixture inaccessible : {error}"))?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(file, 1024 * 1024 + 1), &mut bytes)
+        .map_err(|error| format!("Lecture de la fixture : {error}"))?;
+    parse_smoke_fixture(&bytes).map(Some)
+}
+
+fn fixture_action_allowed(item: &Item) -> bool {
+    matches!(item.kind, Kind::Navigation | Kind::Timer)
+        || (item.kind == Kind::System && item.target == "about")
+}
+
+unsafe fn write_smoke_report(state: &State) -> Result<(), String> {
+    let Some(path) = &state.smoke_report else {
+        return Ok(());
+    };
+    let index = state
+        .index
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut memory: PROCESS_MEMORY_COUNTERS_EX = zeroed();
+    memory.cb = size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    K32GetProcessMemoryInfo(
+        GetCurrentProcess(),
+        (&mut memory as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
+        memory.cb,
+    );
+    let report = serde_json::json!({
+        "native_window_created":true,"edit_created":!state.edit.is_null(),
+        "fixture_mode":state.smoke_fixture,
+        "fixture_activation_attempts":state.fixture_activation_attempts,
+        "query":state.query,"selected":state.selected,"section":state.section,"items":state.items,
+        "index_items":index.len(),"applications":index.iter().filter(|item|item.kind==Kind::Application).count(),
+        "files":index.iter().filter(|item|matches!(item.kind,Kind::File|Kind::Folder)).count(),
+        "visible_results":state.items.len(),"indexing_finished":!state.indexing.load(Ordering::Relaxed),
+        "application_icons_loaded":state.app_icons.as_ref().map_or(0, app_icons::IconCache::loaded_count),
+        "about_created":state.about.is_some(),"about_loaded":state.about.as_ref().is_some_and(about::AboutWindow::is_loaded),
+        "about_collecting":state.about.as_ref().is_some_and(about::AboutWindow::is_collecting),
+        "about_hwnd":state.about.as_ref().map_or(0, |window| window.hwnd() as usize),
+        "timer_count":state.timers.borrow().book.snapshots(Instant::now()).len(),
+        "timer_alert_visible":state.timers.borrow().alert_visible(),
+        "timer_alert_hwnd":state.timers.borrow().alert_hwnd() as usize,
+        "first_frame_ms":state.first_frame_ms,"private_bytes":memory.PrivateUsage,
+        "working_set_bytes":memory.WorkingSetSize,"checks":state.checks
+    });
+    let json = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
+    std::fs::write(path, json).map_err(|error| format!("Rapport de test : {error}"))
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let started = Instant::now();
     if !cfg!(target_os = "windows") {
         return Err("Super Menu fonctionne uniquement sous Windows.".into());
     }
+    let fixture = load_smoke_fixture(args)?;
+    let fixture_mode = fixture.is_some();
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let smoke = args.iter().any(|a| a == "--smoke-test");
@@ -302,7 +407,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 GetLastError()
             ));
         }
-        let mut settings = config::load();
+        let mut settings = if fixture_mode {
+            let mut settings = config::Settings::default();
+            settings.file_roots.clear();
+            settings
+        } else {
+            config::load()
+        };
         if smoke {
             if let Some(theme) = args
                 .iter()
@@ -313,8 +424,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 settings.theme = theme.clone();
             }
         }
-        let cache = Vec::new();
-        let usage = catalog::Usage::new();
+        let cache = fixture.unwrap_or_default();
+        let usage = if fixture_mode {
+            catalog::Usage {
+                counts: HashMap::new(),
+            }
+        } else {
+            catalog::Usage::new()
+        };
         let weights = usage.snapshot_for(&cache);
         let (launch_sender, launch_results) = mpsc::channel();
         let timers = Rc::new(RefCell::new(timer_runtime::TimerRuntime::new(
@@ -365,6 +482,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
             previous: null_mut(),
             settings_open: false,
             smoke,
+            smoke_fixture: fixture_mode,
+            smoke_report: args
+                .iter()
+                .position(|argument| argument == "--report")
+                .and_then(|position| args.get(position + 1))
+                .cloned(),
+            fixture_activation_attempts: 0,
             feedback_test: smoke && args.iter().any(|arg| arg == "--launch-feedback-test"),
             feedback_test_finished: false,
             pending_refresh: false,
@@ -482,32 +606,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
             replay_deferred(hwnd);
         }
         let mut state = state_cell.borrow_mut();
-        if smoke {
-            if let Some(pos) = args.iter().position(|a| a == "--report") {
-                if let Some(path) = args.get(pos + 1) {
-                    let items = state.index.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut memory: PROCESS_MEMORY_COUNTERS_EX = zeroed();
-                    memory.cb = size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
-                    K32GetProcessMemoryInfo(
-                        GetCurrentProcess(),
-                        (&mut memory as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
-                        memory.cb,
-                    );
-                    let report = serde_json::json!({"native_window_created":true,"edit_created":!state.edit.is_null(),
-                        "index_items":items.len(),"applications":items.iter().filter(|i|i.kind==Kind::Application).count(),
-                        "files":items.iter().filter(|i|matches!(i.kind,Kind::File|Kind::Folder)).count(),
-                        "visible_results":state.items.len(),"indexing_finished":!state.indexing.load(Ordering::Relaxed),
-                        "application_icons_loaded":state.app_icons.as_ref().map_or(0, app_icons::IconCache::loaded_count),
-                        "about_created":state.about.is_some(),"about_loaded":state.about.as_ref().is_some_and(about::AboutWindow::is_loaded),
-                        "about_hwnd":state.about.as_ref().map_or(0, |window| window.hwnd() as usize),
-                        "timer_count":state.timers.borrow().book.snapshots(Instant::now()).len(),
-                        "timer_alert_visible":state.timers.borrow().alert_visible(),
-                        "timer_alert_hwnd":state.timers.borrow().alert_hwnd() as usize,
-                        "first_frame_ms":state.first_frame_ms,"private_bytes":memory.PrivateUsage,"working_set_bytes":memory.WorkingSetSize,"checks":state.checks});
-                    let _ = std::fs::write(path, serde_json::to_string_pretty(&report).unwrap());
-                }
-            }
-        }
+        let report_result = if smoke {
+            write_smoke_report(&state)
+        } else {
+            Ok(())
+        };
         RemoveClipboardFormatListener(hwnd);
         state.hotkey.take();
         state.watcher.take();
@@ -526,7 +629,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         }
         DeleteObject(state.edit_bg);
         DestroyIcon(icon);
-        Ok(())
+        report_result
     }
 }
 
@@ -546,6 +649,25 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
     let Some(cell) = state(hwnd) else {
         return DefWindowProcW(hwnd, msg, wp, lp);
     };
+    if msg == SMOKE_CTRL_BACKSPACE {
+        // Keyboard state belongs to this UI thread's input queue. Exercise the
+        // actual edit subclass without injecting input into another application.
+        let edit = match cell.try_borrow() {
+            Ok(state) if state.smoke_fixture => state.edit,
+            _ => return 0,
+        };
+        let mut saved = [0u8; 256];
+        if GetKeyboardState(saved.as_mut_ptr()) == 0 {
+            return 0;
+        }
+        let mut pressed = saved;
+        pressed[VK_CONTROL as usize] |= 0x80;
+        if SetKeyboardState(pressed.as_ptr()) == 0 {
+            return 0;
+        }
+        SendMessageW(edit, WM_KEYDOWN, VK_BACK as usize, 0);
+        return SetKeyboardState(saved.as_ptr()) as isize;
+    }
     if timer_runtime::handle_message(hwnd, msg, wp) {
         if let Ok(mut s) = cell.try_borrow_mut() {
             let available = s.timers.try_borrow().is_ok();
@@ -580,6 +702,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
     };
     let s = &mut *borrowed;
     match msg {
+        SMOKE_STATE if s.smoke_fixture => isize::from(write_smoke_report(s).is_ok()),
         ABOUT => {
             show_about(s);
             0
@@ -1750,6 +1873,12 @@ unsafe fn execute(s: &mut State, parent: bool) {
     let Some(item) = s.items.get(s.selected).cloned() else {
         return;
     };
+    if s.smoke_fixture && !fixture_action_allowed(&item) {
+        s.fixture_activation_attempts += 1;
+        s.status = "Activation externe désactivée pendant les tests".into();
+        InvalidateRect(s.hwnd, null(), 0);
+        return;
+    }
     let result = match item.kind {
         Kind::Application => {
             start_application(s, &item);
@@ -2073,6 +2202,11 @@ unsafe fn refresh_index_and_icons(s: &mut State) {
 }
 
 unsafe fn reindex(s: &mut State) {
+    if s.smoke_fixture {
+        s.indexing.store(false, Ordering::Release);
+        PostMessageW(s.hwnd, INDEX, 0, 0);
+        return;
+    }
     if s.indexing.swap(true, Ordering::AcqRel) {
         s.pending_refresh = true;
         return;
@@ -2758,6 +2892,7 @@ fn about_context(s: &State) -> about::Context {
             .count(),
         index_items: index.len(),
         app_uptime: s.started.elapsed(),
+        external_links: !s.smoke_fixture,
     }
 }
 
@@ -2784,6 +2919,9 @@ unsafe fn show_about(s: &mut State) {
 
 // A native modal settings window. No embedded browser and no UI framework runtime.
 unsafe fn settings(s: &mut State) {
+    if s.smoke_fixture {
+        return;
+    }
     if s.settings_open {
         return;
     }
@@ -3348,6 +3486,151 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_restores_search_data_after_deserialization() {
+        let item = Item::new(
+            "fixture:app",
+            "Éditeur",
+            "Application fictive",
+            "",
+            Kind::Application,
+            "fixture://editor",
+        );
+        let items = parse_smoke_fixture(&serde_json::to_vec(&vec![item]).unwrap()).unwrap();
+        let found = core::rank(&items, "editeur", 1, &HashMap::new());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "fixture:app");
+    }
+
+    #[test]
+    fn fixture_rejects_commands_and_launch_arguments() {
+        for kind in [
+            Kind::Install,
+            Kind::Uninstall,
+            Kind::Command,
+            Kind::System,
+            Kind::Navigation,
+        ] {
+            let item = Item::new("fixture", "Test", "", "", kind, "fixture://test");
+            assert!(parse_smoke_fixture(&serde_json::to_vec(&vec![item]).unwrap()).is_err());
+        }
+        let mut item = Item::new(
+            "fixture",
+            "Test",
+            "",
+            "",
+            Kind::Application,
+            "fixture://test",
+        );
+        item.arguments = "--unexpected".into();
+        assert!(parse_smoke_fixture(&serde_json::to_vec(&vec![item]).unwrap()).is_err());
+    }
+
+    #[test]
+    fn fixture_input_is_bounded_and_ids_are_unique() {
+        assert!(parse_smoke_fixture(&vec![b' '; 1024 * 1024 + 1]).is_err());
+        assert!(parse_smoke_fixture(b"not json").is_err());
+        let item = Item::new(
+            "fixture",
+            "Test",
+            "",
+            "",
+            Kind::Application,
+            "fixture://test",
+        );
+        assert!(parse_smoke_fixture(
+            &serde_json::to_vec(&vec![item.clone(), item.clone()]).unwrap()
+        )
+        .is_err());
+        let mut nul = item.clone();
+        nul.target.push('\0');
+        assert!(parse_smoke_fixture(&serde_json::to_vec(&vec![nul]).unwrap()).is_err());
+        let too_many: Vec<_> = (0..257)
+            .map(|index| {
+                Item::new(
+                    index.to_string(),
+                    "Test",
+                    "",
+                    "",
+                    Kind::File,
+                    "fixture://test",
+                )
+            })
+            .collect();
+        assert!(parse_smoke_fixture(&serde_json::to_vec(&too_many).unwrap()).is_err());
+    }
+
+    #[test]
+    fn fixture_cli_requires_explicit_smoke_mode_and_path() {
+        assert!(
+            load_smoke_fixture(&["--smoke-fixture".into(), "never-open-this.json".into()]).is_err()
+        );
+        assert!(load_smoke_fixture(&["--smoke-test".into(), "--smoke-fixture".into()]).is_err());
+        assert!(load_smoke_fixture(&["--smoke-test".into()])
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn fixture_cannot_activate_software_files_clipboard_or_system_actions() {
+        for kind in [
+            Kind::Application,
+            Kind::Install,
+            Kind::Uninstall,
+            Kind::File,
+            Kind::Folder,
+            Kind::Command,
+            Kind::Web,
+            Kind::Calculator,
+            Kind::Clipboard,
+            Kind::Symbol,
+            Kind::Window,
+        ] {
+            assert!(!fixture_action_allowed(&Item::new(
+                "",
+                "",
+                "",
+                "",
+                kind,
+                "fixture://test"
+            )));
+        }
+        for target in ["settings", "reset-usage", "lock", "quit"] {
+            assert!(!fixture_action_allowed(&Item::new(
+                "",
+                "",
+                "",
+                "",
+                Kind::System,
+                target
+            )));
+        }
+        assert!(fixture_action_allowed(&Item::new(
+            "",
+            "",
+            "",
+            "",
+            Kind::System,
+            "about"
+        )));
+        assert!(fixture_action_allowed(&Item::new(
+            "",
+            "",
+            "",
+            "",
+            Kind::Navigation,
+            "@ "
+        )));
+        assert!(fixture_action_allowed(&Item::new(
+            "",
+            "",
+            "",
+            "",
+            Kind::Timer,
+            "start:1s"
+        )));
+    }
     fn test_app(id: &str) -> Item {
         Item::new(id, id, "", "", Kind::Application, format!("{id}.exe"))
     }

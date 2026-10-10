@@ -21,6 +21,13 @@ jobs:
       - name: Test, benchmark and package
         shell: pwsh
         run: ./scripts/build.ps1 -Archive
+      - name: Upload Windows test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperMenu-test-results
+          path: artifacts/test-results/
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
           name: SuperMenu-windows-x64

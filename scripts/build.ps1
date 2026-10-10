@@ -41,8 +41,12 @@ try {
     $binaryTarget = @($metadata.packages | ForEach-Object { $_.targets } | Where-Object { $_.kind -contains 'bin' })[0]
     if ($null -eq $binaryTarget) { throw 'Aucune cible exécutable Cargo trouvée.' }
     $binaryPath = Join-Path $metadata.target_directory ("release\" + $binaryTarget.name + '.exe')
+    if (-not $SkipChecks) {
+        & (Join-Path $PSScriptRoot 'test.ps1') -Executable $binaryPath -SkipRustChecks
+        if (-not $?) { throw 'Les tests du menu Windows ont échoué.' }
+    }
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $OutputDirectory ($binaryTarget.name + '.exe')) -Force
-    foreach ($name in @('README.md', 'LICENSE', 'settings.example.json')) {
+    foreach ($name in @('README.md', 'TESTING.md', 'LICENSE', 'settings.example.json')) {
         Copy-Item -LiteralPath (Join-Path $repositoryRoot $name) -Destination (Join-Path $OutputDirectory $name) -Force
     }
     $docsDirectory = Join-Path $OutputDirectory 'docs'

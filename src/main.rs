@@ -32,6 +32,20 @@ fn main() {
         return;
     }
     if let Err(error) = ui::run(&args) {
+        if args
+            .iter()
+            .any(|argument| matches!(argument.as_str(), "--smoke-test" | "--smoke-fixture"))
+        {
+            if let Some(path) = args
+                .iter()
+                .position(|argument| argument == "--report")
+                .and_then(|position| args.get(position + 1))
+            {
+                let _ = std::fs::write(path, serde_json::json!({"error":error}).to_string());
+            }
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
         ui::show_error(&error);
     }
 }
