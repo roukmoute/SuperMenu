@@ -533,6 +533,7 @@ mod tests {
 
     #[test]
     fn own_popup_paints_without_activation_replaces_and_hides_on_native_timer() {
+        let _ui_test_guard = crate::native::UI_TEST_LOCK.lock().unwrap();
         let anchor = LaunchFeedback::new().unwrap();
         let mut popup = LaunchFeedback::new().unwrap();
         let settings = config::Settings::default();

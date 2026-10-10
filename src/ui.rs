@@ -2701,6 +2701,7 @@ mod tests {
 
     #[test]
     fn native_ctrl_backspace_deletes_words_and_preserves_editing() {
+        let _ui_test_guard = native::UI_TEST_LOCK.lock().unwrap();
         unsafe {
             let mut original_keys = [0u8; 256];
             assert_ne!(GetKeyboardState(original_keys.as_mut_ptr()), 0);

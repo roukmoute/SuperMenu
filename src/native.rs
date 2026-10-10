@@ -31,6 +31,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 pub const WM_ACTIVATE_MENU: u32 = WM_APP + 1;
 
+// Foreground/focus are desktop-wide state. Serialize tests that manipulate or
+// assert them, while retaining the normal parallel runner for pure tests.
+#[cfg(test)]
+pub static UI_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
