@@ -107,6 +107,7 @@ struct State {
     catalog_ready: Arc<AtomicUsize>,
     feedback: Option<launch_feedback::LaunchFeedback>,
     feedback_request: Option<usize>,
+    feedback_artwork: Option<(String, app_icons::Key)>,
     timers: Rc<RefCell<timer_runtime::TimerRuntime>>,
     timer_focus: Option<timer::TimerId>,
     launches: LaunchRequests,
@@ -646,6 +647,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             catalog_ready: Arc::new(AtomicUsize::new(0)),
             feedback: None,
             feedback_request: None,
+            feedback_artwork: None,
             timers,
             timer_focus: None,
             launches: LaunchRequests::default(),
@@ -950,6 +952,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
         }
         ICONS_READY => {
             let changed = s.app_icons.as_mut().is_some_and(|icons| icons.drain());
+            request_feedback_icon(s);
             request_result_icons(s);
             if changed {
                 InvalidateRect(hwnd, null(), 0);
@@ -2287,11 +2290,34 @@ unsafe fn start_application(s: &mut State, item: &Item) {
         LaunchStart::Started(token) | LaunchStart::Duplicate(token) => token,
     };
     hide(s);
+    s.feedback_request = None;
+    s.feedback_artwork = None;
+    let key = app_icons::Key::new(&item.target, launch_feedback::icon_size(s.dpi));
+    let exact_icon = s
+        .app_icons
+        .as_ref()
+        .and_then(|icons| key.as_ref().and_then(|key| icons.get_key(key)));
+    // Reuse the visible row's artwork immediately while the worker obtains
+    // the popup's larger size. Shell extraction never delays the launch.
+    let icon = exact_icon.or_else(|| {
+        s.app_icons.as_ref().and_then(|icons| {
+            app_icons::Key::new(&item.target, s.item_icon_size)
+                .as_ref()
+                .and_then(|key| icons.get_key(key))
+        })
+    });
     if let Some(feedback) = &mut s.feedback {
-        if feedback.show(&item.title, s.hwnd, &s.settings).is_ok() {
+        if feedback
+            .show(&item.title, icon, s.hwnd, &s.settings)
+            .is_ok()
+        {
             s.feedback_request = Some(token);
+            if exact_icon.is_none() {
+                s.feedback_artwork = key.map(|key| (item.target.clone(), key));
+            }
         }
     }
+    request_feedback_icon(s);
     if matches!(started, LaunchStart::Duplicate(_)) {
         return;
     }
@@ -2331,6 +2357,33 @@ unsafe fn start_application(s: &mut State, item: &Item) {
     }
 }
 
+fn request_feedback_icon(s: &mut State) {
+    if !s
+        .feedback
+        .as_ref()
+        .is_some_and(|feedback| feedback.is_active())
+    {
+        s.feedback_artwork = None;
+        return;
+    }
+    let Some((target, key)) = &s.feedback_artwork else {
+        return;
+    };
+    let Some(icons) = &mut s.app_icons else {
+        s.feedback_artwork = None;
+        return;
+    };
+    // A full worker queue is retried on its next wake. Only the latest popup
+    // retains a key, so a late response cannot replace another app's artwork.
+    icons.request_key(target, key);
+    if let Some(icon) = icons.get_key(key) {
+        if let Some(feedback) = &mut s.feedback {
+            feedback.update_icon(icon);
+        }
+        s.feedback_artwork = None;
+    }
+}
+
 unsafe fn process_launch_results(s: &mut State) {
     while let Ok((token, result)) = s.launch_results.try_recv() {
         let Some(item) = s.launches.finish(token, result.is_ok()) else {
@@ -2353,6 +2406,7 @@ unsafe fn process_launch_results(s: &mut State) {
                         feedback.hide();
                     }
                     s.feedback_request = None;
+                    s.feedback_artwork = None;
                 }
                 s.status = i18n::fmt(
                     "Lancement de {name} impossible",
@@ -2586,6 +2640,7 @@ unsafe fn show(s: &mut State) {
         feedback.hide();
     }
     s.feedback_request = None;
+    s.feedback_artwork = None;
     let foreground = GetForegroundWindow();
     if foreground != s.hwnd {
         s.previous = foreground;

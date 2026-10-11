@@ -23,6 +23,8 @@ Les suites Windows conduisent l'exécutable construit, observent ses fenêtres e
 
 Le test natif de l'icône de notification vérifie son rendu réel avec `DrawIconEx` à 16, 20, 24 et 32 pixels : fond transparent sur thèmes clair et sombre, grille centrée, masque de transparence et libération des ressources. Pour exporter ses rendus BMP, définir facultativement `SUPER_MENU_ICON_TEST_DIR` avant `cargo test` ; cette instrumentation reste absente du binaire distribué.
 
+Le retour de lancement est également dessiné dans un bitmap natif : le test vérifie le centrage et la transparence de l'icône d'application dans les deux thèmes, sa propriété indépendante du cache, son remplacement sans prolongation et l'absence de réapparition après expiration. `SUPER_MENU_LAUNCH_TEST_DIR` permet d'exporter facultativement ces rendus pendant les tests.
+
 ## Données et isolation
 
 `tests/fixtures/launcher.json` contient des applications et fichiers fictifs. `--smoke-test --smoke-fixture <fichier>` restaure leurs données de recherche et remplace l'indexation du PC. Le mode utilise les réglages par défaut et un historique de lancement vide. Il ne lit ni n'écrit l'index ou la configuration personnelle, n'installe pas de raccourci global et ne lance pas de surveillance de dossiers. Les activations de logiciels, fichiers, liens web, presse-papiers et actions système externes sont bloquées dans ce mode ; les tests utilisent les actions internes du menu.

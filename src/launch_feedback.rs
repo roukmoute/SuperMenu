@@ -1,7 +1,7 @@
 //! A short, non-activating acknowledgement of a launch request, not app readiness.
 
 use crate::i18n::{fmt, tr};
-use crate::{config, native::wide};
+use crate::{brand_icon, config, native::wide};
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
@@ -26,21 +26,16 @@ struct Palette {
     text: COLORREF,
     muted: COLORREF,
     border: COLORREF,
-    accent: COLORREF,
 }
 
 impl Palette {
     fn from(settings: &config::Settings) -> Self {
-        let value = settings.accent_color.trim().trim_start_matches('#');
-        let rgb = u32::from_str_radix(value, 16).unwrap_or(0x9A8CFF);
-        let accent = color((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
         if settings.theme.trim().eq_ignore_ascii_case("light") {
             Self {
                 background: color(247, 247, 251),
                 text: color(30, 28, 43),
                 muted: color(103, 101, 119),
                 border: color(213, 211, 224),
-                accent,
             }
         } else {
             Self {
@@ -48,9 +43,26 @@ impl Palette {
                 text: color(241, 240, 247),
                 muted: color(148, 147, 165),
                 border: color(45, 44, 57),
-                accent,
             }
         }
+    }
+}
+
+struct OwnedIcon(HICON);
+
+impl OwnedIcon {
+    fn copy(icon: HICON) -> Option<Self> {
+        if icon.is_null() {
+            return None;
+        }
+        let copy = unsafe { CopyIcon(icon) };
+        (!copy.is_null()).then_some(Self(copy))
+    }
+}
+
+impl Drop for OwnedIcon {
+    fn drop(&mut self) {
+        unsafe { DestroyIcon(self.0) };
     }
 }
 
@@ -58,7 +70,9 @@ struct State {
     title: Vec<u16>,
     palette: Palette,
     dpi: i32,
-    fonts: [HFONT; 3],
+    fonts: [HFONT; 2],
+    icon: Option<OwnedIcon>,
+    fallback: brand_icon::Icon,
     deadline: Option<Instant>,
 }
 
@@ -67,14 +81,10 @@ impl State {
         if self.dpi == dpi && self.fonts.iter().all(|font| !font.is_null()) {
             return Ok(());
         }
-        let mut fonts = [null_mut(); 3];
-        for (index, (height, weight, family)) in [
-            (15, 600, "Segoe UI"),
-            (12, 400, "Segoe UI"),
-            (24, 400, "Segoe UI Symbol"),
-        ]
-        .into_iter()
-        .enumerate()
+        let mut fonts = [null_mut(); 2];
+        for (index, (height, weight, family)) in [(15, 600, "Segoe UI"), (12, 400, "Segoe UI")]
+            .into_iter()
+            .enumerate()
         {
             fonts[index] = unsafe {
                 CreateFontW(
@@ -106,6 +116,9 @@ impl State {
             unsafe { DeleteObject(font) };
         }
         self.fonts = fonts;
+        if self.dpi != dpi {
+            self.fallback = brand_icon::Icon::new(icon_size(dpi));
+        }
         self.dpi = dpi;
         Ok(())
     }
@@ -134,7 +147,9 @@ impl LaunchFeedback {
             title: wide(&tr("Lancement…")),
             palette: Palette::from(&config::Settings::default()),
             dpi: 96,
-            fonts: [null_mut(); 3],
+            fonts: [null_mut(); 2],
+            icon: None,
+            fallback: brand_icon::Icon::new(icon_size(96)),
             deadline: None,
         }));
         let hwnd = unsafe {
@@ -171,9 +186,13 @@ impl LaunchFeedback {
     pub fn show(
         &mut self,
         title: &str,
+        icon: Option<HICON>,
         anchor: HWND,
         settings: &config::Settings,
     ) -> Result<(), String> {
+        // The cache's borrowed icon may be released after this call. Own a copy
+        // before hiding the preceding request or dispatching any window messages.
+        let icon = icon.and_then(OwnedIcon::copy);
         self.hide();
         let deadline = Instant::now() + DURATION;
         let mut monitor: MONITORINFO = unsafe { zeroed() };
@@ -194,6 +213,7 @@ impl LaunchFeedback {
             state.set_dpi(dpi)?;
             state.title = title_text(title);
             state.palette = Palette::from(settings);
+            state.icon = icon;
             state.deadline = Some(deadline);
         }
         // All synchronous Win32 calls run with the state borrow released.
@@ -219,19 +239,10 @@ impl LaunchFeedback {
             DwmSetWindowAttribute(self.hwnd, 20, (&dark as *const i32).cast(), 4);
             DwmSetWindowAttribute(self.hwnd, 33, (&round as *const i32).cast(), 4);
             ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-            InvalidateRect(self.hwnd, null(), 0);
-            UpdateWindow(self.hwnd);
-            // WS_EX_TRANSPARENT defers ordinary WM_PAINT until windows below
-            // have painted. Render this owned client DC synchronously instead,
-            // so the acknowledgement is ready before Shell work is dispatched.
-            let dc = GetDC(self.hwnd);
-            if dc.is_null() {
+            if !repaint(self.hwnd) {
                 self.hide();
                 return Err(win_error("Peinture du retour de lancement"));
             }
-            SendMessageW(self.hwnd, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
-            ReleaseDC(self.hwnd, dc);
-            ValidateRect(self.hwnd, null());
             let remaining = deadline.saturating_duration_since(Instant::now());
             if SetTimer(self.hwnd, TIMER, timer_interval(remaining), None) == 0 {
                 self.hide();
@@ -241,8 +252,41 @@ impl LaunchFeedback {
         Ok(())
     }
 
+    pub fn is_active(&self) -> bool {
+        self.state
+            .borrow()
+            .deadline
+            .is_some_and(|deadline| deadline > Instant::now())
+    }
+
+    /// Accepts asynchronous cache artwork only while this acknowledgement is
+    /// alive. Updating pixels cannot extend its deadline or reopen its window.
+    pub fn update_icon(&mut self, icon: HICON) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+        let Some(icon) = OwnedIcon::copy(icon) else {
+            return false;
+        };
+        {
+            let mut state = self.state.borrow_mut();
+            if state
+                .deadline
+                .is_none_or(|deadline| deadline <= Instant::now())
+            {
+                return false;
+            }
+            state.icon = Some(icon);
+        }
+        unsafe { repaint(self.hwnd) }
+    }
+
     pub fn hide(&mut self) {
-        self.state.borrow_mut().deadline = None;
+        {
+            let mut state = self.state.borrow_mut();
+            state.deadline = None;
+            state.icon = None;
+        }
         unsafe {
             KillTimer(self.hwnd, TIMER);
             ShowWindow(self.hwnd, SW_HIDE);
@@ -323,6 +367,7 @@ unsafe extern "system" fn window_proc(
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     if remaining.is_zero() {
                         state.deadline = None;
+                        state.icon = None;
                     }
                     remaining
                 })
@@ -337,6 +382,7 @@ unsafe extern "system" fn window_proc(
                 {
                     if let Ok(mut state) = (*ptr).try_borrow_mut() {
                         state.deadline = None;
+                        state.icon = None;
                     }
                     KillTimer(hwnd, TIMER);
                     ShowWindow(hwnd, SW_HIDE);
@@ -347,6 +393,21 @@ unsafe extern "system" fn window_proc(
         _ => {}
     }
     DefWindowProcW(hwnd, message, wparam, lparam)
+}
+
+unsafe fn repaint(hwnd: HWND) -> bool {
+    InvalidateRect(hwnd, null(), 0);
+    UpdateWindow(hwnd);
+    // WS_EX_TRANSPARENT can defer normal painting. Render the client explicitly
+    // after releasing every State borrow, both for show and asynchronous updates.
+    let dc = GetDC(hwnd);
+    if dc.is_null() {
+        return false;
+    }
+    SendMessageW(hwnd, WM_PRINTCLIENT, dc as usize, PRF_CLIENT as isize);
+    ReleaseDC(hwnd, dc);
+    ValidateRect(hwnd, null());
+    true
 }
 
 unsafe fn draw(hwnd: HWND, dc: HDC, state: &State) {
@@ -367,27 +428,27 @@ unsafe fn draw(hwnd: HWND, dc: HDC, state: &State) {
         radius,
         radius,
     );
-    SetDCBrushColor(dc, state.palette.accent);
     let left = scale(18, state.dpi);
     let top = scale(22, state.dpi);
     let size = scale(40, state.dpi);
-    Ellipse(dc, left, top, left + size, top + size);
     SelectObject(dc, pen);
     SelectObject(dc, brush);
     SetBkMode(dc, TRANSPARENT as i32);
-    let icon = wide("↗");
-    draw_text(
+    let pixels = icon_size(state.dpi) as i32;
+    let icon = state
+        .icon
+        .as_ref()
+        .map_or_else(|| state.fallback.raw(), |icon| icon.0);
+    DrawIconEx(
         dc,
-        state.fonts[2],
-        state.palette.background,
-        &icon,
-        RECT {
-            left,
-            top,
-            right: left + size,
-            bottom: top + size,
-        },
-        DT_CENTER,
+        left + (size - pixels) / 2,
+        top + (size - pixels) / 2,
+        icon,
+        pixels,
+        pixels,
+        0,
+        null_mut(),
+        DI_NORMAL,
     );
     let left = scale(74, state.dpi);
     let right = (bounds.right - scale(22, state.dpi)).max(left);
@@ -491,6 +552,10 @@ fn scale(dip: i32, dpi: i32) -> i32 {
     (dip * dpi + 48) / 96
 }
 
+pub fn icon_size(dpi: i32) -> u32 {
+    ((32i64 * i64::from(dpi) + 48) / 96).clamp(16, 128) as u32
+}
+
 fn color(r: u32, g: u32, b: u32) -> COLORREF {
     r | (g << 8) | (b << 16)
 }
@@ -506,6 +571,321 @@ fn win_error(context: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::UI::HiDpi::{
+        SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_UNAWARE,
+    };
+
+    struct TestBitmap(HBITMAP);
+
+    impl Drop for TestBitmap {
+        fn drop(&mut self) {
+            unsafe { DeleteObject(self.0) };
+        }
+    }
+
+    fn test_dib(width: i32, height: i32) -> (TestBitmap, *mut u32) {
+        unsafe {
+            let mut info: BITMAPINFO = zeroed();
+            info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            let mut pixels = null_mut();
+            let bitmap = TestBitmap(CreateDIBSection(
+                null_mut(),
+                &info,
+                DIB_RGB_COLORS,
+                &mut pixels,
+                null_mut(),
+                0,
+            ));
+            assert!(!bitmap.0.is_null() && !pixels.is_null());
+            (bitmap, pixels.cast())
+        }
+    }
+
+    fn fixture_pixel(x: usize, y: usize, replacement: bool) -> Option<u32> {
+        let colors = if replacement {
+            [0xFF32_76E8, 0xFFB3_67DE, 0xFF41_C88D]
+        } else {
+            [0xFFD3_4476, 0xFF12_A8B0, 0xFFFF_B347]
+        };
+        if (2..10).contains(&x) && (4..12).contains(&y) {
+            Some(colors[0])
+        } else if (18..30).contains(&x) && (14..28).contains(&y) {
+            Some(colors[1])
+        } else if (14..17).contains(&x) && (8..24).contains(&y) {
+            Some(colors[2])
+        } else {
+            None
+        }
+    }
+
+    fn fixture_icon(replacement: bool) -> OwnedIcon {
+        let (color, pixels) = test_dib(32, 32);
+        let mut mask_bytes = [0xFFu8; 128];
+        unsafe {
+            let pixels = std::slice::from_raw_parts_mut(pixels, 32 * 32);
+            for y in 0..32 {
+                for x in 0..32 {
+                    pixels[y * 32 + x] = fixture_pixel(x, y, replacement).unwrap_or(0);
+                    if fixture_pixel(x, y, replacement).is_some() {
+                        mask_bytes[y * 4 + x / 8] &= !(0x80 >> (x % 8));
+                    }
+                }
+            }
+            let mask = TestBitmap(CreateBitmap(32, 32, 1, 1, mask_bytes.as_ptr().cast()));
+            assert!(!mask.0.is_null());
+            let icon = CreateIconIndirect(&ICONINFO {
+                fIcon: 1,
+                xHotspot: 0,
+                yHotspot: 0,
+                hbmMask: mask.0,
+                hbmColor: color.0,
+            });
+            assert!(!icon.is_null());
+            OwnedIcon(icon)
+        }
+    }
+
+    struct Capture {
+        dc: HDC,
+        old: HGDIOBJ,
+        bitmap: TestBitmap,
+        pixels: *mut u32,
+        width: usize,
+        height: usize,
+    }
+
+    impl Capture {
+        fn new(hwnd: HWND) -> Self {
+            unsafe {
+                let mut bounds: RECT = zeroed();
+                assert_ne!(GetClientRect(hwnd, &mut bounds), 0);
+                let (bitmap, pixels) = test_dib(bounds.right, bounds.bottom);
+                let dc = CreateCompatibleDC(null_mut());
+                assert!(!dc.is_null());
+                let old = SelectObject(dc, bitmap.0);
+                assert!(!old.is_null());
+                Self {
+                    dc,
+                    old,
+                    bitmap,
+                    pixels,
+                    width: bounds.right as usize,
+                    height: bounds.bottom as usize,
+                }
+            }
+        }
+
+        fn paint(&self, hwnd: HWND) {
+            unsafe {
+                SendMessageW(hwnd, WM_PRINTCLIENT, self.dc as usize, PRF_CLIENT as isize);
+                assert_ne!(GdiFlush(), 0);
+            }
+        }
+
+        fn pixels(&self) -> &[u32] {
+            unsafe { std::slice::from_raw_parts(self.pixels, self.width * self.height) }
+        }
+
+        fn export(&self, name: &str) {
+            let Some(directory) =
+                std::env::var_os("SUPER_MENU_LAUNCH_TEST_DIR").filter(|value| !value.is_empty())
+            else {
+                return;
+            };
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            let mut bytes = Vec::with_capacity(54 + self.pixels().len() * 4);
+            bytes.extend_from_slice(b"BM");
+            bytes.extend_from_slice(&((54 + self.pixels().len() * 4) as u32).to_le_bytes());
+            bytes.extend_from_slice(&[0; 4]);
+            bytes.extend_from_slice(&54u32.to_le_bytes());
+            bytes.extend_from_slice(&40u32.to_le_bytes());
+            bytes.extend_from_slice(&(self.width as i32).to_le_bytes());
+            bytes.extend_from_slice(&(-(self.height as i32)).to_le_bytes());
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.extend_from_slice(&32u16.to_le_bytes());
+            bytes.extend_from_slice(&[0; 24]);
+            for pixel in self.pixels() {
+                bytes.extend_from_slice(&pixel.to_le_bytes());
+            }
+            std::fs::write(directory.join(format!("launch-{name}.bmp")), bytes).unwrap();
+        }
+    }
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            unsafe {
+                SelectObject(self.dc, self.old);
+                DeleteDC(self.dc);
+            }
+        }
+    }
+
+    fn assert_live_icon(icon: HICON) {
+        unsafe {
+            let mut info: ICONINFO = zeroed();
+            assert_ne!(GetIconInfo(icon, &mut info), 0);
+            let _color = TestBitmap(info.hbmColor);
+            let _mask = TestBitmap(info.hbmMask);
+        }
+    }
+
+    fn assert_released_icon(icon: HICON) {
+        unsafe {
+            let mut info: ICONINFO = zeroed();
+            assert_eq!(GetIconInfo(icon, &mut info), 0, "owned icon released");
+        }
+    }
+
+    fn verify_icon_pixels(capture: &Capture, background: COLORREF, replacement: Option<bool>) {
+        let background =
+            ((background & 255) << 16) | (background & 0xFF00) | ((background >> 16) & 255);
+        let pixels = capture.pixels();
+        // 32px artwork is centered inside the 40px area at (18,22): its
+        // origin is (22,26), and transparent padding must remain background.
+        for y in 22..62 {
+            for x in 18..58 {
+                let expected = if (22..54).contains(&x) && (26..58).contains(&y) {
+                    let (icon_x, icon_y) = (x - 22, y - 26);
+                    match replacement {
+                        Some(replacement) => fixture_pixel(icon_x, icon_y, replacement),
+                        None => {
+                            let occupied = |point| {
+                                [(2..10), (12..20), (22..30)]
+                                    .iter()
+                                    .any(|range| range.contains(&point))
+                            };
+                            (occupied(icon_x) && occupied(icon_y)).then_some(0xFF8A_62EC)
+                        }
+                    }
+                } else {
+                    None
+                };
+                assert_eq!(
+                    pixels[y * capture.width + x] & 0x00FF_FFFF,
+                    expected.unwrap_or(background) & 0x00FF_FFFF,
+                    "pixel {x},{y}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn application_icon_is_copied_centered_transparent_and_never_extends_feedback() {
+        let _ui_test_guard = crate::native::UI_TEST_LOCK.lock().unwrap();
+        struct DpiContext(DPI_AWARENESS_CONTEXT);
+        impl Drop for DpiContext {
+            fn drop(&mut self) {
+                unsafe { SetThreadDpiAwarenessContext(self.0) };
+            }
+        }
+        let previous = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE) };
+        assert!(!previous.is_null());
+        let _dpi_context = DpiContext(previous);
+        let anchor = LaunchFeedback::new().unwrap();
+        let mut popup = LaunchFeedback::new().unwrap();
+        let foreground = unsafe { GetForegroundWindow() };
+        for theme in ["dark", "light"] {
+            let settings = config::Settings {
+                theme: theme.into(),
+                ..config::Settings::default()
+            };
+            let source = fixture_icon(false);
+            let source_raw = source.0;
+            popup
+                .show(
+                    "Icône de l’application",
+                    Some(source_raw),
+                    anchor.hwnd(),
+                    &settings,
+                )
+                .unwrap();
+            assert_eq!(popup.state.borrow().dpi, 96);
+            assert!(popup.is_active());
+            let copied = popup.state.borrow().icon.as_ref().unwrap().0;
+            assert_ne!(source_raw, copied);
+            drop(source);
+            assert_released_icon(source_raw);
+            assert_live_icon(copied);
+            let capture = Capture::new(popup.hwnd());
+            assert_eq!((capture.width, capture.height), (480, 84));
+            capture.paint(popup.hwnd());
+            verify_icon_pixels(&capture, Palette::from(&settings).background, Some(false));
+            capture.export(&format!("{theme}-application"));
+            let deadline = popup.state.borrow().deadline;
+            let title = popup.state.borrow().title.clone();
+            assert!(!popup.update_icon(null_mut()));
+            assert_eq!(popup.state.borrow().icon.as_ref().unwrap().0, copied);
+            let replacement = fixture_icon(true);
+            let replacement_source = replacement.0;
+            assert!(popup.update_icon(replacement_source));
+            let replacement_copy = popup.state.borrow().icon.as_ref().unwrap().0;
+            assert_ne!(replacement_copy, replacement_source);
+            drop(replacement);
+            assert_released_icon(replacement_source);
+            assert_released_icon(copied);
+            assert_live_icon(replacement_copy);
+            assert_eq!(popup.state.borrow().deadline, deadline);
+            assert_eq!(popup.state.borrow().title, title);
+            assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+            assert_ne!(unsafe { IsWindowVisible(popup.hwnd()) }, 0);
+            capture.paint(popup.hwnd());
+            verify_icon_pixels(&capture, Palette::from(&settings).background, Some(true));
+            capture.export(&format!("{theme}-replacement"));
+            unsafe { SendMessageW(popup.hwnd(), WM_TIMER, TIMER, 0) };
+            assert_eq!(popup.state.borrow().deadline, deadline);
+            let expired = Instant::now() - Duration::from_millis(1);
+            popup.state.borrow_mut().deadline = Some(expired);
+            let late = fixture_icon(false);
+            assert!(!popup.is_active());
+            assert!(!popup.update_icon(late.0));
+            assert_eq!(popup.state.borrow().deadline, Some(expired));
+            assert_eq!(
+                popup.state.borrow().icon.as_ref().unwrap().0,
+                replacement_copy
+            );
+            unsafe { SendMessageW(popup.hwnd(), WM_TIMER, TIMER, 0) };
+            assert_eq!(unsafe { IsWindowVisible(popup.hwnd()) }, 0);
+            assert!(!popup.is_active());
+            assert!(popup.state.borrow().icon.is_none());
+            assert_released_icon(replacement_copy);
+            assert!(!popup.update_icon(late.0));
+            assert_eq!(unsafe { IsWindowVisible(popup.hwnd()) }, 0);
+            assert_eq!(popup.state.borrow().deadline, None);
+            assert_eq!(popup.state.borrow().title, title);
+            popup
+                .show("Icône par défaut", None, anchor.hwnd(), &settings)
+                .unwrap();
+            capture.paint(popup.hwnd());
+            verify_icon_pixels(&capture, Palette::from(&settings).background, None);
+            capture.export(&format!("{theme}-fallback"));
+            popup.hide();
+            let capture_bitmap = capture.bitmap.0;
+            drop(capture);
+            unsafe {
+                let mut details: BITMAP = zeroed();
+                assert_eq!(
+                    GetObjectW(
+                        capture_bitmap,
+                        size_of::<BITMAP>() as i32,
+                        (&mut details as *mut BITMAP).cast()
+                    ),
+                    0
+                );
+            }
+        }
+        let hwnd = popup.hwnd();
+        let fallback = popup.state.borrow().fallback.raw();
+        drop(popup);
+        assert_eq!(unsafe { IsWindow(hwnd) }, 0);
+        assert_released_icon(fallback);
+        assert_eq!(unsafe { GetForegroundWindow() }, foreground);
+    }
 
     #[test]
     fn native_timer_interval_rounds_up_to_the_deadline() {
@@ -534,11 +914,20 @@ mod tests {
         let mut settings = config::Settings::default();
         let dark = Palette::from(&settings);
         settings.theme = "light".into();
-        settings.accent_color = "#123456".into();
         let light = Palette::from(&settings);
         assert_ne!(dark.background, light.background);
         assert_ne!(dark.text, light.text);
-        assert_eq!(light.accent, color(0x12, 0x34, 0x56));
+        for (dpi, expected) in [
+            (i32::MIN, 16),
+            (48, 16),
+            (96, 32),
+            (144, 48),
+            (192, 64),
+            (384, 128),
+            (i32::MAX, 128),
+        ] {
+            assert_eq!(icon_size(dpi), expected);
+        }
         let work = RECT {
             left: -1920,
             top: 0,
@@ -570,7 +959,9 @@ mod tests {
         let mut popup = LaunchFeedback::new().unwrap();
         let settings = config::Settings::default();
         let foreground = unsafe { GetForegroundWindow() };
-        popup.show("Éditeur 🦀", anchor.hwnd(), &settings).unwrap();
+        popup
+            .show("Éditeur 🦀", None, anchor.hwnd(), &settings)
+            .unwrap();
         let hwnd = popup.hwnd();
         unsafe {
             let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
@@ -604,7 +995,7 @@ mod tests {
             ReleaseDC(null_mut(), dc);
         }
         popup
-            .show("Deuxième lancement", anchor.hwnd(), &settings)
+            .show("Deuxième lancement", None, anchor.hwnd(), &settings)
             .unwrap();
         let replacement_deadline = popup.state.borrow().deadline;
         unsafe {

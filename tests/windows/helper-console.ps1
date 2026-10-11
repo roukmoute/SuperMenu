@@ -26,7 +26,6 @@ $consoleProbeSource = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 
 namespace SuperMenuTests {
@@ -47,7 +46,8 @@ namespace SuperMenuTests {
         [DllImport("kernel32.dll", SetLastError=true)] private static extern bool GetConsoleMode(IntPtr handle, out uint mode);
         [DllImport("kernel32.dll", SetLastError=true)] private static extern bool GetConsoleScreenBufferInfo(IntPtr handle, out BufferInfo info);
         [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern bool ReadConsoleOutputCharacterW(
-            IntPtr handle, StringBuilder text, uint length, Coord origin, out uint read);
+            IntPtr handle, [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType=UnmanagedType.U2)] char[] text,
+            uint length, Coord origin, out uint read);
         [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
 
         public static ConsoleSnapshot Read(uint ownedPid) {
@@ -76,11 +76,13 @@ namespace SuperMenuTests {
                         throw new Win32Exception(Marshal.GetLastWin32Error());
                     // Read the bounded visible buffer without consuming stdin.
                     uint length = (uint)Math.Min(8192, Math.Max(0, (int)info.Size.X * Math.Max(1, (int)info.Window.B + 1)));
-                    var text = new StringBuilder((int)length + 1);
+                    var text = new char[(int)length];
                     uint read;
                     if (!ReadConsoleOutputCharacterW(output, text, length, new Coord(), out read))
                         throw new Win32Exception(Marshal.GetLastWin32Error());
-                    contents = text.ToString().TrimEnd();
+                    if (read > length) throw new InvalidOperationException("The console returned more cells than requested.");
+                    // This API returns a cell count, without requiring a NUL terminator.
+                    contents = new string(text, 0, (int)read).TrimEnd();
                     // Waiting for the heading avoids observing mode between
                     // AllocConsole and the helper's explicit input setup.
                     if (contents.Contains("Google Chrome")) break;
