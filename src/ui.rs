@@ -1172,7 +1172,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                         reindex(s);
                     } else {
                         s.status = i18n::fmt(
-                            "Installation de {name} interrompue",
+                            "Installation de {name} interrompue · détails dans les rapports",
                             &[("name", package.name.into())],
                         );
                     }
@@ -1196,7 +1196,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                     }
                     reindex(s);
                 } else {
-                    s.status = i18n::tr("Désinstallation interrompue · détails dans la console");
+                    s.status = i18n::tr("Désinstallation interrompue · détails dans les rapports");
                     reindex(s);
                 }
                 update_results(s);
@@ -1243,6 +1243,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                     6,
                     wide(&i18n::tr("Rapports de désinstallation")).as_ptr(),
                 );
+                let operations = installer::operation_reports_dir();
+                AppendMenuW(
+                    menu,
+                    MF_STRING | if operations.is_dir() { 0 } else { MF_GRAYED },
+                    8,
+                    wide(&i18n::tr("Dernières opérations de logiciels")).as_ptr(),
+                );
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
                 AppendMenuW(menu, MF_STRING, 4, wide(&i18n::tr("Quitter")).as_ptr());
                 let mut p: POINT = zeroed();
@@ -1272,6 +1279,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                     }
                     6 => {
                         if let Err(error) = native::launch(&reports.to_string_lossy(), "") {
+                            show_error(&error);
+                        }
+                    }
+                    8 => {
+                        if let Err(error) = native::launch(&operations.to_string_lossy(), "") {
                             show_error(&error);
                         }
                     }

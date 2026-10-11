@@ -18,9 +18,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use windows_sys::Win32::System::Console::{
-    AllocConsole, GetConsoleMode, GetConsoleWindow, SetConsoleCP, SetConsoleMode,
-    SetConsoleOutputCP, SetConsoleTitleW, SetStdHandle, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-    STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    AllocConsole, GetConsoleMode, GetConsoleScreenBufferInfo, GetConsoleWindow,
+    ReadConsoleOutputCharacterW, SetConsoleCP, SetConsoleMode, SetConsoleOutputCP,
+    SetConsoleTitleW, SetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, COORD, ENABLE_EXTENDED_FLAGS,
+    ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, WaitForSingleObject, DETACHED_PROCESS, INFINITE,
@@ -188,13 +190,9 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
             return Some(1);
         }
     };
-    let mut wait = true;
-    let mut close_after_success = false;
+    let delay = console_close_delay(request.as_ref().ok());
     let result = match request {
         Ok(request) => {
-            // One initial confirmation authorizes the complete removal. Successful
-            // unattended removals do not require another Enter just to close a log.
-            wait = !request.no_wait;
             println!(
                 "{}\n",
                 crate::i18n::fmt(
@@ -238,33 +236,55 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
                     "La fenêtre Super Menu n'est plus disponible.",
                 ))
             };
-            let result = match outcome {
+            let (result, message) = match outcome {
                 Ok(Outcome::Installed) => {
-                    println!("{}", crate::i18n::tr("\nInstallation terminée. Le catalogue de Super Menu va être actualisé."));
-                    0
+                    (0, crate::i18n::tr("\nInstallation terminée. Le catalogue de Super Menu va être actualisé."))
                 }
                 Ok(Outcome::AlreadyInstalled) => {
-                    println!("{}", crate::i18n::tr("\nCe logiciel est déjà installé. Aucune mise à jour n'a été effectuée."));
-                    0
+                    (0, crate::i18n::tr("\nCe logiciel est déjà installé. Aucune mise à jour n'a été effectuée."))
                 }
                 Ok(Outcome::Removed) => {
-                    println!("{}", crate::i18n::tr("\nDésinstallation terminée. Le catalogue de Super Menu va être actualisé."));
-                    wait = false;
-                    close_after_success = true;
-                    0
+                    (0, crate::i18n::tr("\nDésinstallation terminée. Le catalogue de Super Menu va être actualisé."))
                 }
                 Ok(Outcome::RemoveChecked) => {
-                    println!("{}", crate::i18n::tr("\nLe logiciel est installé. Diagnostic uniquement : aucune désinstallation lancée."));
-                    0
+                    (0, crate::i18n::tr("\nLe logiciel est installé. Diagnostic uniquement : aucune désinstallation lancée."))
                 }
-                Err(error) => {
-                    eprintln!(
-                        "{}",
-                        crate::i18n::fmt("\nÉchec : {error}", &[("error", error.message.clone())])
-                    );
-                    error.code
-                }
+                Err(error) => (error.code, crate::i18n::fmt("\nÉchec : {error}", &[("error", error.message)])),
             };
+            if result == 0 {
+                println!("{message}");
+            } else {
+                eprintln!("{message}");
+            }
+            let _ = io::stdout().flush();
+            let _ = io::stderr().flush();
+            // Preserve the result and bounded WinGet details before the console
+            // closes. Read-only diagnostics deliberately create no journal.
+            if !request.check_only {
+                let tail = console.tail();
+                match write_operation_report(
+                    &operation_reports_dir(),
+                    &request,
+                    result,
+                    &message,
+                    &tail,
+                ) {
+                    Ok(path) => println!(
+                        "{}",
+                        crate::i18n::fmt(
+                            "Rapport : {path}",
+                            &[("path", path.display().to_string())]
+                        )
+                    ),
+                    Err(error) => eprintln!(
+                        "{}",
+                        crate::i18n::fmt(
+                            "Le journal n'a pas pu être finalisé : {error}",
+                            &[("error", error.to_string())]
+                        )
+                    ),
+                }
+            }
             // Notify immediately. Closing the console is independent of the next request.
             request.notify(result);
             result
@@ -280,17 +300,12 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
             1
         }
     };
-    if wait {
-        println!(
-            "{}",
-            crate::i18n::tr("\nAppuyez sur Entrée pour fermer cette fenêtre.")
-        );
-        let _ = io::stdout().flush();
-        let _ = io::stderr().flush();
-        let _ = io::stdin().read_line(&mut String::new());
-    } else if close_after_success {
-        // Notify the launcher first; closing this result window is independent.
-        std::thread::sleep(Duration::from_secs(2));
+    let _ = io::stdout().flush();
+    let _ = io::stderr().flush();
+    if !delay.is_zero() {
+        // WinGet and cleanup have finished, and the launcher has been notified.
+        // Success, cancellation and errors follow the same bounded close policy.
+        std::thread::sleep(delay);
     }
     drop(console);
     Some(result)
@@ -1048,6 +1063,121 @@ fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
     }
 }
 
+const CONSOLE_CLOSE_DELAY: Duration = Duration::from_secs(2);
+const MAX_OPERATION_REPORTS: usize = 20;
+const MAX_CONSOLE_CELLS: usize = 32_768;
+
+fn console_close_delay(request: Option<&Request>) -> Duration {
+    if request.is_some_and(|request| request.check_only && request.no_wait) {
+        Duration::ZERO
+    } else {
+        CONSOLE_CLOSE_DELAY
+    }
+}
+
+pub fn operation_reports_dir() -> PathBuf {
+    config::data_dir().join("software-reports")
+}
+
+fn bounded_text(text: &str, limit: usize) -> &str {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+fn write_operation_report(
+    directory: &std::path::Path,
+    request: &Request,
+    result: i32,
+    message: &str,
+    console_tail: &str,
+) -> io::Result<PathBuf> {
+    let _parents = prepare_report_directory(directory)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = directory.join(format!(
+        "result-{timestamp}-{}-{}.json",
+        std::process::id(),
+        request.token
+    ));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    let document = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "operation": if request.remove.is_some() { "uninstall" } else { "install" },
+        "target": request.remove.as_ref().map_or_else(|| format!("id:{}", request.id), RemoveTarget::canonical),
+        "name": request.name,
+        "timestamp_ms": timestamp,
+        "result_code": result,
+        "result_hex": format!("0x{:08X}", result as u32),
+        "status": if result == 0 { "success" } else { "failure" },
+        "message": bounded_text(message.trim(), 8_192),
+        "console_tail": bounded_text(console_tail, 131_072),
+    });
+    let mut writer = io::BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, &document).map_err(io::Error::other)?;
+    writer.flush()?;
+    writer.get_ref().sync_all()?;
+    drop(writer);
+    prune_operation_reports(directory);
+    Ok(path)
+}
+
+fn operation_report_name(name: &str) -> bool {
+    let Some(stem) = name
+        .strip_prefix("result-")
+        .and_then(|name| name.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    let mut fields = stem.split('-');
+    (0..3).all(|_| {
+        fields.next().is_some_and(|field| {
+            !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    }) && fields.next().is_none()
+}
+
+fn prune_operation_reports(directory: &std::path::Path) {
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut reports = entries
+        .take(1_024)
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            if !operation_report_name(&name) {
+                return None;
+            }
+            let metadata = std::fs::symlink_metadata(entry.path()).ok()?;
+            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            {
+                return None;
+            }
+            let timestamp = name
+                .strip_prefix("result-")?
+                .split('-')
+                .next()?
+                .parse::<u128>()
+                .ok()?;
+            Some((timestamp, name, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    reports.sort_unstable_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    let excess = reports.len().saturating_sub(MAX_OPERATION_REPORTS);
+    for (_, _, path) in reports.into_iter().take(excess) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 fn prepare_report_directory(path: &std::path::Path) -> io::Result<Vec<std::fs::File>> {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -1095,6 +1225,25 @@ struct Console {
     output: HANDLE,
 }
 
+fn unattended_console_mode(mode: u32) -> u32 {
+    // Quick Edit suspends console output while selecting text. Extended Flags
+    // must be set for Windows to apply the disabled Quick Edit bit.
+    (mode | ENABLE_EXTENDED_FLAGS) & !ENABLE_QUICK_EDIT_MODE
+}
+
+fn console_tail_text(cells: &[u16], width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    cells
+        .chunks(width)
+        .map(|row| String::from_utf16_lossy(row).trim_end().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
+}
+
 impl Console {
     fn open(title: &str) -> Result<Self, String> {
         unsafe {
@@ -1128,10 +1277,52 @@ impl Console {
             SetConsoleCP(65001);
             SetConsoleOutputCP(65001);
             let mut mode = 0;
+            if GetConsoleMode(input, &mut mode) == 0
+                || SetConsoleMode(input, unattended_console_mode(mode)) == 0
+            {
+                return Err(crate::i18n::fmt(
+                    "Console indisponible : {error}",
+                    &[("error", io::Error::last_os_error().to_string())],
+                ));
+            }
             if GetConsoleMode(output, &mut mode) != 0 {
                 SetConsoleMode(output, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
             }
             Ok(console)
+        }
+    }
+
+    fn tail(&self) -> String {
+        unsafe {
+            let mut info: CONSOLE_SCREEN_BUFFER_INFO = std::mem::zeroed();
+            if GetConsoleScreenBufferInfo(self.output, &mut info) == 0
+                || info.dwSize.X <= 0
+                || info.dwCursorPosition.Y < 0
+                || info.dwCursorPosition.Y >= info.dwSize.Y
+            {
+                return String::new();
+            }
+            let width = info.dwSize.X as usize;
+            let rows = (MAX_CONSOLE_CELLS / width).max(1);
+            let last_row = info.dwCursorPosition.Y as usize;
+            let first_row = (last_row + 1).saturating_sub(rows);
+            let count = (last_row + 1 - first_row) * width;
+            let mut cells = vec![0u16; count];
+            let mut read = 0;
+            if ReadConsoleOutputCharacterW(
+                self.output,
+                cells.as_mut_ptr(),
+                count as u32,
+                COORD {
+                    X: 0,
+                    Y: first_row as i16,
+                },
+                &mut read,
+            ) == 0
+            {
+                return String::new();
+            }
+            console_tail_text(&cells[..read as usize], width)
         }
     }
 }
@@ -1171,6 +1362,181 @@ impl Drop for Console {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    fn fixture_request(remove: bool, check_only: bool, no_wait: bool) -> Request {
+        Request {
+            id: "Google.Chrome",
+            name: "SuperMenuOwnedFixture".into(),
+            remove: remove.then(|| RemoveTarget::Name("SuperMenuOwnedFixture".into())),
+            parent: 1usize as HWND,
+            parent_pid: std::process::id(),
+            token: 1,
+            check_only,
+            no_wait,
+        }
+    }
+
+    #[test]
+    fn helper_console_ends_after_every_outcome_and_only_read_only_no_wait_is_immediate() {
+        for remove in [false, true] {
+            let request = fixture_request(remove, false, false);
+            let mut runner = FakeRunner::codes(&[0]);
+            let outcome = if remove {
+                perform_remove(&mut runner, request.remove.as_ref().unwrap(), true)
+            } else {
+                perform_install(&mut runner, request.id, true)
+            };
+            assert!(outcome.is_ok());
+            assert_eq!(console_close_delay(Some(&request)), Duration::from_secs(2));
+
+            let mut runner = FakeRunner::codes(&[NO_APPLICATIONS_FOUND]);
+            let outcome = if remove {
+                perform_remove(&mut runner, request.remove.as_ref().unwrap(), true)
+            } else {
+                perform_install(&mut runner, request.id, true)
+            };
+            assert!(outcome.is_err());
+            assert_eq!(console_close_delay(Some(&request)), Duration::from_secs(2));
+            assert_eq!(runner.calls.len(), 1);
+            let diagnostic = fixture_request(remove, true, true);
+            assert_eq!(console_close_delay(Some(&diagnostic)), Duration::ZERO);
+            let checked_with_delay = fixture_request(remove, true, false);
+            assert_eq!(
+                console_close_delay(Some(&checked_with_delay)),
+                Duration::from_secs(2)
+            );
+        }
+        assert_eq!(console_close_delay(None), Duration::from_secs(2));
+        assert_eq!(
+            console_close_delay(Some(&fixture_request(false, false, true))),
+            Duration::from_secs(2)
+        );
+    }
+
+    #[test]
+    fn unattended_console_cannot_enter_quick_edit_and_preserves_other_input_modes() {
+        use windows_sys::Win32::System::Console::{
+            ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+        };
+        for mode in [
+            0,
+            ENABLE_QUICK_EDIT_MODE,
+            ENABLE_QUICK_EDIT_MODE | ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT,
+            u32::MAX,
+        ] {
+            let configured = unattended_console_mode(mode);
+            assert_eq!(configured & ENABLE_QUICK_EDIT_MODE, 0);
+            assert_ne!(configured & ENABLE_EXTENDED_FLAGS, 0);
+            assert_eq!(
+                configured & !(ENABLE_QUICK_EDIT_MODE | ENABLE_EXTENDED_FLAGS),
+                mode & !(ENABLE_QUICK_EDIT_MODE | ENABLE_EXTENDED_FLAGS)
+            );
+            assert_eq!(unattended_console_mode(configured), configured);
+        }
+    }
+
+    #[test]
+    fn console_tail_preserves_lines_unicode_and_errors_without_padding() {
+        let cells = "Échec     WinGet    0x8A150014          "
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        assert_eq!(console_tail_text(&cells, 10), "Échec\nWinGet\n0x8A150014");
+        assert_eq!(console_tail_text(&[], 10), "");
+        assert_eq!(console_tail_text(&cells, 0), "");
+        assert_eq!(console_tail_text(&[0xD83D, 0xDE00, 32, 32], 4), "😀");
+        assert_eq!(console_tail_text(&[0xD800, 32], 2), "�");
+    }
+
+    #[test]
+    fn operation_reports_preserve_error_details_are_bounded_and_prune_only_owned_results() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "supermenu-operation-report-fixture-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        for timestamp in 1..=24 {
+            std::fs::write(
+                directory.join(format!("result-{timestamp}-1-1.json")),
+                "old fixture",
+            )
+            .unwrap();
+        }
+        let unrelated = [
+            "notes.json",
+            "result-other.json",
+            "result-1-2-3.plan.json",
+            "result-1-2-3-4.json",
+            "result--2-3.json",
+        ];
+        for name in unrelated {
+            std::fs::write(directory.join(name), "preserve").unwrap();
+        }
+        let request = fixture_request(true, false, false);
+        let path = write_operation_report(
+            &directory,
+            &request,
+            NO_APPLICATIONS_FOUND as i32,
+            "WinGet n'a trouvé aucun package : problème précis.",
+            "Critères saisis : aucun package installé.\n0x8A150014",
+        )
+        .unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["operation"], "uninstall");
+        assert_eq!(document["target"], "name:SuperMenuOwnedFixture");
+        assert_eq!(document["status"], "failure");
+        assert_eq!(document["result_code"], NO_APPLICATIONS_FOUND as i32);
+        assert_eq!(document["result_hex"], "0x8A150014");
+        assert!(document["message"]
+            .as_str()
+            .unwrap()
+            .contains("problème précis"));
+        assert!(document["console_tail"]
+            .as_str()
+            .unwrap()
+            .contains("aucun package installé"));
+        assert!(!directory.join("result-5-1-1.json").exists());
+        assert!(directory.join("result-6-1-1.json").exists());
+        assert_eq!(
+            std::fs::read_dir(&directory)
+                .unwrap()
+                .flatten()
+                .filter(|entry| operation_report_name(&entry.file_name().to_string_lossy()))
+                .count(),
+            MAX_OPERATION_REPORTS
+        );
+        for name in unrelated {
+            assert_eq!(
+                std::fs::read_to_string(directory.join(name)).unwrap(),
+                "preserve"
+            );
+        }
+        let mut request = fixture_request(false, false, false);
+        request.token = 2;
+        let path = write_operation_report(
+            &directory,
+            &request,
+            0,
+            &"😀".repeat(3_000),
+            &"😀".repeat(40_000),
+        )
+        .unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(document["status"], "success");
+        assert_eq!(document["operation"], "install");
+        assert_eq!(document["target"], "id:Google.Chrome");
+        assert_eq!(document["message"].as_str().unwrap().len(), 8_192);
+        assert_eq!(document["console_tail"].as_str().unwrap().len(), 131_072);
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn journal_parents_stay_pinned_until_both_reports_are_written() {

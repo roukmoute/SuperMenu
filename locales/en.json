@@ -2,7 +2,6 @@
   "schema_version": 1,
   "language": "en",
   "messages": {
-    "\nAppuyez sur Entrée pour fermer cette fenêtre.": "\nPress Enter to close this window.",
     "\nCe logiciel est déjà installé. Aucune mise à jour n'a été effectuée.": "\nThis application is already installed. No upgrade was performed.",
     "\nDésinstallation terminée. Le catalogue de Super Menu va être actualisé.": "\nUninstall finished. The Super Menu catalog will be refreshed.",
     "\nInstallation terminée. Le catalogue de Super Menu va être actualisé.": "\nInstallation finished. The Super Menu catalog will be refreshed.",
@@ -123,7 +122,6 @@
     "Désactivé par défaut · conservé uniquement en mémoire": "Disabled by default · kept only in memory",
     "Désinstallation en cours · progression dans la console": "Uninstalling · progress in the console",
     "Désinstallation et nettoyage en cours · voir la console": "Uninstalling and cleaning · see the console",
-    "Désinstallation interrompue · détails dans la console": "Uninstall interrupted · details in the console",
     "Désinstaller": "Uninstall",
     "Désinstaller et nettoyer · {category} · données personnelles conservées": "Uninstall and clean · {category} · personal data kept",
     "Désinstaller « {name} » et nettoyer ses résidus ?\n\nLe logiciel sera retiré, puis ses fichiers de programme, caches reconnus et traces techniques seront recherchés automatiquement.\n\nLe nettoyage conservera les profils, réglages et données personnelles. Les résidus incertains ou partagés seront laissés en place.\n\nLes fichiers retirés iront dans la Corbeille ; un rapport et les sauvegardes du registre resteront disponibles.": "Uninstall “{name}” and clean its leftovers?\n\nThe software will be removed, then its program files, recognized caches and technical traces will be checked automatically.\n\nCleanup will preserve profiles, settings and personal data. Uncertain or shared leftovers will be kept.\n\nRemoved files will go to the Recycle Bin; a report and registry backups will remain available.",
@@ -202,7 +200,6 @@
     "Indisponible": "Unavailable",
     "Informations locales · Échap fermer": "Local information · Esc to close",
     "Inspection du programme impossible : {error}": "Unable to inspect program: {error}",
-    "Installation de {name} interrompue": "Installation of {name} interrupted",
     "Installation en cours · console WinGet": "Installing · WinGet console",
     "Installation en cours · progression dans la console": "Installing · progress in the console",
     "Installation en cours · réessaie après son achèvement": "Installing · try again once complete",
@@ -503,6 +500,9 @@
     "↑ ↓ naviguer   ↵ désinstaller   Échap fermer": "↑ ↓ navigate   ↵ uninstall   Esc close",
     "↑ ↓ naviguer   ↵ installer   Échap fermer   F1 aide": "↑ ↓ navigate   ↵ install   Esc close   F1 help",
     "↑ ↓ naviguer   ↵ ouvrir   Échap fermer   F1 aide": "↑ ↓ navigate   ↵ open   Esc close   F1 help",
-    "↑ ↓ naviguer   ↵ sélectionner   Échap fermer": "↑ ↓ navigate   ↵ select   Esc close"
+    "↑ ↓ naviguer   ↵ sélectionner   Échap fermer": "↑ ↓ navigate   ↵ select   Esc close",
+    "Installation de {name} interrompue · détails dans les rapports": "Installation of {name} interrupted · details in reports",
+    "Désinstallation interrompue · détails dans les rapports": "Uninstall interrupted · details in reports",
+    "Dernières opérations de logiciels": "Recent software operations"
   }
 }

@@ -38,7 +38,7 @@ try {
     $Executable = [IO.Path]::GetFullPath($Executable)
     if (-not [IO.File]::Exists($Executable)) { throw "Exécutable absent : $Executable" }
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-    foreach ($suite in @('launcher', 'about', 'translations')) {
+    foreach ($suite in @('launcher', 'about', 'translations', 'helper-console')) {
         & (Join-Path $repositoryRoot "tests\windows\$suite.ps1") -Executable $Executable -OutputDirectory $OutputDirectory -Capture:$Capture
         if (-not $?) { throw "Échec de la suite native $suite." }
     }
