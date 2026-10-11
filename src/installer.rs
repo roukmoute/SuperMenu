@@ -704,6 +704,7 @@ enum Operation {
     List,
     ListName,
     Install,
+    Restore,
     RemoveId,
     RemoveName,
 }
@@ -712,7 +713,7 @@ fn command_args(operation: Operation, id: &str) -> Vec<&str> {
     let mut args = vec![
         match operation {
             Operation::List | Operation::ListName => "list",
-            Operation::Install => "install",
+            Operation::Install | Operation::Restore => "install",
             Operation::RemoveId | Operation::RemoveName => "uninstall",
         },
         if matches!(operation, Operation::ListName | Operation::RemoveName) {
@@ -731,8 +732,17 @@ fn command_args(operation: Operation, id: &str) -> Vec<&str> {
         args.extend(["--source", "winget"]);
     }
     args.extend(["--accept-source-agreements", "--disable-interactivity"]);
-    if operation == Operation::Install {
-        args.extend(["--no-upgrade", "--accept-package-agreements", "--silent"]);
+    if matches!(operation, Operation::Install | Operation::Restore) {
+        // A missing executable can leave an installed MSI registration behind.
+        // Force applies only to this independently verified broken installation;
+        // never bypass the manifest hash or certificate checks.
+        // https://github.com/microsoft/winget-cli/blob/v1.29.380/src/AppInstallerCLICore/Commands/InstallCommand.cpp
+        args.push(if operation == Operation::Restore {
+            "--force"
+        } else {
+            "--no-upgrade"
+        });
+        args.extend(["--accept-package-agreements", "--silent"]);
     } else if matches!(operation, Operation::RemoveId | Operation::RemoveName) {
         args.push("--silent");
     }
@@ -741,6 +751,7 @@ fn command_args(operation: Operation, id: &str) -> Vec<&str> {
 
 trait Runner {
     fn run(&mut self, operation: Operation, id: &str) -> Result<i32, String>;
+    fn executable_presence(&mut self, id: &str) -> Option<bool>;
 }
 
 struct SystemRunner {
@@ -748,6 +759,10 @@ struct SystemRunner {
 }
 
 impl Runner for SystemRunner {
+    fn executable_presence(&mut self, id: &str) -> Option<bool> {
+        packages::installed_executable_presence(id)
+    }
+
     fn run(&mut self, operation: Operation, id: &str) -> Result<i32, String> {
         let args = command_args(operation, id);
         println!("> winget {}\n", args.join(" "));
@@ -808,21 +823,38 @@ fn perform_install(
     check_only: bool,
 ) -> Result<Outcome, Failure> {
     let status = runner.run(Operation::List, id).map_err(Failure::local)?;
-    match status as u32 {
+    let operation = match status as u32 {
+        0 if runner.executable_presence(id) == Some(false) => Operation::Restore,
         0 => return Ok(Outcome::AlreadyInstalled),
-        NO_APPLICATIONS_FOUND => {}
+        NO_APPLICATIONS_FOUND => Operation::Install,
         _ => return Err(Failure::winget(
             status,
             "Impossible de déterminer si le logiciel est déjà installé. Aucune installation lancée",
         )),
-    }
+    };
     if check_only {
-        return Err(Failure::winget(
-            status,
+        return Err(Failure::local(
             "Le logiciel est absent. Le diagnostic n'installe aucun logiciel",
         ));
     }
-    let status = runner.run(Operation::Install, id).map_err(Failure::local)?;
+    let status = runner.run(operation, id).map_err(Failure::local)?;
+    if operation == Operation::Restore {
+        return match status as u32 {
+            0 | PACKAGE_ALREADY_INSTALLED | UPDATE_NOT_APPLICABLE => {
+                // A successful exit or an MSI registration alone cannot prove
+                // that the application can actually be launched again.
+                if runner.executable_presence(id) == Some(true) {
+                    Ok(Outcome::Installed)
+                } else {
+                    Err(Failure::local("L'installation n'a pas pu être confirmée"))
+                }
+            }
+            _ => Err(Failure::winget(
+                status,
+                "L'installation a échoué ou a été annulée",
+            )),
+        };
+    }
     match status as u32 {
         0 => Ok(Outcome::Installed),
         PACKAGE_ALREADY_INSTALLED => Ok(Outcome::AlreadyInstalled),
@@ -1170,6 +1202,7 @@ mod tests {
     struct FakeRunner {
         results: VecDeque<Result<i32, String>>,
         calls: Vec<Operation>,
+        presence: VecDeque<Option<bool>>,
     }
 
     impl FakeRunner {
@@ -1177,11 +1210,16 @@ mod tests {
             Self {
                 results: codes.iter().map(|code| Ok(*code as i32)).collect(),
                 calls: Vec::new(),
+                presence: VecDeque::new(),
             }
         }
     }
 
     impl Runner for FakeRunner {
+        fn executable_presence(&mut self, _id: &str) -> Option<bool> {
+            self.presence.pop_front().flatten()
+        }
+
         fn run(&mut self, operation: Operation, _id: &str) -> Result<i32, String> {
             self.calls.push(operation);
             self.results.pop_front().expect("Unexpected WinGet command")
@@ -1368,6 +1406,80 @@ mod tests {
         runner.results.push_back(Err("Access denied".into()));
         assert!(perform_install(&mut runner, "Git.Git", false).is_err());
         assert_eq!(runner.calls, vec![Operation::List]);
+    }
+
+    #[test]
+    fn orphan_chrome_registration_restores_only_a_verified_missing_executable() {
+        let mut runner = FakeRunner::codes(&[0, 0]);
+        runner.presence.extend([Some(false), Some(true)]);
+        assert_eq!(
+            perform_install(&mut runner, "Google.Chrome", false).unwrap(),
+            Outcome::Installed
+        );
+        assert_eq!(runner.calls, [Operation::List, Operation::Restore]);
+        let args = command_args(Operation::Restore, "Google.Chrome");
+        assert_eq!(
+            &args[..6],
+            [
+                "install",
+                "--id",
+                "Google.Chrome",
+                "--exact",
+                "--source",
+                "winget"
+            ]
+        );
+        assert!(args.contains(&"--force"));
+        assert!(!args.contains(&"--no-upgrade"));
+        assert!(!args.contains(&"--ignore-security-hash"));
+        assert!(!args.contains(&"--ignore-local-archive-malware-scan"));
+        for presence in [Some(true), None] {
+            let mut runner = FakeRunner::codes(&[0]);
+            runner.presence.push_back(presence);
+            assert_eq!(
+                perform_install(&mut runner, "Google.Chrome", false).unwrap(),
+                Outcome::AlreadyInstalled
+            );
+            assert_eq!(runner.calls, [Operation::List]);
+        }
+    }
+
+    #[test]
+    fn orphan_diagnostic_and_uncertain_list_never_restore_an_application() {
+        let mut runner = FakeRunner::codes(&[0]);
+        runner.presence.push_back(Some(false));
+        let error = perform_install(&mut runner, "Google.Chrome", true).unwrap_err();
+        assert_ne!(error.code, 0);
+        assert_eq!(runner.calls, [Operation::List]);
+        for status in [5, 0x8A15_0045] {
+            let mut runner = FakeRunner::codes(&[status]);
+            runner.presence.push_back(Some(false));
+            assert!(perform_install(&mut runner, "Google.Chrome", false).is_err());
+            assert_eq!(runner.calls, [Operation::List]);
+        }
+    }
+
+    #[test]
+    fn restored_registration_requires_a_real_executable_before_success() {
+        for status in [0, PACKAGE_ALREADY_INSTALLED, UPDATE_NOT_APPLICABLE] {
+            for presence in [Some(false), None] {
+                let mut runner = FakeRunner::codes(&[0, status]);
+                runner.presence.extend([Some(false), presence]);
+                let failure = perform_install(&mut runner, "Google.Chrome", false).unwrap_err();
+                assert_ne!(failure.code, 0);
+                assert_eq!(runner.calls, [Operation::List, Operation::Restore]);
+            }
+        }
+        for status in [1603, 0x8A15_0005] {
+            let mut runner = FakeRunner::codes(&[0, status]);
+            runner.presence.extend([Some(false), Some(true)]);
+            assert_eq!(
+                perform_install(&mut runner, "Google.Chrome", false)
+                    .unwrap_err()
+                    .code as u32,
+                status
+            );
+        }
     }
 
     #[test]

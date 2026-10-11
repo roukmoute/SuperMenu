@@ -4,13 +4,13 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. Le binaire mesuré de la version **0.6.1** fait **1 154 560 octets (1,10 Mio)**, soit **27,8 % de moins** que la version précédente reconstruite avec le même compilateur. Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances](PERFORMANCE.md) précise la méthode et les compromis.
+Windows 10 et 11, x64. L'exécutable autonome fait **environ 1,1 Mio**. Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances de la version 0.6.1](PERFORMANCE.md) détaille la réduction de taille de 27,8 %, la méthode et les compromis.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
 Les clés de recherche sont préparées pendant l'indexation ; la frappe filtre les candidats et sélectionne les meilleurs résultats sans trier tout le catalogue. Le menu garde ses fournisseurs fixes et ses textes traduits en mémoire, et réutilise sa mémoire de conversion UTF-16 ainsi que les ressources de dessin Windows. La restauration du cache utilise une vue de fichier en lecture seule ; sa sauvegarde écrit les éléments empruntés sans recopier l'index complet. Les mesures reproductibles du moteur, du cache et du menu sont décrites dans le [guide de tests](TESTING.md#mesurer-les-performances).
 
-Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **174 tests Rust**, le benchmark de cache facultatif et les **755 assertions Windows** passent.
+Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **181 tests Rust**, le benchmark de cache facultatif et les **768 assertions Windows** passent.
 
 ## Langues
 
@@ -70,6 +70,8 @@ Saisir `firefox` : si Firefox n'est pas installé, le résultat indique **« Ins
 Les propositions proviennent d'un petit catalogue intégré de **52 logiciels** : Firefox, Chrome, Brave, Vivaldi, 7-Zip, VLC, Spotify, Discord, Steam, VS Code, Git, PowerToys, LibreOffice, Obsidian et d'autres. `+` permet de parcourir les logiciels absents. Le catalogue ne couvre pas tous les paquets WinGet ; ses entrées sont définies dans [src/packages.rs](src/packages.rs). Le menu Démarrer, les applications Windows et le registre des désinstallations permettent de reconnaître les logiciels déjà présents, même installés autrement qu'avec WinGet. Cette détection s'effectue pendant l'indexation ; aucune requête réseau n'est effectuée pendant la frappe.
 
 Cette fonction utilise [WinGet, fourni par Microsoft App Installer](https://learn.microsoft.com/en-us/windows/package-manager/winget/). S'il est indisponible, la console indique comment installer App Installer depuis le Microsoft Store. Le lanceur et sa recherche fonctionnent aussi sans WinGet. Super Menu ne télécharge aucun gestionnaire de paquets supplémentaire.
+
+Une ancienne inscription de **Google Chrome** dans Windows ne masque plus son installation lorsque son chemin d'exécutable enregistré et les emplacements connus sont tous absents. Cette vérification se fait en arrière-plan, puis son résultat est conservé en mémoire. `chrome` et `+ chrome` proposent alors **Installer** ; `- chrome` garde l'accès explicite à la suppression de l'inscription restante. Lors de la validation, le helper vérifie à nouveau l'exécutable et réinstalle ce logiciel si nécessaire, même si WinGet le voit encore dans son inventaire. Une installation normale déjà présente reste inchangée, et une présence incertaine ne déclenche pas de réinstallation.
 
 ![Une proposition d'installation dans Super Menu](docs/install.png)
 

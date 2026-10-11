@@ -63,6 +63,18 @@ try {
     [void](Assert-OwnResults 'explicit removal search without activation' '- steam' @('uninstall:id:Valve.Steam') @('Uninstall'))
     Set-OwnQuery '+ obsidian'
     [void](Assert-OwnResults 'explicit installation search without activation' '+ obsidian' @('install:Obsidian.Obsidian') @('Install'))
+    # An absent Chrome must offer installation from both normal and explicit queries.
+    # Inspect the real UI rows without activating a program or a package operation.
+    Set-OwnQuery 'chrome'
+    $chrome = Assert-OwnResults 'absent Chrome offers installation' 'chrome' @('install:Google.Chrome') @('Install')
+    Assert-Test -Context $context -Condition ($chrome.items[0].title -ceq 'Google Chrome') -Name 'absent Chrome has the exact catalog application title'
+    Assert-Test -Context $context -Condition (([string]$chrome.items[0].subtitle).StartsWith('Installer ·', [StringComparison]::Ordinal)) -Name 'absent Chrome visibly offers installation in the default search'
+    Set-OwnQuery '+ chrome'
+    $chromeInstall = Assert-OwnResults 'explicit absent Chrome installation' '+ chrome' @('install:Google.Chrome') @('Install')
+    Assert-Test -Context $context -Condition ($chromeInstall.items[0].title -ceq 'Google Chrome') -Name 'explicit Chrome installation has the exact catalog application title'
+    Assert-Test -Context $context -Condition (([string]$chromeInstall.items[0].subtitle).StartsWith('Installer ·', [StringComparison]::Ordinal)) -Name 'explicit Chrome installation has the installation subtitle'
+    Set-OwnQuery '@ chrome'
+    [void](Assert-OwnResults 'absent Chrome has no launchable application' '@ chrome' @() @('Application'))
     Set-OwnQuery 'path-only-token'
     [void](Assert-OwnResults 'target metadata is not an application name' 'path-only-token' @() @('Application'))
     Set-OwnQuery 'zebra'

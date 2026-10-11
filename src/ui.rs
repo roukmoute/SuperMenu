@@ -97,6 +97,7 @@ struct State {
     index: Arc<Mutex<Vec<Item>>>,
     installed_names: Arc<Mutex<Vec<String>>>,
     removable_names: Arc<Mutex<Vec<String>>>,
+    confirmed_absent_packages: Arc<Mutex<HashSet<String>>>,
     missing_packages: Vec<Item>,
     removable_packages: Vec<Item>,
     installations: Installations,
@@ -321,6 +322,20 @@ impl Installations {
         self.completed
             .retain(|id| missing.iter().any(|item| &item.target == id));
         missing.retain(|item| !self.completed.contains(&item.target));
+    }
+
+    fn refresh_missing_with_absent(
+        &mut self,
+        missing: &mut Vec<Item>,
+        absent: &HashSet<String>,
+        observed_generation: usize,
+        required_generation: usize,
+    ) {
+        // A cached absence from before the installation cannot override success.
+        if observed_generation >= required_generation {
+            self.completed.retain(|id| !absent.contains(id));
+        }
+        self.refresh_missing(missing);
     }
 }
 
@@ -610,6 +625,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             index: Arc::new(Mutex::new(cache)),
             installed_names: Arc::new(Mutex::new(Vec::new())),
             removable_names: Arc::new(Mutex::new(Vec::new())),
+            confirmed_absent_packages: Arc::new(Mutex::new(HashSet::new())),
             missing_packages: Vec::new(),
             removable_packages: Vec::new(),
             installations: Installations::default(),
@@ -1081,9 +1097,23 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 })
                 .cloned()
                 .collect();
-            s.missing_packages =
-                packages::missing_items(&visible_apps, &visible_names, &HashSet::new());
-            s.installations.refresh_missing(&mut s.missing_packages);
+            let confirmed_absent = s
+                .confirmed_absent_packages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            s.missing_packages = packages::missing_items_with_absent(
+                &visible_apps,
+                &visible_names,
+                &HashSet::new(),
+                &confirmed_absent,
+            );
+            s.installations.refresh_missing_with_absent(
+                &mut s.missing_packages,
+                &confirmed_absent,
+                s.catalog_ready.load(Ordering::Acquire),
+                s.index_generation,
+            );
+            drop(confirmed_absent);
             let removable_names = s.removable_names.lock().unwrap_or_else(|e| e.into_inner());
             let available = packages::removable_items_with_inventory(
                 &index,
@@ -2457,6 +2487,7 @@ unsafe fn reindex(s: &mut State) {
     let index = s.index.clone();
     let installed_names = s.installed_names.clone();
     let removable_names = s.removable_names.clone();
+    let confirmed_absent_packages = s.confirmed_absent_packages.clone();
     s.index_generation = s.index_generation.saturating_add(1);
     let generation = s.index_generation;
     let catalog_ready = s.catalog_ready.clone();
@@ -2477,6 +2508,10 @@ unsafe fn reindex(s: &mut State) {
         }
         let apps = native::app_catalog();
         let (all_names, remove_names) = packages::installed_inventory();
+        let absent = packages::confirmed_absent_packages(&all_names);
+        *confirmed_absent_packages
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = absent;
         *installed_names.lock().unwrap_or_else(|e| e.into_inner()) = all_names;
         *removable_names.lock().unwrap_or_else(|e| e.into_inner()) = remove_names;
         if i18n::revision() == language_revision {
@@ -4156,6 +4191,29 @@ mod tests {
         installs.refresh_missing(&mut removed);
         assert!(removed.iter().any(|item| item.target == "Mozilla.Firefox"));
         assert!(installs.start("Mozilla.Firefox").is_some());
+    }
+
+    #[test]
+    fn only_fresh_conclusive_absence_can_override_an_install_success() {
+        let mut installs = Installations::default();
+        let request = installs.start("Google.Chrome").unwrap();
+        installs.finish(request, true).unwrap();
+        let absent = HashSet::from(["Google.Chrome".to_string()]);
+        let missing = packages::missing_items_with_absent(
+            &[],
+            &["Google Chrome".into()],
+            &HashSet::new(),
+            &absent,
+        );
+        let mut stale = missing.clone();
+        installs.refresh_missing_with_absent(&mut stale, &absent, 3, 4);
+        assert!(installs.completed.contains("Google.Chrome"));
+        assert!(!stale.iter().any(|item| item.target == "Google.Chrome"));
+        let mut fresh = missing;
+        installs.refresh_missing_with_absent(&mut fresh, &absent, 4, 4);
+        assert!(fresh.iter().any(|item| item.target == "Google.Chrome"));
+        assert!(!installs.completed.contains("Google.Chrome"));
+        assert!(installs.start("Google.Chrome").is_some());
     }
 
     #[test]

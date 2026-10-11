@@ -3,6 +3,7 @@
 //! A manifest lives at manifests/{publisher initial}/{dot-separated ID components}.
 use crate::core::{self, Item, Kind};
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
@@ -442,6 +443,17 @@ pub fn missing_items(
     installed_names: &[String],
     completed: &HashSet<String>,
 ) -> Vec<Item> {
+    missing_items_with_absent(index, installed_names, completed, &HashSet::new())
+}
+
+/// Absence evidence comes from the catalog worker, never the search path. Keep
+/// raw registry inventory available independently for protected removal rules.
+pub fn missing_items_with_absent(
+    index: &[Item],
+    installed_names: &[String],
+    completed: &HashSet<String>,
+    confirmed_absent: &HashSet<String>,
+) -> Vec<Item> {
     let names: Vec<String> = index
         .iter()
         .filter(|item| item.kind == Kind::Application)
@@ -454,10 +466,196 @@ pub fn missing_items(
             !completed
                 .iter()
                 .any(|id| id.eq_ignore_ascii_case(package.package.id))
-                && !names.iter().any(|name| installed_match(name, package))
+                && (confirmed_absent.contains(package.package.id)
+                    || !names.iter().any(|name| installed_match(name, package)))
         })
         .map(|package| package_item(package.package))
         .collect()
+}
+
+/// Only Chrome has a bounded executable-presence policy. An orphan installer
+/// registration alone must not hide installation; uncertainty never proves
+/// absence. This function is restricted to catalog/installer worker threads.
+pub fn installed_executable_presence(id: &str) -> Option<bool> {
+    if !id.eq_ignore_ascii_case("Google.Chrome") {
+        return None;
+    }
+    let (registered, mut uncertain) = chrome_registered_paths();
+    let mut candidates = Vec::with_capacity(21);
+    for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        match std::env::var_os(variable).map(PathBuf::from) {
+            Some(root) if root.is_absolute() => {
+                for channel in [
+                    "Chrome",
+                    "Chrome Beta",
+                    "Chrome Dev",
+                    "Chrome SxS",
+                    "ChromeBeta",
+                    "ChromeDev",
+                    "ChromeSxS",
+                ] {
+                    candidates.push(
+                        root.join("Google")
+                            .join(channel)
+                            .join("Application/chrome.exe"),
+                    );
+                }
+            }
+            _ => uncertain = true,
+        }
+    }
+    executable_presence_from_paths(&registered, &candidates, uncertain, executable_file_present)
+}
+
+fn executable_file_present(path: &Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn confirmed_absent_packages(installed_names: &[String]) -> HashSet<String> {
+    let mut absent = HashSet::new();
+    let chrome = prepared()
+        .iter()
+        .find(|package| package.package.id == "Google.Chrome")
+        .unwrap();
+    if installed_names
+        .iter()
+        .any(|name| installed_match(&normalize(name), chrome))
+        && installed_executable_presence("Google.Chrome") == Some(false)
+    {
+        absent.insert("Google.Chrome".into());
+    }
+    absent
+}
+
+fn registered_executable_path(value: &str) -> Option<PathBuf> {
+    let value = value.trim();
+    let value = if value.starts_with('"') {
+        value.strip_prefix('"')?.strip_suffix('"')?
+    } else {
+        value
+    };
+    if value.is_empty() || value.contains('"') || value.chars().any(char::is_control) {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
+fn executable_presence_from_paths(
+    registered: &[String],
+    candidates: &[PathBuf],
+    mut uncertain: bool,
+    mut probe: impl FnMut(&Path) -> std::io::Result<bool>,
+) -> Option<bool> {
+    let mut registered_path_observed = false;
+    for value in registered {
+        let Some(path) = registered_executable_path(value) else {
+            uncertain = true;
+            continue;
+        };
+        registered_path_observed = true;
+        match probe(&path) {
+            Ok(true) => return Some(true),
+            Ok(false) => {}
+            Err(_) => uncertain = true,
+        }
+    }
+    for path in candidates {
+        match probe(path) {
+            Ok(true) => return Some(true),
+            Ok(false) => {}
+            Err(_) => uncertain = true,
+        }
+    }
+    (registered_path_observed && !uncertain).then_some(false)
+}
+
+fn chrome_registered_paths() -> (Vec<String>, bool) {
+    use windows_sys::Win32::Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
+    };
+    use windows_sys::Win32::System::Registry::{
+        RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ,
+        KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_EXPAND_SZ, REG_SZ,
+    };
+    let key_name = wide("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe");
+    let mut paths = Vec::new();
+    let mut uncertain = false;
+    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+            let mut key = std::ptr::null_mut();
+            let status =
+                unsafe { RegOpenKeyExW(root, key_name.as_ptr(), 0, KEY_READ | view, &mut key) };
+            if matches!(status, ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) {
+                continue;
+            }
+            if status != ERROR_SUCCESS {
+                uncertain = true;
+                continue;
+            }
+            let key = RegistryKey(key);
+            let mut bytes = [0u16; 2048];
+            let mut length = std::mem::size_of_val(&bytes) as u32;
+            let mut kind = 0;
+            let status = unsafe {
+                RegQueryValueExW(
+                    key.0,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    &mut kind,
+                    bytes.as_mut_ptr().cast(),
+                    &mut length,
+                )
+            };
+            if status != ERROR_SUCCESS
+                || !matches!(kind, REG_SZ | REG_EXPAND_SZ)
+                || length == 0
+                || !length.is_multiple_of(2)
+                || length as usize > std::mem::size_of_val(&bytes)
+            {
+                uncertain = true;
+                continue;
+            }
+            let bytes = &bytes[..length as usize / 2];
+            let end = bytes
+                .iter()
+                .position(|value| *value == 0)
+                .unwrap_or(bytes.len());
+            let Ok(value) = String::from_utf16(&bytes[..end]) else {
+                uncertain = true;
+                continue;
+            };
+            let value = if kind == REG_EXPAND_SZ {
+                let Some(value) = expand_registered_environment(&value) else {
+                    uncertain = true;
+                    continue;
+                };
+                value
+            } else {
+                value
+            };
+            paths.push(value);
+        }
+    }
+    (paths, uncertain)
+}
+
+fn expand_registered_environment(value: &str) -> Option<String> {
+    let mut result = String::new();
+    let mut remaining = value;
+    while let Some(start) = remaining.find('%') {
+        result.push_str(&remaining[..start]);
+        let after = &remaining[start + 1..];
+        let end = after.find('%')?;
+        result.push_str(&std::env::var(&after[..end]).ok()?);
+        remaining = &after[end + 1..];
+    }
+    result.push_str(remaining);
+    Some(result)
 }
 
 // Presence detection intentionally groups channels to avoid advertising another browser
@@ -1072,7 +1270,20 @@ pub fn search_with_removals(
             remaining.push(item);
         }
     }
-    direct_apps.extend(ranked_removals(removals, query, limit, weights, false));
+    direct_apps.extend(
+        ranked_removals(removals, query, limit, weights, false)
+            .into_iter()
+            .filter(|item| {
+                // A confirmed-absent product can retain an orphan removal entry.
+                // Its cached install action is the useful default; explicit '-'
+                // queries above still expose the raw entry for residue cleanup.
+                !item.target.strip_prefix("id:").is_some_and(|id| {
+                    missing.iter().any(|candidate| {
+                        candidate.kind == Kind::Install && candidate.target.eq_ignore_ascii_case(id)
+                    })
+                })
+            }),
+    );
     direct_apps.extend(remaining);
     direct_apps.truncate(limit);
     direct_apps
@@ -1338,6 +1549,146 @@ mod tests {
         assert!(result[0]
             .subtitle
             .starts_with("Installer · Navigateur · WinGet"));
+    }
+
+    #[test]
+    fn executable_absence_requires_registered_paths_and_complete_evidence() {
+        let valid = r#""C:\Custom Chrome\Application\chrome.exe""#.to_string();
+        let candidates = [PathBuf::from(r"C:\Other Chrome\chrome.exe")];
+        assert_eq!(
+            executable_presence_from_paths(
+                std::slice::from_ref(&valid),
+                &candidates,
+                false,
+                |_| Ok(false)
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            executable_presence_from_paths(&[], &candidates, false, |_| Ok(false)),
+            None
+        );
+        assert_eq!(
+            executable_presence_from_paths(
+                std::slice::from_ref(&valid),
+                &candidates,
+                true,
+                |_| Ok(false)
+            ),
+            None
+        );
+        for malformed in [
+            "relative\\chrome.exe",
+            r#""C:\Chrome\chrome.exe" --flag"#,
+            "",
+            "C:\\bad\nchrome.exe",
+        ] {
+            let paths = [valid.clone(), malformed.into()];
+            assert_eq!(
+                executable_presence_from_paths(&paths, &candidates, false, |_| Ok(false)),
+                None,
+                "{malformed:?}"
+            );
+        }
+        assert_eq!(
+            executable_presence_from_paths(&[valid], &candidates, false, |_| Err(
+                std::io::ErrorKind::PermissionDenied.into()
+            )),
+            None
+        );
+        assert_eq!(installed_executable_presence("Notepad++.Notepad++"), None);
+        assert_eq!(installed_executable_presence("Unknown.Package"), None);
+    }
+
+    #[test]
+    fn registered_custom_executable_and_variants_prove_presence() {
+        use std::io::Write;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let fixture = Fixture(std::env::temp_dir().join(format!(
+            "Super Menu custom Chrome-{}-{nonce}.exe",
+            std::process::id()
+        )));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&fixture.0)
+            .unwrap();
+        file.write_all(b"Disposable presence fixture; never executed.")
+            .unwrap();
+        drop(file);
+        let registered = [
+            "relative\\chrome.exe".into(),
+            format!("\"{}\"", fixture.0.display()),
+        ];
+        assert_eq!(
+            executable_presence_from_paths(&registered, &[], true, executable_file_present),
+            Some(true)
+        );
+        // An installed standard/variant executable also wins over incomplete
+        // registry evidence; an App Paths entry is required only for absence.
+        assert_eq!(
+            executable_presence_from_paths(
+                &[],
+                std::slice::from_ref(&fixture.0),
+                true,
+                executable_file_present
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn orphan_chrome_registration_allows_install_without_weakening_removal() {
+        let index = [app("Google Chrome"), app("Notepad++")];
+        let registry = ["Google Chrome".into(), "Notepad++".into()];
+        let absent = HashSet::from(["Google.Chrome".to_string()]);
+        let ordinary = missing_items(&index, &registry, &HashSet::new());
+        assert!(!ordinary.iter().any(|item| item.target == "Google.Chrome"));
+        let missing = missing_items_with_absent(&index, &registry, &HashSet::new(), &absent);
+        assert!(missing.iter().any(|item| item.target == "Google.Chrome"));
+        assert!(!missing
+            .iter()
+            .any(|item| item.target == "Notepad++.Notepad++"));
+        for query in ["chrome", "+ chrome"] {
+            let results = search(&[], &missing, query, 9, &HashMap::new());
+            assert!(
+                results
+                    .iter()
+                    .any(|item| item.kind == Kind::Install && item.target == "Google.Chrome"),
+                "{query}"
+            );
+        }
+        let removals = removable_items(&index, &registry);
+        for query in ["chrome", "+ chrome"] {
+            let results = search_with_removals(&[], &missing, &removals, query, 9, &HashMap::new());
+            assert_eq!(
+                results
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["install:Google.Chrome"],
+                "{query}"
+            );
+        }
+        let explicit =
+            search_with_removals(&[], &missing, &removals, "- chrome", 9, &HashMap::new());
+        assert_eq!(
+            explicit
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["uninstall:id:Google.Chrome"]
+        );
+        assert!(!removal_is_allowed("id:Google.Chrome", &registry, &[]));
     }
 
     #[test]
