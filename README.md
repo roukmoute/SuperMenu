@@ -30,6 +30,8 @@ Télécharger l'archive depuis les [releases](https://github.com/roukmoute/Super
 
 Seul `supermenu.exe` est nécessaire pour utiliser l'application. Les autres fichiers de l'archive sont la documentation, la licence, un rapport de performances et un exemple de configuration. **Ctrl + Retour arrière** supprime le mot précédent ou la sélection dans la recherche ; **Ctrl + Z** annule cette suppression.
 
+Les onglets et les modules de l'accueil affichent leur raccourci : **Applications @**, **Installer +**, **Désinstaller -**, **Fichiers /**, **Calculatrice =**, **Recherche web ?**, etc. Cliquer sur le module insère le préfixe ; on peut aussi le taper directement dans la recherche. **À propos** indique sa recherche `; À propos`.
+
 Lors du lancement d'une application, un petit pop-in **« Lancement de [application]… »** apparaît immédiatement pendant **deux secondes**, en bas de l'écran du menu. Il reprend le thème et la couleur d'accent, laisse passer les clics et ne prend pas le focus. L'ouverture s'effectue en arrière-plan : le menu peut être rouvert avec Win + Espace pendant qu'une application démarre. Rouvrir le menu masque le pop-in ; la réponse de lancement ne referme pas ce menu.
 
 Les validations répétées de la même application sont regroupées pendant ces deux secondes, ainsi que tant que Windows traite la demande. Une erreur retire cette protection pour permettre de réessayer et affiche le message de Windows. Le pop-in confirme une demande d'ouverture ; sa durée est fixe et ne dépend pas de l'apparition de la fenêtre de l'application.

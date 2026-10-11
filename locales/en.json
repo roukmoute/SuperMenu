@@ -503,6 +503,7 @@
     "↑ ↓ naviguer   ↵ sélectionner   Échap fermer": "↑ ↓ navigate   ↵ select   Esc close",
     "Installation de {name} interrompue · détails dans les rapports": "Installation of {name} interrupted · details in reports",
     "Désinstallation interrompue · détails dans les rapports": "Uninstall interrupted · details in reports",
-    "Dernières opérations de logiciels": "Recent software operations"
+    "Dernières opérations de logiciels": "Recent software operations",
+    "minuteur": "timer"
   }
 }

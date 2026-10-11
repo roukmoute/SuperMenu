@@ -159,6 +159,8 @@ struct CachedUi {
     system: Vec<Item>,
     tagline: String,
     tabs: [String; 5],
+    timer_shortcut: String,
+    about_shortcut: String,
     hotkey: String,
     empty: String,
     empty_indexing: String,
@@ -214,7 +216,15 @@ impl CachedUi {
             .collect(),
             system: system_items(),
             tagline: i18n::tr("/   À portée de clavier"),
-            tabs: ["Accueil", "Applications", "Fichiers", "Web", "Modules  ;"].map(i18n::tr),
+            tabs: [
+                i18n::tr("Accueil"),
+                format!("{}  @", i18n::tr("Applications")),
+                format!("{}  /", i18n::tr("Fichiers")),
+                format!("{}  ?", i18n::tr("Web")),
+                i18n::tr("Modules  ;"),
+            ],
+            timer_shortcut: i18n::tr("minuteur"),
+            about_shortcut: format!("; {}", i18n::tr("À propos")),
             hotkey: settings.hotkey.replace('+', " + "),
             empty: i18n::tr("Aucun résultat"),
             empty_indexing: i18n::tr("L'index se construit en arrière-plan…"),
@@ -1528,6 +1538,20 @@ fn navigation() -> Vec<Item> {
         )
     })
     .collect()
+}
+
+fn navigation_shortcut<'a>(item: &'a Item, cached: &'a CachedUi) -> Option<(&'a str, i32)> {
+    if item.kind != Kind::Navigation {
+        return None;
+    }
+    match item.target.trim() {
+        prefix @ ("@" | "+" | "-" | "/" | "=" | "?" | ">" | ":" | "~" | "." | "!") => {
+            Some((prefix, 28))
+        }
+        "minuteur" => Some((&cached.timer_shortcut, 76)),
+        "about" => Some((&cached.about_shortcut, 96)),
+        _ => None,
+    }
 }
 
 unsafe fn update_results(s: &mut State) {
@@ -2959,6 +2983,8 @@ unsafe fn paint(s: &State, dc: HDC) {
     let offset = s.selected.saturating_sub(s.visible_rows.saturating_sub(1));
     for (row, item) in s.items.iter().skip(offset).take(s.visible_rows).enumerate() {
         let y = ROW_TOP + row as i32 * ROW_HEIGHT;
+        let shortcut = navigation_shortcut(item, &s.cached_ui);
+        let content_width = shortcut.map_or(w - 134, |(_, width)| w - 62 - width - 12 - 83);
         if row + offset == s.selected {
             rect(
                 dc,
@@ -3004,7 +3030,7 @@ unsafe fn paint(s: &State, dc: HDC) {
             &item.title,
             scale(83),
             scale(y + 4),
-            scale(w - 134),
+            scale(content_width),
             scale(23),
             false,
         );
@@ -3016,10 +3042,38 @@ unsafe fn paint(s: &State, dc: HDC) {
             &item.subtitle,
             scale(83),
             scale(y + 26),
-            scale(w - 134),
+            scale(content_width),
             scale(16),
             false,
         );
+        if let Some((label, width)) = shortcut {
+            let x = w - 62 - width;
+            rect(
+                dc,
+                s.palette.panel,
+                scale(x),
+                scale(y + 12),
+                scale(width),
+                scale(24),
+                scale(5),
+            );
+            text(
+                dc,
+                scratch,
+                s.fonts[2],
+                if row + offset == s.selected {
+                    s.palette.accent
+                } else {
+                    s.palette.muted
+                },
+                label,
+                scale(x + 8),
+                scale(y + 12),
+                scale(width - 16),
+                scale(24),
+                false,
+            );
+        }
         text(
             dc,
             scratch,
