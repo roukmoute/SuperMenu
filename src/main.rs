@@ -12,6 +12,7 @@ mod language_dialog;
 mod launch_feedback;
 mod native;
 mod packages;
+mod setup_control;
 mod system_info;
 mod timer;
 mod timer_alert;
@@ -21,6 +22,9 @@ mod uninstall_inventory;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = setup_control::run_from_args(&args) {
+        std::process::exit(code);
+    }
     if let Some(code) = installer::run_from_args(&args) {
         std::process::exit(code);
     }

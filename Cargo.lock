@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "supermenu"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "serde",
  "serde_json",

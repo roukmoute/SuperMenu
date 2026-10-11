@@ -18,6 +18,7 @@ Prérequis : Windows x64, PowerShell 7, Rust MSVC avec `rustfmt` et `clippy`, et
 | `tests/windows/translations.ps1` | Menus et fenêtre À propos en anglais, identité inchangée des applications et paquets, vrai sélecteur français/anglais, réutilisation du cache sans réécriture. |
 | `tests/windows/about.ps1` | Ouverture et contenu de la fenêtre À propos dans les deux thèmes, version et compteurs, fermetures par Échap/croix/bouton, réouverture de la même fenêtre, redimensionnement, défilement, boutons restant accessibles et ressources GDI/USER bornées. |
 | `tests/windows/helper-console.ps1` | Fermeture automatique après une erreur d'installation ou de désinstallation, code de sortie conservé, rapport local, diagnostic sans attente et absence de sélection rapide bloquante. Les requêtes de test échouent avant tout appel à WinGet. |
+| `tests/windows/setup.ps1` | Vraie installation NSIS, raccourcis et inscription Windows, options facultatives, mise à jour pendant que l'instance de test tourne, refus des processus inconnus, désinstallation et conservation des données. Chaque installateur utilise un nom et un dossier de test isolés. |
 
 Les suites Windows conduisent l'exécutable construit, observent ses fenêtres et ses résultats réels, et échouent sur une régression. Elles ne recalculent pas le classement dans le script. Elles vérifient aussi les noms et résultats de tous les contrôles `--smoke-test` ; un simple code de sortie nul ne suffit pas.
 
@@ -58,6 +59,7 @@ On peut aussi exécuter séparément une suite :
 .\tests\windows\about.ps1 -Executable .\target\release\supermenu.exe
 .\tests\windows\translations.ps1 -Executable .\target\release\supermenu.exe
 .\tests\windows\helper-console.ps1 -Executable .\target\release\supermenu.exe
+.\tests\windows\setup.ps1 -Executable .\target\release\supermenu.exe
 ```
 
 Un ancien exécutable publié peut ne pas contenir les diagnostics ajoutés depuis sa publication : compiler le checkout testé. `--smoke-fixture`, le message de snapshot des résultats et le diagnostic Ctrl+Retour arrière sont réservés au mode de test. Le diagnostic de clavier modifie seulement l'état de la file d'entrée du thread UI de ce processus, puis le restaure ; il ne simule pas une touche globale.

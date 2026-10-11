@@ -12,7 +12,7 @@ Le programme utilise les contrôles et API de Windows : aucun navigateur embarqu
 
 Les clés de recherche sont préparées pendant l'indexation ; la frappe filtre les candidats et sélectionne les meilleurs résultats sans trier tout le catalogue. Le menu garde ses fournisseurs fixes et ses textes traduits en mémoire, et réutilise sa mémoire de conversion UTF-16 ainsi que les ressources de dessin Windows. La restauration du cache utilise une vue de fichier en lecture seule ; sa sauvegarde écrit les éléments empruntés sans recopier l'index complet. Les mesures reproductibles du moteur, du cache et du menu sont décrites dans le [guide de tests](TESTING.md#mesurer-les-performances).
 
-Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **196 tests Rust**, le benchmark de cache facultatif et les **851 assertions Windows** passent.
+Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **198 tests Rust**, le benchmark de cache facultatif et les **997 assertions Windows** passent, dont 146 assertions sur de vrais tests d'installation, de mise à jour et de désinstallation isolés.
 
 ## Langues
 
@@ -26,7 +26,11 @@ Les traductions sont modifiables et versionnées dans [`locales/`](locales/READM
 
 **À propos** ouvre une fenêtre native inspirée des écrans d'information système : grand titre Super Menu, matériel (processeur, carte graphique, écran, mémoire et disque système), édition et version Windows, durée de fonctionnement et informations de l'application. Elle reprend le thème et la couleur d'accent du menu. Accessible dans l'accueil, avec `; à propos`, dans le module Système (`! à propos`) ou depuis l'icône près de l'horloge. Les informations sont lues localement à l'ouverture ; leur collecte ne ralentit pas le démarrage du lanceur. Le bouton **GitHub** ouvre le dépôt du projet, et **Échap** ferme la fenêtre.
 
-Télécharger l'archive depuis les [releases](https://github.com/roukmoute/SuperMenu/releases), l'extraire et lancer l'exécutable. Au premier lancement, le menu apparaît. Ensuite, **Win + Espace** affiche ou masque le menu. Une icône dans la zone de notification permet aussi de l'ouvrir et de quitter le programme.
+Télécharger **SuperMenu-Setup-x64.exe** depuis les [releases](https://github.com/roukmoute/SuperMenu/releases) et l'ouvrir. L'installateur place l'application dans `%LOCALAPPDATA%\Programs\Super Menu` et crée son raccourci dans le menu Démarrer, sans droits administrateur. Le raccourci sur le Bureau et le démarrage avec Windows sont facultatifs, désactivés par défaut. La dernière page propose d'ouvrir Super Menu.
+
+Au premier lancement, le menu apparaît. Ensuite, **Win + Espace** affiche ou masque le menu. Une icône dans la zone de notification permet aussi de l'ouvrir et de quitter le programme. La version portable reste disponible dans le ZIP : l'extraire et lancer `supermenu.exe`.
+
+Pour mettre à jour une installation, ouvrir le nouvel installateur : il quitte proprement l'instance de ce dossier avant de remplacer le programme et conserve les options de raccourcis et de démarrage. Une opération d'installation ou de désinstallation de logiciel en cours empêche ce remplacement ; terminer cette opération puis réessayer. La désinstallation de Super Menu se fait depuis **Paramètres Windows → Applications** ; ses réglages, langues et caches personnels sont conservés. L'installateur est un programme séparé, construit avec NSIS : aucun moteur d'installation n'est chargé par le lanceur.
 
 Seul `supermenu.exe` est nécessaire pour utiliser l'application. Les autres fichiers de l'archive sont la documentation, la licence, un rapport de performances et un exemple de configuration. **Ctrl + Retour arrière** supprime le mot précédent ou la sélection dans la recherche ; **Ctrl + Z** annule cette suppression.
 
@@ -139,10 +143,12 @@ L'historique du presse-papiers est **désactivé par défaut**, limité au texte
 Installer Rust avec la chaîne **MSVC**, les outils C++ de Visual Studio Build Tools et **PowerShell 7**, puis exécuter depuis le dépôt :
 
 ```powershell
-.\scripts\build.ps1 -Archive
+.\scripts\build.ps1 -Archive -Setup
 ```
 
-Le script vérifie le formatage, Clippy et les tests, compile en Release, lance le benchmark et prépare `artifacts\SuperMenu-windows-x64.zip`. L'archive inclut le rapport `benchmark.txt`, même si l'exécutable graphique n'affiche rien dans la console. Le runtime C est intégré à l'exécutable. La compilation utilise les options Release du dépôt : optimisation, LTO et suppression des symboles de débogage. L'exécutable distribué n'est pas compressé au lancement.
+Le script vérifie le formatage, Clippy et les tests, compile en Release, lance le benchmark et prépare `artifacts\SuperMenu-Setup-x64.exe` ainsi que `artifacts\SuperMenu-windows-x64.zip`. L'archive inclut le rapport `benchmark.txt`, même si l'exécutable graphique n'affiche rien dans la console. Le runtime C est intégré à l'exécutable. La compilation utilise les options Release du dépôt : optimisation, LTO et suppression des symboles de débogage. L'exécutable distribué n'est pas compressé au lancement.
+
+`-Setup` récupère NSIS 3.13 dans le dossier des artefacts et vérifie le SHA-256 de son archive avant de le lancer ; aucun outil n'est installé sur le PC. L'installateur utilise LZMA uniquement pour le téléchargement et l'installation. Pour reconstruire seulement le setup d'un binaire existant : `pwsh scripts/build-setup.ps1 -Executable target/release/supermenu.exe`. `-NsisDirectory <dossier>` permet d'utiliser une copie locale de NSIS ; `-Offline` interdit son téléchargement. La suite `tests/windows/setup.ps1` installe et retire un exemplaire fictif avec des chemins, entrées de registre et raccourcis uniques ; elle ne touche pas une installation personnelle.
 
 Le [guide de tests](TESTING.md) décrit les suites Rust et Windows, les données fictives, les rapports et la façon d'ajouter une régression. `scripts/build.ps1` et GitHub Actions exécutent aussi les tests du vrai menu Windows avant de distribuer le binaire. Les rapports restent disponibles comme artefact **SuperMenu-test-results**, y compris après un échec.
 
@@ -162,4 +168,4 @@ Le benchmark mesure le moteur de recherche sur des catalogues de test ; ses rés
 
 `measure-performance.ps1` mesure séparément le premier dessin du menu, sa mémoire, le dessin seul et la recherche suivie du dessin, sur une fixture isolée. Son rapport indique le binaire exact, les échantillons, les médianes et les p95. Ces mesures incluent les échanges Win32 entre processus et un dessin hors écran ; les lancements répétés utilisent généralement les caches Windows déjà chauds. Elles complètent le benchmark du moteur sur 20 000 éléments et n'imposent aucun seuil fixe dépendant du matériel.
 
-GitHub Actions construit et vérifie le projet sur Windows à chaque pull request et mise à jour de `main`/`master`. Après une compilation réussie sur la branche principale, la version de `Cargo.toml` produit automatiquement une préversion téléchargeable, par exemple `v0.1.0`. Une version déjà publiée conserve son archive ; augmenter la version du paquet pour publier une nouvelle préversion. Un tag `v*` produit une release standard si cette version n'existe pas encore. Le code est sous [licence MIT](LICENSE) ; aucune portion du code de Walker n'a été copiée.
+GitHub Actions construit et vérifie le projet sur Windows à chaque pull request et mise à jour de `main`/`master`. Après une compilation réussie sur la branche principale, la version de `Cargo.toml` produit automatiquement une préversion téléchargeable, par exemple `v0.1.0`. Une version déjà publiée conserve ses fichiers ; augmenter la version du paquet pour publier une nouvelle préversion. Un tag `v*` produit une release standard si cette version n'existe pas encore. Le code est sous [licence MIT](LICENSE) ; aucune portion du code de Walker n'a été copiée.

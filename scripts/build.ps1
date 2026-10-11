@@ -1,6 +1,7 @@
 param(
     [switch]$SkipChecks,
     [switch]$Archive,
+    [switch]$Setup,
     [string]$OutputDirectory = ''
 )
 
@@ -58,6 +59,15 @@ try {
     $size = (Get-Item -LiteralPath $binaryPath).Length / 1MB
     Write-Host ('Exécutable : {0:N2} MiB' -f $size)
     Write-Host "Distribution : $OutputDirectory"
+    if ($Setup) {
+        $setupDirectory = [IO.Path]::GetDirectoryName($OutputDirectory)
+        $setupBuild = @(& (Join-Path $PSScriptRoot 'build-setup.ps1') -Executable $binaryPath -OutputDirectory $setupDirectory)[-1]
+        if (-not $?) { throw 'La compilation de l''installateur a échoué.' }
+        if (-not $SkipChecks) {
+            & (Join-Path $repositoryRoot 'tests/windows/setup.ps1') -Executable $binaryPath -NsisDirectory $setupBuild.NsisDirectory
+            if (-not $?) { throw 'Les tests de l''installateur ont échoué.' }
+        }
+    }
     if ($Archive) {
         $archivePath = Join-Path ([IO.Path]::GetDirectoryName($OutputDirectory)) 'SuperMenu-windows-x64.zip'
         Compress-Archive -Path (Join-Path $OutputDirectory '*') -DestinationPath $archivePath -Force

@@ -20,7 +20,7 @@ jobs:
           components: rustfmt, clippy
       - name: Test, benchmark and package
         shell: pwsh
-        run: ./scripts/build.ps1 -Archive
+        run: ./scripts/build.ps1 -Archive -Setup
       - name: Upload Windows test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -31,7 +31,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: SuperMenu-windows-x64
-          path: artifacts/SuperMenu-windows-x64.zip
+          path: |
+            artifacts/SuperMenu-windows-x64.zip
+            artifacts/SuperMenu-Setup-x64.exe
           if-no-files-found: error
 
   release:
@@ -66,12 +68,12 @@ jobs:
           }
           gh release view "$releaseTag" --json url 2>$null | Out-Null
           if ($LASTEXITCODE -eq 0) {
-              Write-Host "Release $releaseTag déjà publiée ; son archive reste inchangée."
+              Write-Host "Release $releaseTag déjà publiée ; ses fichiers restent inchangés."
               exit 0
           }
           if ($isTag) {
-              gh release create "$releaseTag" artifacts/SuperMenu-windows-x64.zip --verify-tag --generate-notes --title "Super Menu $version"
+              gh release create "$releaseTag" artifacts/SuperMenu-Setup-x64.exe artifacts/SuperMenu-windows-x64.zip --verify-tag --generate-notes --title "Super Menu $version"
           } else {
-              gh release create "$releaseTag" artifacts/SuperMenu-windows-x64.zip --target "$env:GITHUB_SHA" --prerelease --generate-notes --title "Super Menu $version"
+              gh release create "$releaseTag" artifacts/SuperMenu-Setup-x64.exe artifacts/SuperMenu-windows-x64.zip --target "$env:GITHUB_SHA" --prerelease --generate-notes --title "Super Menu $version"
           }
           if ($LASTEXITCODE -ne 0) { throw 'La publication de la release a échoué.' }
