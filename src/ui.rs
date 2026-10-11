@@ -1,6 +1,6 @@
 use crate::{
-    about, app_icons, catalog, config, core, i18n, installer, language_dialog, launch_feedback,
-    native, packages, timer, timer_alert, timer_runtime,
+    about, app_icons, brand_icon, catalog, config, core, i18n, installer, language_dialog,
+    launch_feedback, native, packages, timer, timer_alert, timer_runtime,
 };
 use core::{Item, Kind};
 use std::cell::{Cell, RefCell};
@@ -526,15 +526,16 @@ pub fn run(args: &[String]) -> Result<(), String> {
         };
         let instance = GetModuleHandleW(null());
         let class_name = wide(CLASS);
-        let icon = make_icon(instance);
+        let icon = brand_icon::Icon::new(32);
+        let small_icon = brand_icon::Icon::new(tray_icon_size());
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
             hCursor: LoadCursorW(null_mut(), IDC_ARROW),
             lpszClassName: class_name.as_ptr(),
-            hIcon: icon,
-            hIconSm: icon,
+            hIcon: icon.raw(),
+            hIconSm: small_icon.raw(),
             style: CS_HREDRAW | CS_VREDRAW,
             ..zeroed()
         };
@@ -664,7 +665,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             status: i18n::tr("Index local"),
             fonts: [null_mut(); 6],
             edit_bg: null_mut(),
-            icon,
+            icon: small_icon.raw(),
             app_icons: None,
             about: None,
             hotkey: None,
@@ -847,7 +848,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
         }
         DeleteObject(state.edit_bg);
-        DestroyIcon(icon);
+        // The class and Shell no longer reference either privately owned icon.
+        UnregisterClassW(class_name.as_ptr(), instance);
         report_result
     }
 }
@@ -3158,36 +3160,15 @@ unsafe fn paint(s: &State, dc: HDC) {
     );
 }
 
-unsafe fn make_icon(instance: HINSTANCE) -> HICON {
-    let mut pixels = [0u8; 32 * 32 * 4];
-    let mut mask = [0u8; 128];
-    for y in 0..32 {
-        for x in 0..32 {
-            let n = (y * 32 + x) * 4;
-            pixels[n] = 27;
-            pixels[n + 1] = 23;
-            pixels[n + 2] = 22;
-            pixels[n + 3] = 255;
-        }
-    }
-    for row in 0..3 {
-        for col in 0..3 {
-            for y in (7 + row * 7)..(12 + row * 7) {
-                for x in (7 + col * 7)..(12 + col * 7) {
-                    let n = (y * 32 + x) * 4;
-                    pixels[n] = 255;
-                    pixels[n + 1] = 140;
-                    pixels[n + 2] = 154;
-                }
-            }
-        }
-    }
-    let icon = CreateIcon(instance, 32, 32, 1, 32, mask.as_mut_ptr(), pixels.as_ptr());
-    if icon.is_null() {
-        LoadIconW(null_mut(), IDI_APPLICATION)
+unsafe fn tray_icon_size() -> u32 {
+    let taskbar = FindWindowW(wide("Shell_TrayWnd").as_ptr(), null());
+    let dpi = GetDpiForWindow(taskbar);
+    let dpi = if dpi == 0 {
+        GetDpiForSystem().max(96)
     } else {
-        icon
-    }
+        dpi
+    };
+    GetSystemMetricsForDpi(SM_CXSMICON, dpi).clamp(16, 64) as u32
 }
 unsafe fn tray(s: &State, operation: u32) {
     if s.smoke {
