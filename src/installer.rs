@@ -532,7 +532,7 @@ fn valid_parent(parent: HWND, parent_pid: u32) -> bool {
 
 fn whitelisted(id: &str) -> Result<&'static packages::Package, String> {
     packages::find(id)
-        .filter(|package| package.id.eq_ignore_ascii_case(id))
+        .filter(|package| package.install_eligible && package.id.eq_ignore_ascii_case(id))
         .ok_or_else(|| crate::i18n::tr("Identifiant absent du catalogue d'installation autorisé."))
 }
 
@@ -557,7 +557,10 @@ fn remove_helper_args(target: &str, parent: usize, pid: u32, token: usize) -> Ve
 
 fn remove_target(target: &str) -> Result<RemoveTarget, String> {
     if let Some(id) = target.strip_prefix("id:") {
-        return whitelisted(id).map(|package| RemoveTarget::Id(package.id));
+        return packages::find_removal(id)
+            .filter(|package| package.id.eq_ignore_ascii_case(id))
+            .map(|package| RemoveTarget::Id(package.id))
+            .ok_or_else(|| crate::i18n::tr("Cible de désinstallation invalide : identifiant autorisé ou nom installé exact requis."));
     }
     if let Some(name) = target.strip_prefix("name:") {
         if !name.is_empty()
@@ -585,7 +588,9 @@ fn validate_removal_inventory(
     };
     let exact_name = match target {
         RemoveTarget::Name(name) => removable_names.iter().any(|installed| installed == name),
-        RemoveTarget::Id(_) => true,
+        RemoveTarget::Id(id) => {
+            packages::find_removal(id).is_some_and(|package| package.id.eq_ignore_ascii_case(id))
+        }
     };
     if !exact_name || !packages::removal_is_allowed(&key, all_names, removable_names) {
         return Err(crate::i18n::tr("Ce logiciel est protégé ou son nom exact n'est plus présent parmi les logiciels désinstallables. Aucune désinstallation lancée."));
@@ -645,7 +650,9 @@ fn parse_request(args: &[String]) -> Result<Request, String> {
         (None, Some(value)) => {
             let target = remove_target(value)?;
             let name = match &target {
-                RemoveTarget::Id(id) => whitelisted(id)?.name.to_string(),
+                RemoveTarget::Id(id) => packages::find_removal(id)
+                    .ok_or_else(|| crate::i18n::tr("Cible de désinstallation invalide : identifiant autorisé ou nom installé exact requis."))?
+                    .name.to_string(),
                 RemoveTarget::Name(name) => name.clone(),
             };
             ("", name, Some(target))
@@ -740,11 +747,12 @@ fn command_args(operation: Operation, id: &str) -> Vec<&str> {
         "--exact",
     ];
     // Registry-named software can have no source association at all. Filtering
-    // that inventory to the winget source would hide it or falsely imply absence.
+    // that inventory to any catalog source would hide it or falsely imply absence.
     // Curated IDs retain their explicit source; named targets remain exact and
     // ambiguous results are still refused by WinGet.
     if !matches!(operation, Operation::ListName | Operation::RemoveName) {
-        args.extend(["--source", "winget"]);
+        let source = packages::find(id).map_or("winget", |package| package.source.as_str());
+        args.extend(["--source", source]);
     }
     args.extend(["--accept-source-agreements", "--disable-interactivity"]);
     if matches!(operation, Operation::Install | Operation::Restore) {
@@ -898,6 +906,11 @@ fn perform_remove(
     target: &RemoveTarget,
     check_only: bool,
 ) -> Result<Outcome, Failure> {
+    if let RemoveTarget::Id(id) = target {
+        if !packages::find_removal(id).is_some_and(|package| package.id.eq_ignore_ascii_case(id)) {
+            return Err(Failure::local("Cible de désinstallation invalide : identifiant autorisé ou nom installé exact requis."));
+        }
+    }
     let (list, remove) = match target {
         RemoveTarget::Id(_) => (Operation::List, Operation::RemoveId),
         RemoveTarget::Name(_) => (Operation::ListName, Operation::RemoveName),
@@ -1758,6 +1771,107 @@ mod tests {
         assert!(install.contains(&"--accept-package-agreements"));
         assert!(!install.contains(&"--force"));
         assert!(install.contains(&"--silent"));
+    }
+
+    #[test]
+    fn microsoft_store_installations_use_canonical_ids_and_the_explicit_store_source() {
+        for id in ["9NT1R1C2HH7J", "9NKSQGP7F2NH"] {
+            assert_eq!(whitelisted(&id.to_ascii_lowercase()).unwrap().id, id);
+            assert!(whitelisted(&format!("msstore:{id}")).is_err());
+            assert_eq!(
+                command_args(Operation::List, id),
+                [
+                    "list",
+                    "--id",
+                    id,
+                    "--exact",
+                    "--source",
+                    "msstore",
+                    "--accept-source-agreements",
+                    "--disable-interactivity"
+                ]
+            );
+            assert_eq!(
+                command_args(Operation::Install, id),
+                [
+                    "install",
+                    "--id",
+                    id,
+                    "--exact",
+                    "--source",
+                    "msstore",
+                    "--accept-source-agreements",
+                    "--disable-interactivity",
+                    "--no-upgrade",
+                    "--accept-package-agreements",
+                    "--silent"
+                ]
+            );
+            let mut runner = FakeRunner::codes(&[NO_APPLICATIONS_FOUND, 0]);
+            assert_eq!(
+                perform_install(&mut runner, id, false).unwrap(),
+                Outcome::Installed
+            );
+            assert_eq!(runner.calls, [Operation::List, Operation::Install]);
+            let mut runner = FakeRunner::codes(&[0]);
+            assert_eq!(
+                perform_install(&mut runner, id, false).unwrap(),
+                Outcome::AlreadyInstalled
+            );
+            assert_eq!(runner.calls, [Operation::List]);
+        }
+        let fallback = command_args(Operation::List, "OwnedFixture.Unknown");
+        assert_eq!(fallback[5], "winget");
+    }
+
+    #[test]
+    fn installation_only_ids_never_enter_removal_and_exact_names_remain_source_free() {
+        for (id, name) in [("9NT1R1C2HH7J", "ChatGPT"), ("9NKSQGP7F2NH", "WhatsApp")] {
+            assert!(remove_target(&format!("id:{id}")).is_err());
+            let target = RemoveTarget::Id(id);
+            assert!(validate_removal_inventory(&target, &[name.into()], &[name.into()]).is_err());
+            let mut runner = FakeRunner::codes(&[]);
+            assert!(perform_remove(&mut runner, &target, false).is_err());
+            assert!(runner.calls.is_empty());
+            assert_eq!(
+                command_args(Operation::RemoveName, name),
+                [
+                    "uninstall",
+                    "--name",
+                    name,
+                    "--exact",
+                    "--accept-source-agreements",
+                    "--disable-interactivity",
+                    "--silent"
+                ]
+            );
+            assert!(!command_args(Operation::ListName, name).contains(&"--source"));
+        }
+    }
+
+    #[test]
+    fn superseded_gimp_id_is_removal_only_and_its_helper_remains_valid() {
+        assert!(whitelisted("GIMP.GIMP").is_err());
+        assert_eq!(whitelisted("GIMP.GIMP.3").unwrap().id, "GIMP.GIMP.3");
+        let target = remove_target("id:GIMP.GIMP").unwrap();
+        assert_eq!(target, RemoveTarget::Id("GIMP.GIMP"));
+        let mut args = vec!["supermenu.exe".into()];
+        args.extend(remove_helper_args("id:GIMP.GIMP", 123, 456, 789));
+        let request = parse_request(&args).unwrap();
+        assert_eq!(request.remove, Some(RemoveTarget::Id("GIMP.GIMP")));
+        assert_eq!(
+            request.name,
+            packages::find_removal("GIMP.GIMP").unwrap().name
+        );
+        let mut runner = FakeRunner::codes(&[0, 0, NO_APPLICATIONS_FOUND]);
+        assert_eq!(
+            perform_remove(&mut runner, &target, false).unwrap(),
+            Outcome::Removed
+        );
+        assert_eq!(
+            runner.calls,
+            [Operation::List, Operation::RemoveId, Operation::List]
+        );
     }
 
     #[test]

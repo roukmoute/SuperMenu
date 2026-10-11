@@ -24,6 +24,7 @@ Push-Location -LiteralPath $repositoryRoot
 try {
     $env:RUSTFLAGS = ($previousRustFlags + ' -C target-feature=+crt-static').Trim()
     if (-not $SkipRustChecks) {
+        & (Join-Path $PSScriptRoot 'update-package-catalog.ps1') -Check
         Invoke-TestCargo -CargoArguments @('fmt', '--check')
         Invoke-TestCargo -CargoArguments @('clippy', '--locked', '--all-targets', '--', '-D', 'warnings')
         Invoke-TestCargo -CargoArguments @('test', '--locked')

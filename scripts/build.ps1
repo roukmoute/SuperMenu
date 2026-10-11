@@ -24,6 +24,7 @@ try {
     # Embed the MSVC C runtime so the shipped executable needs no runtime installer.
     $env:RUSTFLAGS = ($previousRustFlags + ' -C target-feature=+crt-static').Trim()
     if (-not $SkipChecks) {
+        & (Join-Path $PSScriptRoot 'update-package-catalog.ps1') -Check
         Invoke-Cargo -CargoArguments @('fmt', '--check')
         Invoke-Cargo -CargoArguments @('clippy', '--locked', '--all-targets', '--', '-D', 'warnings')
         Invoke-Cargo -CargoArguments @('test', '--locked')
@@ -46,7 +47,7 @@ try {
         if (-not $?) { throw 'Les tests du menu Windows ont échoué.' }
     }
     Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $OutputDirectory ($binaryTarget.name + '.exe')) -Force
-    foreach ($name in @('README.md', 'TESTING.md', 'PERFORMANCE.md', 'LICENSE', 'settings.example.json')) {
+    foreach ($name in @('README.md', 'TESTING.md', 'PERFORMANCE.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'settings.example.json')) {
         Copy-Item -LiteralPath (Join-Path $repositoryRoot $name) -Destination (Join-Path $OutputDirectory $name) -Force
     }
     $docsDirectory = Join-Path $OutputDirectory 'docs'

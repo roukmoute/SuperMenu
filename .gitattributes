@@ -1,0 +1,3 @@
+# Preserve the downloaded snapshot byte-for-byte so its recorded SHA256 also
+# verifies after a Windows checkout with core.autocrlf enabled.
+catalog/winutil-applications.json -text

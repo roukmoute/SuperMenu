@@ -75,6 +75,37 @@ try {
     Assert-Test -Context $context -Condition (([string]$chromeInstall.items[0].subtitle).StartsWith('Installer ·', [StringComparison]::Ordinal)) -Name 'explicit Chrome installation has the installation subtitle'
     Set-OwnQuery '@ chrome'
     [void](Assert-OwnResults 'absent Chrome has no launchable application' '@ chrome' @() @('Application'))
+
+    # The imported catalog also covers CLI tools and explicit product variants.
+    # Query through the real EDIT and inspect the cached rows; never activate one.
+    # Other valid aliases may share a prefix (gh also matches gh desktop), so the
+    # precise catalog suggestion must lead without forbidding related suggestions.
+    foreach ($packageCase in @(
+        @{ query = 'uv'; target = 'astral-sh.uv' },
+        @{ query = 'gh'; target = 'GitHub.cli' },
+        @{ query = 'syncthing'; target = 'Syncthing.Syncthing' },
+        @{ query = 'teamspeak6'; target = 'TeamSpeakSystems.TeamSpeakClient.Beta.6' }
+    )) {
+        foreach ($prefix in @('', '+ ')) {
+            $query = $prefix + $packageCase.query
+            $name = 'expanded catalog suggestion ' + $query
+            Set-OwnQuery $query
+            $snapshot = Read-TestSnapshot -Context $context
+            $matchingRows = @($snapshot.items | Where-Object { $_.kind -ceq 'Install' -and $_.target -ceq $packageCase.target })
+            $cases.Add([ordered]@{
+                case = $name; query = $snapshot.query; selected = $snapshot.selected
+                expected_target = $packageCase.target; result_ids = @($snapshot.items.id)
+            })
+            Assert-Test -Context $context -Condition ($snapshot.query -ceq $query) -Name ($name + ': EN_CHANGE updates the query')
+            Assert-Test -Context $context -Condition ($matchingRows.Count -eq 1) -Name ($name + ': the exact package has one install suggestion')
+            Assert-Test -Context $context -Condition (@($snapshot.items | Where-Object { $_.kind -cne 'Install' }).Count -eq 0) -Name ($name + ': absent tools expose only catalog install results')
+            Assert-Test -Context $context -Condition ($snapshot.items[0].target -ceq $packageCase.target) -Name ($name + ': the exact name or alias is the first result')
+            Assert-Test -Context $context -Condition ($matchingRows[0].id -ceq ('install:' + $packageCase.target) -and $matchingRows[0].arguments -ceq '') -Name ($name + ': cached action retains its canonical ID and no launch arguments')
+        }
+    }
+    Set-OwnQuery '@ uv'
+    [void](Assert-OwnResults 'CLI catalog suggestion is excluded from launch-only search' '@ uv' @() @('Application'))
+
     Set-OwnQuery 'path-only-token'
     [void](Assert-OwnResults 'target metadata is not an application name' 'path-only-token' @() @('Application'))
     Set-OwnQuery 'zebra'

@@ -1,0 +1,544 @@
+[
+  {
+    "id": "Mozilla.Firefox",
+    "name": "Firefox",
+    "category": "Navigateur",
+    "aliases": [
+      "mozilla firefox",
+      "ff"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Google.Chrome",
+    "name": "Google Chrome",
+    "category": "Navigateur",
+    "aliases": [
+      "chrome"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Microsoft.Edge",
+    "name": "Microsoft Edge",
+    "category": "Navigateur",
+    "aliases": [
+      "edge"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Brave.Brave",
+    "name": "Brave",
+    "category": "Navigateur",
+    "aliases": [
+      "brave browser"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Vivaldi.Vivaldi",
+    "name": "Vivaldi",
+    "category": "Navigateur",
+    "aliases": [
+      "vivaldi browser"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Opera.Opera",
+    "name": "Opera",
+    "category": "Navigateur",
+    "aliases": [
+      "opera browser"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Microsoft.VisualStudioCode",
+    "name": "Visual Studio Code",
+    "category": "Éditeur de code",
+    "aliases": [
+      "vscode",
+      "vs code",
+      "microsoft visual studio code"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Git.Git",
+    "name": "Git",
+    "category": "Développement",
+    "aliases": [
+      "git for windows",
+      "git bash",
+      "git gui"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "GitHub.GitHubDesktop",
+    "name": "GitHub Desktop",
+    "category": "Développement",
+    "aliases": [
+      "githubdesktop",
+      "gh desktop"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Notepad++.Notepad++",
+    "name": "Notepad++",
+    "category": "Éditeur de texte",
+    "aliases": [
+      "notepad++",
+      "npp"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Microsoft.PowerShell",
+    "name": "PowerShell 7",
+    "category": "Terminal",
+    "aliases": [
+      "powershell",
+      "pwsh",
+      "powershell7",
+      "powershell x64",
+      "powershell x86"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Microsoft.WindowsTerminal",
+    "name": "Windows Terminal",
+    "category": "Terminal",
+    "aliases": [
+      "terminal",
+      "windowsterminal"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Microsoft.PowerToys",
+    "name": "PowerToys",
+    "category": "Utilitaires Windows",
+    "aliases": [
+      "microsoft powertoys",
+      "power toys"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "voidtools.Everything",
+    "name": "Everything",
+    "category": "Recherche de fichiers",
+    "aliases": [
+      "voidtools everything"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "7zip.7zip",
+    "name": "7-Zip",
+    "category": "Compression",
+    "aliases": [
+      "7zip",
+      "7 zip"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "RARLab.WinRAR",
+    "name": "WinRAR",
+    "category": "Compression",
+    "aliases": [
+      "win rar"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "WinSCP.WinSCP",
+    "name": "WinSCP",
+    "category": "Transfert de fichiers",
+    "aliases": [
+      "win scp"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "PuTTY.PuTTY",
+    "name": "PuTTY",
+    "category": "SSH et terminal",
+    "aliases": [
+      "putty"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Rufus.Rufus",
+    "name": "Rufus",
+    "category": "Clé USB bootable",
+    "aliases": [
+      "rufus usb"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "VideoLAN.VLC",
+    "name": "VLC",
+    "category": "Lecteur multimédia",
+    "aliases": [
+      "vlc media player",
+      "videolan vlc"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Spotify.Spotify",
+    "name": "Spotify",
+    "category": "Musique",
+    "aliases": [
+      "spotify music"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "OBSProject.OBSStudio",
+    "name": "OBS Studio",
+    "category": "Capture et streaming",
+    "aliases": [
+      "obs",
+      "obs studio"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Audacity.Audacity",
+    "name": "Audacity",
+    "category": "Édition audio",
+    "aliases": [
+      "audacity audio"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "HandBrake.HandBrake",
+    "name": "HandBrake",
+    "category": "Conversion vidéo",
+    "aliases": [
+      "hand brake"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "GIMP.GIMP",
+    "name": "GIMP",
+    "category": "Retouche photo",
+    "aliases": [
+      "gimp image editor"
+    ],
+    "install": false,
+    "removal": true
+  },
+  {
+    "id": "Inkscape.Inkscape",
+    "name": "Inkscape",
+    "category": "Dessin vectoriel",
+    "aliases": [
+      "inkscape vector"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "KDE.Krita",
+    "name": "Krita",
+    "category": "Dessin et peinture",
+    "aliases": [
+      "kde krita"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "BlenderFoundation.Blender",
+    "name": "Blender",
+    "category": "Création 3D",
+    "aliases": [
+      "blender 3d"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "ImageMagick.ImageMagick",
+    "name": "ImageMagick",
+    "category": "Traitement d'images",
+    "aliases": [
+      "image magick"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Discord.Discord",
+    "name": "Discord",
+    "category": "Messagerie",
+    "aliases": [
+      "discord"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Microsoft.Teams",
+    "name": "Microsoft Teams",
+    "category": "Visioconférence",
+    "aliases": [
+      "teams"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "SlackTechnologies.Slack",
+    "name": "Slack",
+    "category": "Messagerie professionnelle",
+    "aliases": [
+      "slack"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Zoom.Zoom",
+    "name": "Zoom",
+    "category": "Visioconférence",
+    "aliases": [
+      "zoom workplace",
+      "zoom meetings"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Telegram.TelegramDesktop",
+    "name": "Telegram",
+    "category": "Messagerie",
+    "aliases": [
+      "telegram desktop"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Bitwarden.Bitwarden",
+    "name": "Bitwarden",
+    "category": "Gestionnaire de mots de passe",
+    "aliases": [
+      "bitwarden desktop"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "KeePassXCTeam.KeePassXC",
+    "name": "KeePassXC",
+    "category": "Gestionnaire de mots de passe",
+    "aliases": [
+      "keepass xc"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Proton.ProtonVPN",
+    "name": "Proton VPN",
+    "category": "VPN",
+    "aliases": [
+      "protonvpn"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Tailscale.Tailscale",
+    "name": "Tailscale",
+    "category": "Réseau VPN",
+    "aliases": [
+      "tailscale vpn"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "WireGuard.WireGuard",
+    "name": "WireGuard",
+    "category": "VPN",
+    "aliases": [
+      "wire guard"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Valve.Steam",
+    "name": "Steam",
+    "category": "Jeux",
+    "aliases": [
+      "steam client"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "EpicGames.EpicGamesLauncher",
+    "name": "Epic Games Launcher",
+    "category": "Jeux",
+    "aliases": [
+      "epic games",
+      "epic launcher"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "GOG.Galaxy",
+    "name": "GOG Galaxy",
+    "category": "Jeux",
+    "aliases": [
+      "gog galaxy",
+      "goggalaxy"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "TheDocumentFoundation.LibreOffice",
+    "name": "LibreOffice",
+    "category": "Bureautique",
+    "aliases": [
+      "libre office"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "SumatraPDF.SumatraPDF",
+    "name": "SumatraPDF",
+    "category": "Lecteur PDF",
+    "aliases": [
+      "sumatra",
+      "sumatra pdf"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Obsidian.Obsidian",
+    "name": "Obsidian",
+    "category": "Notes",
+    "aliases": [
+      "obsidian notes"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Notion.Notion",
+    "name": "Notion",
+    "category": "Notes et organisation",
+    "aliases": [
+      "notion desktop"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Anki.Anki",
+    "name": "Anki",
+    "category": "Apprentissage",
+    "aliases": [
+      "anki flashcards"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Joplin.Joplin",
+    "name": "Joplin",
+    "category": "Notes",
+    "aliases": [
+      "joplin notes"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Docker.DockerDesktop",
+    "name": "Docker Desktop",
+    "category": "Développement",
+    "aliases": [
+      "docker"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "DBeaver.DBeaver.Community",
+    "name": "DBeaver Community",
+    "category": "Bases de données",
+    "aliases": [
+      "dbeaver",
+      "dbeaver ce"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Postman.Postman",
+    "name": "Postman",
+    "category": "Développement API",
+    "aliases": [
+      "postman api"
+    ],
+    "install": true,
+    "removal": true
+  },
+  {
+    "id": "Microsoft.AzureCLI",
+    "name": "Azure CLI",
+    "category": "Développement cloud",
+    "aliases": [
+      "microsoft azure cli",
+      "azurecli"
+    ],
+    "install": true,
+    "removal": true
+  }
+]

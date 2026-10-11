@@ -1,261 +1,55 @@
 //! Local software management suggestions. Searching never runs WinGet or reads the registry.
-//! IDs verified against https://github.com/microsoft/winget-pkgs on 2026-10-10.
-//! A manifest lives at manifests/{publisher initial}/{dot-separated ID components}.
+//! Installation catalogue generated from a pinned WinUtil snapshot; see catalog/ and notices.
+//! Runtime uses only compact local names/IDs, never the upstream JSON or installer scripts.
 use crate::core::{self, Item, Kind};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Source {
+    Winget,
+    MicrosoftStore,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Winget => "winget",
+            Self::MicrosoftStore => "msstore",
+        }
+    }
+}
+
 pub struct Package {
     pub id: &'static str,
     pub name: &'static str,
     pub category: &'static str,
     pub aliases: &'static [&'static str],
+    pub source: Source,
+    pub install_eligible: bool,
+    pub removal_eligible: bool,
 }
 
 macro_rules! package {
-    ($id:literal, $name:literal, $category:literal, [$($alias:literal),* $(,)?]) => {
-        Package { id: $id, name: $name, category: $category, aliases: &[$($alias),*] }
+    ($id:literal, $name:literal, $category:literal, [$($alias:literal),* $(,)?], $source:ident, $install:literal, $removal:literal) => {
+        Package { id: $id, name: $name, category: $category, aliases: &[$($alias),*], source: Source::$source, install_eligible: $install, removal_eligible: $removal }
     };
 }
 
-pub const PACKAGES: &[Package] = &[
-    package!(
-        "Mozilla.Firefox",
-        "Firefox",
-        "Navigateur",
-        ["mozilla firefox", "firefox esr", "firefoxesr", "ff"]
-    ),
-    package!("Google.Chrome", "Google Chrome", "Navigateur", ["chrome"]),
-    package!("Microsoft.Edge", "Microsoft Edge", "Navigateur", ["edge"]),
-    package!("Brave.Brave", "Brave", "Navigateur", ["brave browser"]),
-    package!(
-        "Vivaldi.Vivaldi",
-        "Vivaldi",
-        "Navigateur",
-        ["vivaldi browser"]
-    ),
-    package!("Opera.Opera", "Opera", "Navigateur", ["opera browser"]),
-    package!(
-        "Microsoft.VisualStudioCode",
-        "Visual Studio Code",
-        "Éditeur de code",
-        ["vscode", "vs code", "microsoft visual studio code"]
-    ),
-    package!(
-        "Git.Git",
-        "Git",
-        "Développement",
-        ["git for windows", "git bash", "git gui"]
-    ),
-    package!(
-        "GitHub.GitHubDesktop",
-        "GitHub Desktop",
-        "Développement",
-        ["githubdesktop", "gh desktop"]
-    ),
-    package!(
-        "Notepad++.Notepad++",
-        "Notepad++",
-        "Éditeur de texte",
-        ["notepad++", "npp"]
-    ),
-    package!(
-        "Microsoft.PowerShell",
-        "PowerShell 7",
-        "Terminal",
-        [
-            "powershell",
-            "pwsh",
-            "powershell7",
-            "powershell x64",
-            "powershell x86"
-        ]
-    ),
-    package!(
-        "Microsoft.WindowsTerminal",
-        "Windows Terminal",
-        "Terminal",
-        ["terminal", "windowsterminal"]
-    ),
-    package!(
-        "Microsoft.PowerToys",
-        "PowerToys",
-        "Utilitaires Windows",
-        ["microsoft powertoys", "power toys"]
-    ),
-    package!(
-        "voidtools.Everything",
-        "Everything",
-        "Recherche de fichiers",
-        ["voidtools everything"]
-    ),
-    package!("7zip.7zip", "7-Zip", "Compression", ["7zip", "7 zip"]),
-    package!("RARLab.WinRAR", "WinRAR", "Compression", ["win rar"]),
-    package!(
-        "WinSCP.WinSCP",
-        "WinSCP",
-        "Transfert de fichiers",
-        ["win scp"]
-    ),
-    package!("PuTTY.PuTTY", "PuTTY", "SSH et terminal", ["putty"]),
-    package!("Rufus.Rufus", "Rufus", "Clé USB bootable", ["rufus usb"]),
-    package!(
-        "VideoLAN.VLC",
-        "VLC",
-        "Lecteur multimédia",
-        ["vlc media player", "videolan vlc"]
-    ),
-    package!("Spotify.Spotify", "Spotify", "Musique", ["spotify music"]),
-    package!(
-        "OBSProject.OBSStudio",
-        "OBS Studio",
-        "Capture et streaming",
-        ["obs", "obs studio"]
-    ),
-    package!(
-        "Audacity.Audacity",
-        "Audacity",
-        "Édition audio",
-        ["audacity audio"]
-    ),
-    package!(
-        "HandBrake.HandBrake",
-        "HandBrake",
-        "Conversion vidéo",
-        ["hand brake"]
-    ),
-    package!("GIMP.GIMP", "GIMP", "Retouche photo", ["gimp image editor"]),
-    package!(
-        "Inkscape.Inkscape",
-        "Inkscape",
-        "Dessin vectoriel",
-        ["inkscape vector"]
-    ),
-    package!("KDE.Krita", "Krita", "Dessin et peinture", ["kde krita"]),
-    package!(
-        "BlenderFoundation.Blender",
-        "Blender",
-        "Création 3D",
-        ["blender 3d"]
-    ),
-    package!(
-        "ImageMagick.ImageMagick",
-        "ImageMagick",
-        "Traitement d'images",
-        ["image magick"]
-    ),
-    package!("Discord.Discord", "Discord", "Messagerie", ["discord"]),
-    package!(
-        "Microsoft.Teams",
-        "Microsoft Teams",
-        "Visioconférence",
-        ["teams"]
-    ),
-    package!(
-        "SlackTechnologies.Slack",
-        "Slack",
-        "Messagerie professionnelle",
-        ["slack"]
-    ),
-    package!(
-        "Zoom.Zoom",
-        "Zoom",
-        "Visioconférence",
-        ["zoom workplace", "zoom meetings"]
-    ),
-    package!(
-        "Telegram.TelegramDesktop",
-        "Telegram",
-        "Messagerie",
-        ["telegram desktop"]
-    ),
-    package!(
-        "Bitwarden.Bitwarden",
-        "Bitwarden",
-        "Gestionnaire de mots de passe",
-        ["bitwarden desktop"]
-    ),
-    package!(
-        "KeePassXCTeam.KeePassXC",
-        "KeePassXC",
-        "Gestionnaire de mots de passe",
-        ["keepass xc"]
-    ),
-    package!("Proton.ProtonVPN", "Proton VPN", "VPN", ["protonvpn"]),
-    package!(
-        "Tailscale.Tailscale",
-        "Tailscale",
-        "Réseau VPN",
-        ["tailscale vpn"]
-    ),
-    package!("WireGuard.WireGuard", "WireGuard", "VPN", ["wire guard"]),
-    package!("Valve.Steam", "Steam", "Jeux", ["steam client"]),
-    package!(
-        "EpicGames.EpicGamesLauncher",
-        "Epic Games Launcher",
-        "Jeux",
-        ["epic games", "epic launcher"]
-    ),
-    package!(
-        "GOG.Galaxy",
-        "GOG Galaxy",
-        "Jeux",
-        ["gog galaxy", "goggalaxy"]
-    ),
-    package!(
-        "TheDocumentFoundation.LibreOffice",
-        "LibreOffice",
-        "Bureautique",
-        ["libre office"]
-    ),
-    package!(
-        "SumatraPDF.SumatraPDF",
-        "SumatraPDF",
-        "Lecteur PDF",
-        ["sumatra", "sumatra pdf"]
-    ),
-    package!("Obsidian.Obsidian", "Obsidian", "Notes", ["obsidian notes"]),
-    package!(
-        "Notion.Notion",
-        "Notion",
-        "Notes et organisation",
-        ["notion desktop"]
-    ),
-    package!("Anki.Anki", "Anki", "Apprentissage", ["anki flashcards"]),
-    package!("Joplin.Joplin", "Joplin", "Notes", ["joplin notes"]),
-    package!(
-        "Docker.DockerDesktop",
-        "Docker Desktop",
-        "Développement",
-        ["docker"]
-    ),
-    package!(
-        "DBeaver.DBeaver.Community",
-        "DBeaver Community",
-        "Bases de données",
-        ["dbeaver", "dbeaver ce"]
-    ),
-    package!(
-        "Postman.Postman",
-        "Postman",
-        "Développement API",
-        ["postman api"]
-    ),
-    package!(
-        "Microsoft.AzureCLI",
-        "Azure CLI",
-        "Développement cloud",
-        ["microsoft azure cli", "azurecli"]
-    ),
-];
+include!("package_catalog.rs");
 
 /// Only canonical, curated IDs are accepted. Returns the canonical spelling for execution.
 pub fn find(id: &str) -> Option<&'static Package> {
     PACKAGES
         .iter()
         .find(|package| package.id.eq_ignore_ascii_case(id))
+}
+
+/// Preserve the reviewed removal identities independently of installation suggestions.
+pub fn find_removal(id: &str) -> Option<&'static Package> {
+    find(id).filter(|package| package.removal_eligible)
 }
 
 struct PreparedPackage {
@@ -327,7 +121,7 @@ fn normalize(value: &str) -> String {
 }
 
 fn installed_match(name: &str, package: &PreparedPackage) -> bool {
-    package.names.iter().any(|alias| {
+    package_identity_names(package).any(|alias| {
         let Some(suffix) = name.strip_prefix(alias) else {
             return false;
         };
@@ -335,13 +129,27 @@ fn installed_match(name: &str, package: &PreparedPackage) -> bool {
             return true;
         }
         // Accept version/architecture suffixes, but never concatenate arbitrary app names.
-        if !suffix.starts_with(' ') && !suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        if !suffix_boundary(alias, suffix) {
             return false;
         }
         suffix
             .split_whitespace()
             .all(|token| installed_suffix(package.package.id, token))
     })
+}
+
+fn package_identity_names(package: &PreparedPackage) -> impl Iterator<Item = &str> {
+    package.names.iter().map(String::as_str).chain(
+        // Keep the historical joined ESR DisplayName as presence/channel evidence,
+        // without making an explicit ESR search refer to the stable install ID.
+        (package.package.id == "Mozilla.Firefox").then_some("firefoxesr"),
+    )
+}
+
+fn suffix_boundary(alias: &str, suffix: &str) -> bool {
+    suffix.starts_with(' ')
+        || (suffix.as_bytes().first().is_some_and(u8::is_ascii_digit)
+            && !alias.as_bytes().last().is_some_and(u8::is_ascii_digit))
 }
 
 fn installed_suffix(id: &str, token: &str) -> bool {
@@ -419,6 +227,10 @@ fn installed_suffix(id: &str, token: &str) -> bool {
         ),
         "SumatraPDF.SumatraPDF" => token == "reader",
         "DBeaver.DBeaver.Community" => matches!(token, "ce" | "community"),
+        "Amazon.Corretto.8.JDK" | "Amazon.Corretto.21.JDK" | "Amazon.Corretto.25.JDK" => {
+            matches!(token, "jdk" | "lts")
+        }
+        "TeamSpeakSystems.TeamSpeakClient.Beta.6" => token == "beta",
         _ => false,
     }
 }
@@ -428,7 +240,12 @@ fn package_item(package: &Package) -> Item {
         format!("install:{}", package.id),
         package.name,
         crate::i18n::fmt(
-            "Installer · {category} · WinGet · Entrée pour installer",
+            match package.source {
+                Source::Winget => "Installer · {category} · WinGet · Entrée pour installer",
+                Source::MicrosoftStore => {
+                    "Installer · {category} · Microsoft Store · Entrée pour installer"
+                }
+            },
             &[("category", crate::i18n::tr(package.category))],
         ),
         "↓",
@@ -462,6 +279,7 @@ pub fn missing_items_with_absent(
         .collect();
     prepared()
         .iter()
+        .filter(|package| package.package.install_eligible)
         .filter(|package| {
             !completed
                 .iter()
@@ -687,16 +505,20 @@ fn package_channel(name: &str, package: &PreparedPackage) -> &'static str {
 }
 
 fn uninstall_match(name: &str, package: &PreparedPackage) -> bool {
-    package_channel(name, package) == "stable" && family_identity_match(name, package)
+    package.package.removal_eligible
+        && package_channel(name, package) == "stable"
+        && family_identity_match(name, package)
 }
 
 fn family_identity_match(name: &str, package: &PreparedPackage) -> bool {
-    package.names.iter().any(|alias| {
+    if !package.package.removal_eligible {
+        return false;
+    }
+    package_identity_names(package).any(|alias| {
         // Typing aliases are useful for search, but names such as FF/terminal are
         // insufficient evidence for a destructive action on a specific package.
-        if alias != &package.primary_name
-            && (alias.chars().count() <= 3
-                || matches!(alias.as_str(), "terminal" | "pwsh" | "gh desktop"))
+        if alias != package.primary_name
+            && (alias.chars().count() <= 3 || matches!(alias, "terminal" | "pwsh" | "gh desktop"))
         {
             return false;
         }
@@ -706,7 +528,7 @@ fn family_identity_match(name: &str, package: &PreparedPackage) -> bool {
         if suffix.is_empty() {
             return true;
         }
-        if !suffix.starts_with(' ') && !suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        if !suffix_boundary(alias, suffix) {
             return false;
         }
         suffix.split_whitespace().all(|token| {
@@ -785,7 +607,10 @@ pub fn removable_items(index: &[Item], installed_names: &[String]) -> Vec<Item> 
         .collect();
     let mut items = Vec::new();
     let mut known = HashSet::new();
-    for package in prepared() {
+    for package in prepared()
+        .iter()
+        .filter(|package| package.package.removal_eligible)
+    {
         let registered_stable = registry
             .iter()
             .any(|(_, name)| uninstall_match(name, package));
@@ -813,7 +638,7 @@ pub fn removable_items(index: &[Item], installed_names: &[String]) -> Vec<Item> 
         if names.insert(original.to_lowercase()) {
             let category = prepared()
                 .iter()
-                .find(|package| family_identity_match(&normalized, package))
+                .find(|package| installed_match(&normalized, package))
                 .map_or("Logiciel installé", |package| package.package.category);
             items.push(named_removal_item(original, category));
         }
@@ -852,10 +677,9 @@ pub fn removal_is_allowed(target: &str, all_names: &[String], removable_names: &
     let Some(id) = target.strip_prefix("id:") else {
         return false;
     };
-    let Some(package) = prepared()
-        .iter()
-        .find(|package| package.package.id.eq_ignore_ascii_case(id))
-    else {
+    let Some(package) = prepared().iter().find(|package| {
+        package.package.removal_eligible && package.package.id.eq_ignore_ascii_case(id)
+    }) else {
         return false;
     };
     let mut stable_registered = false;
@@ -893,7 +717,7 @@ fn version_name_match(left: &str, right: &str) -> bool {
     if suffix.is_empty() {
         return true;
     }
-    if !suffix.starts_with(' ') && !suffix.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+    if !suffix_boundary(shorter, suffix) {
         return false;
     }
     suffix.split_whitespace().all(|token| {
@@ -939,7 +763,7 @@ fn valid_removal(item: &Item) -> bool {
         return false;
     }
     if let Some(id) = item.target.strip_prefix("id:") {
-        return find(id).is_some();
+        return find_removal(id).is_some();
     }
     item.target
         .strip_prefix("name:")
@@ -1129,6 +953,7 @@ pub fn search(
             .iter()
             .filter(|item| item.kind == Kind::Install)
             .filter_map(|item| find(&item.target))
+            .filter(|package| package.install_eligible)
             .take(limit)
             .map(package_item)
             .collect();
@@ -1186,7 +1011,10 @@ pub fn search(
             .filter_map(|item| {
                 relevant
                     .iter()
-                    .find(|(package, _)| package.package.id.eq_ignore_ascii_case(&item.target))
+                    .find(|(package, _)| {
+                        package.package.install_eligible
+                            && package.package.id.eq_ignore_ascii_case(&item.target)
+                    })
                     .map(|(package, score)| (*score, package.package))
             })
             .collect()
@@ -1325,7 +1153,7 @@ pub fn removal_requires_elevation(target: &str) -> bool {
         .is_some_and(valid_registry_name)
         || target
             .strip_prefix("id:")
-            .is_some_and(|id| find(id).is_some()))
+            .is_some_and(|id| find_removal(id).is_some()))
     {
         return false;
     }
@@ -1348,10 +1176,9 @@ fn removal_requires_elevation_in_inventory(
     let Some(id) = target.strip_prefix("id:") else {
         return false;
     };
-    let Some(package) = prepared()
-        .iter()
-        .find(|package| package.package.id.eq_ignore_ascii_case(id))
-    else {
+    let Some(package) = prepared().iter().find(|package| {
+        package.package.removal_eligible && package.package.id.eq_ignore_ascii_case(id)
+    }) else {
         return false;
     };
     // Unlike allowance for UWP/app-index targets, elevation requires positive evidence
@@ -1856,12 +1683,323 @@ mod tests {
 
     #[test]
     fn curated_ids_are_unique_and_reasonably_bounded() {
-        assert!((40..=70).contains(&PACKAGES.len()));
+        assert_eq!(PACKAGES.len(), 246);
+        assert_eq!(
+            PACKAGES
+                .iter()
+                .filter(|package| package.install_eligible)
+                .count(),
+            245
+        );
+        assert_eq!(
+            PACKAGES
+                .iter()
+                .filter(|package| package.removal_eligible)
+                .count(),
+            52
+        );
         let ids: HashSet<_> = PACKAGES
             .iter()
             .map(|package| package.id.to_ascii_lowercase())
             .collect();
         assert_eq!(ids.len(), PACKAGES.len());
+    }
+
+    #[test]
+    fn pinned_winutil_snapshot_is_complete_and_sources_are_unambiguous() {
+        use sha2::{Digest, Sha256};
+        // Provenance and upstream descriptions are test inputs only. Neither JSON
+        // is compiled into the release binary or downloaded during these tests.
+        let snapshot = include_bytes!("../catalog/winutil-applications.json");
+        let metadata: serde_json::Value =
+            serde_json::from_str(include_str!("../catalog/winutil-source.json")).unwrap();
+        let applications: serde_json::Value = serde_json::from_slice(snapshot).unwrap();
+        let applications = applications.as_object().unwrap();
+        assert_eq!(applications.len(), 236);
+        assert_eq!(metadata["application_count"].as_u64(), Some(236));
+        let revision = metadata["commit"].as_str().unwrap();
+        assert_eq!(revision.len(), 40);
+        assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(
+            metadata["source_url"].as_str().unwrap(),
+            format!("https://github.com/ChrisTitusTech/winutil/blob/{revision}/config/applications.json")
+        );
+        assert!(format!("{:x}", Sha256::digest(snapshot))
+            .eq_ignore_ascii_case(metadata["source_sha256"].as_str().unwrap()));
+        let mut covered = HashSet::new();
+        for (key, entry) in applications {
+            let upstream_id = entry["winget"].as_str().unwrap();
+            let (id, source) = upstream_id
+                .strip_prefix("msstore:")
+                .map_or((upstream_id, Source::Winget), |id| {
+                    (id, Source::MicrosoftStore)
+                });
+            assert!(
+                covered.insert(id.to_ascii_lowercase()),
+                "duplicate upstream ID for {key}"
+            );
+            let package =
+                find(id).unwrap_or_else(|| panic!("missing WinUtil application {key}: {id}"));
+            assert_eq!(package.source, source, "{key}");
+            assert!(package.install_eligible, "{key}");
+            assert!(
+                !package.id.contains([';', ':', ' ', '\"', '\n', '\r']),
+                "{key}"
+            );
+            assert_eq!(
+                PACKAGES
+                    .iter()
+                    .filter(|candidate| candidate.id.eq_ignore_ascii_case(id))
+                    .count(),
+                1,
+                "ambiguous canonical ID for {key}"
+            );
+        }
+        assert_eq!(covered.len(), 236);
+    }
+
+    #[test]
+    fn expanded_catalog_searches_cli_aliases_and_explicit_variants() {
+        for (query, id) in [
+            ("uv", "astral-sh.uv"),
+            ("gh", "GitHub.cli"),
+            ("syncthing", "Syncthing.Syncthing"),
+            ("teamspeak6", "TeamSpeakSystems.TeamSpeakClient.Beta.6"),
+            ("firefoxesr", "Mozilla.Firefox.ESR"),
+            ("firefox esr", "Mozilla.Firefox.ESR"),
+            ("nodejslts", "OpenJS.NodeJS.LTS"),
+        ] {
+            for query in [query.to_string(), format!("+ {query}")] {
+                let hits = results(&[], &[], &query);
+                assert_eq!(hits[0].target, id, "{query}");
+                assert_eq!(hits[0].kind, Kind::Install, "{query}");
+                assert_eq!(
+                    hits.iter().filter(|item| item.target == id).count(),
+                    1,
+                    "{query}"
+                );
+                if id == "Mozilla.Firefox.ESR" {
+                    assert!(
+                        !hits.iter().any(|item| item.target == "Mozilla.Firefox"),
+                        "{query}"
+                    );
+                }
+            }
+        }
+        assert!(results(&[], &[], "@ uv").is_empty());
+        assert!(results(&[], &["uv 0.9.0 (x64)".into()], "+ uv").is_empty());
+    }
+
+    #[test]
+    fn installation_eligibility_and_store_labels_do_not_change_legacy_removal() {
+        let missing = missing_items(&[], &[], &HashSet::new());
+        assert!(!missing.iter().any(|item| item.target == "GIMP.GIMP"));
+        assert!(missing.iter().any(|item| item.target == "GIMP.GIMP.3"));
+        assert!(find_removal("GIMP.GIMP").is_some());
+        assert!(find_removal("GIMP.GIMP.3").is_none());
+        for query in ["gimp", "+ gimp"] {
+            let hits = results(&[], &[], query);
+            assert_eq!(hits[0].target, "GIMP.GIMP.3");
+            assert!(!hits.iter().any(|item| item.target == "GIMP.GIMP"));
+        }
+        let legacy = package_item(find("GIMP.GIMP").unwrap());
+        for query in ["+", "+ gimp"] {
+            assert!(search(
+                &[],
+                std::slice::from_ref(&legacy),
+                query,
+                9,
+                &HashMap::new()
+            )
+            .is_empty());
+        }
+        for (query, id) in [("chatgpt", "9NT1R1C2HH7J"), ("whatsapp", "9NKSQGP7F2NH")] {
+            let hits = results(&[], &[], query);
+            assert_eq!(hits[0].target, id);
+            assert_eq!(find(id).unwrap().source.as_str(), "msstore");
+            assert!(hits[0].subtitle.contains("Microsoft Store"));
+            assert!(!hits[0].subtitle.contains("WinGet"));
+        }
+        let chrome = package_item(find("Google.Chrome").unwrap());
+        assert!(chrome
+            .subtitle
+            .starts_with("Installer · Navigateur · WinGet"));
+    }
+
+    #[test]
+    fn installed_major_versions_and_architectures_do_not_hide_other_packages() {
+        for (display, present_id, absent_ids) in [
+            (
+                "Microsoft Windows Desktop Runtime 8.0.10 (x64)",
+                "Microsoft.DotNet.DesktopRuntime.8",
+                vec![
+                    "Microsoft.DotNet.DesktopRuntime.6",
+                    "Microsoft.DotNet.DesktopRuntime.9",
+                    "Microsoft.DotNet.DesktopRuntime.10",
+                ],
+            ),
+            (
+                "Amazon Corretto JDK 21.0.5 (LTS) (x64)",
+                "Amazon.Corretto.21.JDK",
+                vec!["Amazon.Corretto.8.JDK", "Amazon.Corretto.25.JDK"],
+            ),
+            (
+                "TeamSpeak 3 Client 3.6.2 (x64)",
+                "TeamSpeakSystems.TeamSpeakClient",
+                vec!["TeamSpeakSystems.TeamSpeakClient.Beta.6"],
+            ),
+            (
+                "TeamSpeak 6 Client Beta 6.0.0 (x64)",
+                "TeamSpeakSystems.TeamSpeakClient.Beta.6",
+                vec!["TeamSpeakSystems.TeamSpeakClient"],
+            ),
+            (
+                "Microsoft Visual C++ 2015-2022 Redistributable (x64) 14.44",
+                "Microsoft.VCRedist.2015+.x64",
+                vec!["Microsoft.VCRedist.2015+.x86"],
+            ),
+            (
+                "Microsoft Visual C++ 2015-2022 Redistributable (x86) 14.44",
+                "Microsoft.VCRedist.2015+.x86",
+                vec!["Microsoft.VCRedist.2015+.x64"],
+            ),
+            (
+                "Node.js LTS 22.0.0 (x64)",
+                "OpenJS.NodeJS.LTS",
+                vec!["OpenJS.NodeJS"],
+            ),
+            (
+                "Node.js 23.0.0 (x64)",
+                "OpenJS.NodeJS",
+                vec!["OpenJS.NodeJS.LTS"],
+            ),
+        ] {
+            let missing = missing_items(&[], &[display.into()], &HashSet::new());
+            assert!(
+                !missing.iter().any(|item| item.target == present_id),
+                "{display}"
+            );
+            for id in absent_ids {
+                assert!(
+                    missing.iter().any(|item| item.target == id),
+                    "{display} hides {id}"
+                );
+            }
+        }
+        let stable = missing_items(
+            &[],
+            &["Mozilla Firefox 145.0 (x64 fr)".into()],
+            &HashSet::new(),
+        );
+        assert!(stable
+            .iter()
+            .any(|item| item.target == "Mozilla.Firefox.ESR"));
+        let esr = missing_items(
+            &[],
+            &["Mozilla Firefox ESR 140.0 (x64 fr)".into()],
+            &HashSet::new(),
+        );
+        assert!(!esr.iter().any(|item| matches!(
+            item.target.as_str(),
+            "Mozilla.Firefox" | "Mozilla.Firefox.ESR"
+        )));
+    }
+
+    #[test]
+    fn numeric_alias_boundaries_reject_other_major_versions() {
+        for (display, id) in [
+            (
+                "Microsoft Windows Desktop Runtime 80.0 (x64)",
+                "Microsoft.DotNet.DesktopRuntime.8",
+            ),
+            ("Amazon Corretto JDK 210.0 (x64)", "Amazon.Corretto.21.JDK"),
+            ("TeamSpeak 30 Client", "TeamSpeakSystems.TeamSpeakClient"),
+            ("TeamSpeak60", "TeamSpeakSystems.TeamSpeakClient.Beta.6"),
+        ] {
+            let missing = missing_items(&[], &[display.into()], &HashSet::new());
+            assert!(missing.iter().any(|item| item.target == id), "{display}");
+        }
+        assert!(suffix_boundary("runtime 8", " 0 1"));
+        assert!(!suffix_boundary("runtime 8", "0"));
+        assert!(version_name_match("acme", "acme2 4"));
+        assert!(!version_name_match("runtime 8", "runtime 80"));
+    }
+
+    #[test]
+    fn imported_install_ids_cannot_expand_destructive_identity_matching() {
+        for package in PACKAGES.iter().filter(|package| !package.removal_eligible) {
+            let id_target = format!("id:{}", package.id);
+            let registry = [package.name.to_string()];
+            let application = app(package.name);
+            assert!(find_removal(package.id).is_none(), "{}", package.id);
+            assert!(
+                !removal_is_allowed(&id_target, &registry, &registry),
+                "{}",
+                package.id
+            );
+            assert!(
+                !registry_name_matches_target(&id_target, package.name),
+                "{}",
+                package.id
+            );
+            assert!(
+                !application_matches_removal(&application, &id_target),
+                "{}",
+                package.id
+            );
+            assert!(
+                !removal_requires_elevation_in_inventory(&id_target, &registry, &registry),
+                "{}",
+                package.id
+            );
+            let forged = Item::new("forged", package.name, "", "", Kind::Uninstall, &id_target);
+            assert!(
+                search_with_removals(&[], &[], &[forged], "-", 9, &HashMap::new()).is_empty(),
+                "{}",
+                package.id
+            );
+            assert!(
+                !removable_items(std::slice::from_ref(&application), &registry)
+                    .iter()
+                    .any(|item| item.target == id_target),
+                "{}",
+                package.id
+            );
+        }
+        for name in [
+            "uv 0.9.0 (x64)",
+            "GitHub CLI 2.81.0",
+            "Mozilla Firefox ESR 140.0 (x64 fr)",
+            ".NET Desktop Runtime 8.0.10 (x64)",
+        ] {
+            let registry = [name.to_string()];
+            let removals = removable_items(&[], &registry);
+            assert_eq!(removals.len(), 1, "{name}");
+            assert_eq!(removals[0].target, format!("name:{name}"), "{name}");
+            assert!(removal_is_allowed(
+                &removals[0].target,
+                &registry,
+                &registry
+            ));
+            assert!(!removal_is_allowed(&removals[0].target, &registry, &[]));
+            assert!(registry_name_matches_target(&removals[0].target, name));
+        }
+        assert!(!application_matches_removal(
+            &app("NodeJS"),
+            "name:NodeJS LTS 22.0"
+        ));
+        assert!(!application_matches_removal(
+            &app("TeamSpeak 3"),
+            "name:TeamSpeak 6"
+        ));
+        assert!(!application_matches_removal(
+            &app(".NET Desktop Runtime 8"),
+            "name:.NET Desktop Runtime 80"
+        ));
+        assert!(application_matches_removal(
+            &app("Syncthing"),
+            "name:Syncthing 2.0"
+        ));
     }
 
     #[test]
@@ -2033,7 +2171,9 @@ mod tests {
         assert_eq!(results[0].kind, Kind::Application);
         assert_eq!(results[1].target, "id:Mozilla.Firefox");
         assert_eq!(results[1].kind, Kind::Uninstall);
-        assert_eq!(results[2].title, "Fire Fox Toolkit");
+        assert_eq!(results[2].target, "Mozilla.Firefox.ESR");
+        assert_eq!(results[2].kind, Kind::Install);
+        assert_eq!(results[3].title, "Fire Fox Toolkit");
         assert!(results.iter().all(|item| item.kind != Kind::File));
         let registry_only = managed_results(
             &[app("Acme Writer"), app("Ace More Writer")],

@@ -504,6 +504,12 @@
     "Installation de {name} interrompue · détails dans les rapports": "Installation of {name} interrupted · details in reports",
     "Désinstallation interrompue · détails dans les rapports": "Uninstall interrupted · details in reports",
     "Dernières opérations de logiciels": "Recent software operations",
-    "minuteur": "timer"
+    "minuteur": "timer",
+    "Installer · {category} · Microsoft Store · Entrée pour installer": "Install · {category} · Microsoft Store · Enter to install",
+    "Documents": "Documents",
+    "Outils Microsoft": "Microsoft tools",
+    "Multimédia": "Multimedia",
+    "Outils professionnels": "Professional tools",
+    "Auto-hébergement": "Self-hosted tools"
   }
 }
