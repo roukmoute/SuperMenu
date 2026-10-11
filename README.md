@@ -1,5 +1,7 @@
 # Super Menu
 
+[Découvrir l’application](https://roukmoute.github.io/SuperMenu/) · [Télécharger Super Menu](https://github.com/roukmoute/SuperMenu/releases)
+
 Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Une fenêtre discrète, un raccourci global, une recherche au clavier. Le projet reprend l'idée des fournisseurs et de la personnalisation de [Walker](https://github.com/abenz1267/walker), avec une implémentation indépendante conçue pour Windows.
 
 ![Super Menu](docs/screenshot.png)
