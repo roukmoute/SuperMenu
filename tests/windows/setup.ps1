@@ -230,6 +230,27 @@ try {
     $setup = $setups[0].FullName
 
     if ($Capture) {
+        if (-not ('SuperMenuTests.SetupCapture' -as [type])) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace SuperMenuTests {
+    public static class SetupCapture {
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+        [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr hwnd, int command);
+        public static void ShowWithoutActivation(IntPtr hwnd, uint expectedPid) {
+            uint actualPid;
+            GetWindowThreadProcessId(hwnd, out actualPid);
+            if (hwnd == IntPtr.Zero || actualPid != expectedPid || !IsWindow(hwnd))
+                throw new InvalidOperationException("The installer HWND is not owned by this capture process.");
+            if (!ShowWindowAsync(hwnd, 4)) // SW_SHOWNOACTIVATE, never request focus.
+                throw new InvalidOperationException("The owned installer could not be shown for capture.");
+        }
+    }
+}
+"@
+        }
         # The welcome page is read-only. Terminate only this owned fixture process
         # after capture, without advancing the installer or touching desktop input.
         $captureStart = [Diagnostics.ProcessStartInfo]::new($setup)
@@ -244,16 +265,28 @@ try {
             }
             Wait-TestCondition -Context $captureContext -Message 'owned installer welcome page' -Condition {
                 $captureContext.Main = $captureContext.Api.FindWindow('#32770')
-                return $captureContext.Main -ne [IntPtr]::Zero -and $captureContext.Api.IsVisible($captureContext.Main) -and
+                return $captureContext.Main -ne [IntPtr]::Zero -and
                     @($captureContext.Api.GetControls($captureContext.Main) | Where-Object { $_.Text -match 'Install(?:er)? Super Menu' }).Count -gt 0
+            }
+            # Hidden startup is honored by NSIS on Welcome. Show only the owned
+            # dialog without activation, once the localized text is initialized.
+            [SuperMenuTests.SetupCapture]::ShowWithoutActivation($captureContext.Main, $captureContext.Pid)
+            Wait-TestCondition -Context $captureContext -Message 'owned installer is ready to paint without activation' -Condition {
+                return $captureContext.Api.IsVisible($captureContext.Main)
             }
             Start-Sleep -Milliseconds 100
             [void](Save-TestWindow -Context $captureContext -Window $captureContext.Main -Path (Join-Path $OutputDirectory 'setup-welcome.png'))
             [void]$captureContext.Api.Send($captureContext.Main, 0x0111, 1, 0) # Owned Next button.
             Wait-TestCondition -Context $captureContext -Message 'owned installer optional shortcut page' -Condition {
-                return @($captureContext.Api.GetControls($captureContext.Main) | Where-Object {
-                    $_.Class -ieq 'Button' -and ($_.Text -match 'Windows' -or $_.Text -match 'desktop|Bureau')
-                }).Count -eq 2
+                try {
+                    return @($captureContext.Api.GetControls($captureContext.Main) | Where-Object {
+                        $_.Class -ieq 'Button' -and ($_.Text -match 'Windows' -or $_.Text -match 'desktop|Bureau')
+                    }).Count -eq 2
+                } catch [InvalidOperationException] {
+                    # NSIS can destroy an enumerated child while switching pages.
+                    # Retry with fresh PID-checked handles within the same deadline.
+                    return $false
+                }
             }
             [void](Save-TestWindow -Context $captureContext -Window $captureContext.Main -Path (Join-Path $OutputDirectory 'setup-options.png'))
         } finally {
