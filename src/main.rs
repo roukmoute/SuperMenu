@@ -19,6 +19,7 @@ mod timer;
 mod timer_alert;
 mod timer_runtime;
 mod ui;
+mod unicode;
 mod uninstall_inventory;
 
 fn main() {

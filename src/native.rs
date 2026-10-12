@@ -1,6 +1,7 @@
 //! Windows integration. The keyboard hook and Shell enumeration never run on the UI thread.
 
 use crate::core::{Item, Kind};
+use crate::unicode;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -11,7 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Dwm::DwmGetWindowAttribute;
 use windows_sys::Win32::Storage::FileSystem::{
@@ -106,9 +106,8 @@ pub(crate) fn is_uninstall_shortcut_title(title: &str) -> bool {
                 .split_once(char::is_whitespace)
                 .is_some_and(|(release, platform)| version(release) && architecture(platform))
     }
-    let normalized: String = title
-        .nfd()
-        .filter(|character| !is_combining_mark(*character))
+    let normalized: String = unicode::decomposed_without_marks(title)
+        .chars()
         .flat_map(char::to_lowercase)
         .collect();
     let title = unwrap_title(&normalized);

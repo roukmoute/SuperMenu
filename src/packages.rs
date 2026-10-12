@@ -2,10 +2,10 @@
 //! Installation catalogue generated from a pinned WinUtil snapshot; see catalog/ and notices.
 //! Runtime uses only compact local names/IDs, never the upstream JSON or installer scripts.
 use crate::core::{self, Item, Kind};
+use crate::unicode;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Source {
@@ -104,7 +104,7 @@ fn normalize(value: &str) -> String {
         }
         return result;
     }
-    for character in value.nfd().filter(|c| !is_combining_mark(*c)) {
+    for character in unicode::decomposed_without_marks(value).chars() {
         // Keep product punctuation: Notepad++ differs from Notepad, and C# differs from C.
         if character.is_alphanumeric() || matches!(character, '+' | '#') {
             result.extend(character.to_lowercase());
@@ -1341,6 +1341,7 @@ impl Drop for RegistryKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
     fn app(name: &str) -> Item {
         Item::new(

@@ -1,8 +1,8 @@
+use crate::unicode;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
-use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
@@ -98,10 +98,7 @@ fn normalize(text: &str) -> String {
         }
         return result;
     }
-    for character in text
-        .nfd()
-        .filter(|character| !is_combining_mark(*character))
-    {
+    for character in unicode::decomposed_without_marks(text).chars() {
         if character.is_alphanumeric() {
             for lowercase in character.to_lowercase() {
                 match lowercase {
