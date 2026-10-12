@@ -5,17 +5,16 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::mem::{size_of, zeroed};
 use std::path::Path;
+use std::ptr::null;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
-use windows::Win32::Foundation::SIZE;
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::Shell::{
-    IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY,
-};
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{HWND, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, GetObjectW, BITMAP, HBITMAP};
-use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+use windows_sys::Win32::UI::Shell::{
+    SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SIIGBF_ICONONLY,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconIndirect, DestroyIcon, PostMessageW, HICON, ICONINFO,
 };
@@ -166,7 +165,8 @@ impl IconCache {
                         unsafe { CoUninitialize() };
                     }
                 }
-                let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
+                let initialized =
+                    unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) >= 0 };
                 let _apartment = initialized.then(|| Apartment);
                 while let Ok(request) = request_receiver.recv() {
                     if !worker_wake.alive.load(Ordering::Acquire) {
@@ -344,10 +344,9 @@ fn extract_icon(target: &str, size: u32) -> Option<OwnedIcon> {
     let parsing = parsing_name(target)?;
     let wide: Vec<u16> = parsing.encode_utf16().chain(Some(0)).collect();
     unsafe {
-        if let Ok(factory) = SHCreateItemFromParsingName::<_, _, IShellItemImageFactory>(
-            windows::core::PCWSTR(wide.as_ptr()),
-            None,
-        ) {
+        if let Ok(factory) =
+            crate::com::item_from_parsing_name::<crate::com::IShellItemImageFactory>(wide.as_ptr())
+        {
             if let Ok(bitmap) = factory.GetImage(
                 SIZE {
                     cx: size as i32,
@@ -355,7 +354,7 @@ fn extract_icon(target: &str, size: u32) -> Option<OwnedIcon> {
                 },
                 SIIGBF_ICONONLY,
             ) {
-                let bitmap = OwnedBitmap(bitmap.0);
+                let bitmap = OwnedBitmap(bitmap);
                 if let Some(icon) = bitmap_icon(&bitmap) {
                     return Some(icon);
                 }

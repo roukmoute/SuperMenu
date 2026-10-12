@@ -4,6 +4,7 @@
 //! complete fresh inventory before each mutation. Profiles and arbitrary product
 //! registry keys are deliberately outside this module's scope. Files are recycled
 //! with Windows' explicit RECYCLEONDELETE flag; there is no permanent-delete path.
+use crate::com::{self, ComPtr, IFileOperation, IPersistFile, IShellItem, IShellLinkW};
 use crate::uninstall_inventory::{
     self, Hive, InstalledEntry, Inventory, RegistryKey, RegistryView,
 };
@@ -16,26 +17,23 @@ use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::time::{SystemTime, UNIX_EPOCH};
-use windows::core::{Interface, PCWSTR};
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IPersistFile,
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, STGM_READ,
-};
-use windows::Win32::UI::Shell::{
-    FOLDERID_CommonPrograms, FOLDERID_Desktop, FOLDERID_Programs, FOLDERID_PublicDesktop,
-    FileOperation, IFileOperation, IShellItem, IShellLinkW, SHCreateItemFromParsingName,
-    SHGetKnownFolderPath, ShellLink, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE, FOF_ALLOWUNDO,
-    FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_NO_CONNECTED_ELEMENTS, FOF_SILENT, KF_FLAG_DEFAULT,
-    SLGP_RAWPATH,
-};
 use windows_sys::Win32::Foundation::{
     ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
 };
 use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+use windows_sys::Win32::System::Com::{
+    CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, STGM_READ,
+};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegEnumKeyExW, RegEnumValueW, RegOpenKeyExW, RegQueryValueExW,
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE,
     KEY_WOW64_32KEY, KEY_WOW64_64KEY, REG_EXPAND_SZ, REG_OPTION_OPEN_LINK, REG_SZ,
+};
+use windows_sys::Win32::UI::Shell::{
+    FOLDERID_CommonPrograms, FOLDERID_Desktop, FOLDERID_Programs, FOLDERID_PublicDesktop,
+    FileOperation, SHGetKnownFolderPath, ShellLink, FOFX_EARLYFAILURE, FOFX_RECYCLEONDELETE,
+    FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_NO_CONNECTED_ELEMENTS, FOF_SILENT,
+    KF_FLAG_DEFAULT, SLGP_RAWPATH,
 };
 
 #[link(name = "kernel32")]
@@ -1749,14 +1747,13 @@ fn shortcut_roots() -> Vec<PathBuf> {
         FOLDERID_Desktop,
         FOLDERID_PublicDesktop,
     ] {
-        let Ok(raw) = (unsafe { SHGetKnownFolderPath(&folder, KF_FLAG_DEFAULT, None) }) else {
+        let mut raw = null_mut();
+        if unsafe { SHGetKnownFolderPath(&folder, KF_FLAG_DEFAULT as u32, null_mut(), &mut raw) }
+            < 0
+        {
             continue;
-        };
-        let text = unsafe { raw.to_string() };
-        unsafe {
-            CoTaskMemFree(Some(raw.0.cast()));
         }
-        let Ok(text) = text else {
+        let Some(text) = (unsafe { com::take_co_task_string(raw) }) else {
             continue;
         };
         let path = PathBuf::from(text);
@@ -1826,28 +1823,28 @@ fn shortcut_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 
 fn shortcut_target(path: &Path) -> Result<PathBuf, String> {
     safe_ancestors(path)?;
-    let status = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    if status.is_err() {
+    let status = unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) };
+    if status < 0 {
         return Err(crate::i18n::tr(
             "Lecture COM du raccourci indisponible ; conservé.",
         ));
     }
     let _apartment = ComApartment(true);
-    let link: IShellLinkW = unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }
-        .map_err(|error| {
+    let link: ComPtr<IShellLinkW> =
+        unsafe { com::create_instance(&ShellLink, CLSCTX_INPROC_SERVER) }.map_err(|error| {
             crate::i18n::fmt(
                 "Raccourci non inspectable : {error}",
                 &[("error", error.to_string())],
             )
         })?;
-    let persist: IPersistFile = link.cast().map_err(|error| {
+    let persist: ComPtr<IPersistFile> = link.cast().map_err(|error| {
         crate::i18n::fmt(
             "Raccourci non inspectable : {error}",
             &[("error", error.to_string())],
         )
     })?;
     let encoded: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    unsafe { persist.Load(PCWSTR(encoded.as_ptr()), STGM_READ) }.map_err(|error| {
+    unsafe { persist.Load(encoded.as_ptr(), STGM_READ) }.map_err(|error| {
         crate::i18n::fmt(
             "Raccourci non inspectable : {error}",
             &[("error", error.to_string())],
@@ -1856,7 +1853,7 @@ fn shortcut_target(path: &Path) -> Result<PathBuf, String> {
     let mut destination = vec![0u16; 32_768];
     // RAWPATH reads the saved target. Never call Resolve: it can search the
     // machine/network, update the shortcut or display user-facing dialogs.
-    unsafe { link.GetPath(&mut destination, null_mut(), SLGP_RAWPATH.0 as u32) }.map_err(
+    unsafe { link.GetPath(&mut destination, null_mut(), SLGP_RAWPATH as u32) }.map_err(
         |error| {
             crate::i18n::fmt(
                 "Cible du raccourci non inspectable : {error}",
@@ -1878,23 +1875,21 @@ fn shortcut_target(path: &Path) -> Result<PathBuf, String> {
 fn recycle(path: &Path) -> Result<(), String> {
     // Windows 8+ can require recycling explicitly. Unlike a permanent delete
     // fallback, RECYCLEONDELETE returns a failure when Windows cannot recycle.
-    let status = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-    if status.is_err() {
+    let status = unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) };
+    if status < 0 {
         return Err(crate::i18n::fmt(
             "Corbeille indisponible ; emplacement conservé ({status}).",
-            &[("status", status.to_string())],
+            &[("status", format!("{status:#010X}"))],
         ));
     }
     let _apartment = ComApartment(true);
-    let operation: IFileOperation =
-        unsafe { CoCreateInstance(&FileOperation, None, CLSCTX_INPROC_SERVER) }.map_err(
-            |error| {
-                crate::i18n::fmt(
-                    "Corbeille indisponible ; emplacement conservé : {error}",
-                    &[("error", error.to_string())],
-                )
-            },
-        )?;
+    let operation: ComPtr<IFileOperation> =
+        unsafe { com::create_instance(&FileOperation, CLSCTX_INPROC_SERVER) }.map_err(|error| {
+            crate::i18n::fmt(
+                "Corbeille indisponible ; emplacement conservé : {error}",
+                &[("error", error.to_string())],
+            )
+        })?;
     let flags = FOFX_RECYCLEONDELETE
         | FOFX_EARLYFAILURE
         | FOF_ALLOWUNDO
@@ -1909,14 +1904,14 @@ fn recycle(path: &Path) -> Result<(), String> {
         )
     })?;
     let encoded: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    let item: IShellItem = unsafe { SHCreateItemFromParsingName(PCWSTR(encoded.as_ptr()), None) }
+    let item: ComPtr<IShellItem> = unsafe { com::item_from_parsing_name(encoded.as_ptr()) }
         .map_err(|error| {
-        crate::i18n::fmt(
-            "Emplacement conservé : {error}",
-            &[("error", error.to_string())],
-        )
-    })?;
-    unsafe { operation.DeleteItem(&item, None) }
+            crate::i18n::fmt(
+                "Emplacement conservé : {error}",
+                &[("error", error.to_string())],
+            )
+        })?;
+    unsafe { operation.DeleteItem(&item) }
         .and_then(|()| unsafe { operation.PerformOperations() })
         .map_err(|error| {
             crate::i18n::fmt(
@@ -1930,7 +1925,7 @@ fn recycle(path: &Path) -> Result<(), String> {
             &[("error", error.to_string())],
         )
     })?;
-    if aborted.as_bool() || path.exists() {
+    if aborted != 0 || path.exists() {
         return Err(crate::i18n::tr(
             "Windows a interrompu le déplacement dans la Corbeille ; emplacement conservé.",
         ));
@@ -2491,16 +2486,16 @@ mod tests {
     }
 
     fn write_fixture_shortcut(path: &Path, target: &Path) {
-        let status = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        assert!(status.is_ok());
+        let status = unsafe { CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) };
+        assert!(status >= 0);
         let _apartment = ComApartment(true);
-        let link: IShellLinkW =
-            unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.unwrap();
+        let link: ComPtr<IShellLinkW> =
+            unsafe { com::create_instance(&ShellLink, CLSCTX_INPROC_SERVER) }.unwrap();
         let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-        unsafe { link.SetPath(PCWSTR(target.as_ptr())) }.unwrap();
-        let persist: IPersistFile = link.cast().unwrap();
+        unsafe { link.SetPath(target.as_ptr()) }.unwrap();
+        let persist: ComPtr<IPersistFile> = link.cast().unwrap();
         let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        unsafe { persist.Save(PCWSTR(path.as_ptr()), true) }.unwrap();
+        unsafe { persist.Save(path.as_ptr(), true) }.unwrap();
     }
 
     #[test]

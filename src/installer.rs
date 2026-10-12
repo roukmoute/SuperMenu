@@ -414,12 +414,11 @@ fn spawn_elevated_helper(args: &[String], parent: HWND) -> Result<ElevatedProces
     let parameters = wide(&helper_parameters(args));
     let verb = wide("runas");
     unsafe {
-        let initialized = windows::Win32::System::Com::CoInitializeEx(
-            None,
-            windows::Win32::System::Com::COINIT_APARTMENTTHREADED
-                | windows::Win32::System::Com::COINIT_DISABLE_OLE1DDE,
-        )
-        .is_ok();
+        let initialized = windows_sys::Win32::System::Com::CoInitializeEx(
+            std::ptr::null(),
+            (windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED
+                | windows_sys::Win32::System::Com::COINIT_DISABLE_OLE1DDE) as u32,
+        ) >= 0;
         let mut info: SHELLEXECUTEINFOW = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
         // Security prompts still appear with FLAG_NO_UI; only redundant Shell
@@ -434,7 +433,7 @@ fn spawn_elevated_helper(args: &[String], parent: HWND) -> Result<ElevatedProces
         // Capture GetLastError before balancing COM can change the thread's error.
         let error = (!success).then(io::Error::last_os_error);
         if initialized {
-            windows::Win32::System::Com::CoUninitialize();
+            windows_sys::Win32::System::Com::CoUninitialize();
         }
         if let Some(error) = error {
             if !info.hProcess.is_null() {

@@ -4,6 +4,7 @@ mod app_icons;
 mod brand_icon;
 mod catalog;
 mod cleanup;
+mod com;
 mod config;
 mod core;
 mod i18n;

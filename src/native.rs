@@ -4,7 +4,6 @@ use crate::core::{Item, Kind};
 use crate::unicode;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
@@ -239,12 +238,13 @@ pub fn app_catalog() -> Vec<Item> {
 }
 
 fn shell_applications() -> Vec<Item> {
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
+    use crate::com::{self, ComPtr, IEnumShellItems, IShellItem};
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
     };
-    use windows::Win32::UI::Shell::{
-        BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, SHGetKnownFolderItem,
-        KF_FLAG_DEFAULT, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_NORMALDISPLAY,
+    use windows_sys::Win32::UI::Shell::{
+        BHID_EnumItems, FOLDERID_AppsFolder, KF_FLAG_DEFAULT, SIGDN, SIGDN_DESKTOPABSOLUTEPARSING,
+        SIGDN_NORMALDISPLAY,
     };
     struct ComApartment;
     impl Drop for ComApartment {
@@ -254,28 +254,21 @@ fn shell_applications() -> Vec<Item> {
             }
         }
     }
-    unsafe fn display_name(
-        item: &IShellItem,
-        mode: windows::Win32::UI::Shell::SIGDN,
-    ) -> Option<String> {
-        let pointer = item.GetDisplayName(mode).ok()?;
-        let text = pointer.to_string().ok();
-        CoTaskMemFree(Some(pointer.0.cast::<c_void>()));
-        text
+    unsafe fn display_name(item: &ComPtr<IShellItem>, mode: SIGDN) -> Option<String> {
+        com::take_co_task_string(item.GetDisplayName(mode).ok()?)
     }
     let mut result = Vec::new();
     unsafe {
-        if CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_err() {
+        if CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32) < 0 {
             return result;
         }
         let _apartment = ComApartment;
         let Ok(folder) =
-            SHGetKnownFolderItem::<IShellItem>(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None)
+            com::known_folder_item::<IShellItem>(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT)
         else {
             return result;
         };
-        let Ok(enumerator) = folder.BindToHandler::<_, IEnumShellItems>(None, &BHID_EnumItems)
-        else {
+        let Ok(enumerator) = folder.BindToHandler::<IEnumShellItems>(&BHID_EnumItems) else {
             return result;
         };
         let mut names = HashSet::new();
@@ -283,7 +276,7 @@ fn shell_applications() -> Vec<Item> {
         loop {
             let mut fetched = 0;
             let mut entries = [None];
-            if enumerator.Next(&mut entries, Some(&mut fetched)).is_err() || fetched == 0 {
+            if enumerator.Next(&mut entries, &mut fetched).is_err() || fetched == 0 {
                 break;
             }
             let Some(item) = entries[0].take() else { break };
@@ -440,11 +433,10 @@ fn shell_launch(target: &str, arguments: &str, flags: u32) -> Result<(), String>
     let verb = wide("open");
     unsafe {
         // Shell extensions may require COM. Balance only successful initialization on this thread.
-        let initialized = windows::Win32::System::Com::CoInitializeEx(
-            None,
-            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-        )
-        .is_ok();
+        let initialized = windows_sys::Win32::System::Com::CoInitializeEx(
+            null(),
+            windows_sys::Win32::System::Com::COINIT_APARTMENTTHREADED as u32,
+        ) >= 0;
         let mut info: SHELLEXECUTEINFOW = zeroed();
         info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
         info.fMask = flags;
@@ -459,7 +451,7 @@ fn shell_launch(target: &str, arguments: &str, flags: u32) -> Result<(), String>
             Some(win_error("Impossible de lancer cet élément"))
         };
         if initialized {
-            windows::Win32::System::Com::CoUninitialize();
+            windows_sys::Win32::System::Com::CoUninitialize();
         }
         if let Some(error) = error {
             return Err(error);
