@@ -10,6 +10,8 @@ Modifier `site/index.html`, `site/styles.css` et `site/script.js`. Les captures 
 python -m http.server 8765 --bind 127.0.0.1 --directory site
 ```
 
+Les références à `styles.css` et `script.js` dans `index.html` portent une empreinte de contenu (`?v=<12 premiers caractères du SHA-256>`). Après modification de ces fichiers, actualiser cette empreinte pour éviter qu’un navigateur conserve une ancienne version des styles ou des traductions.
+
 Ouvrir http://127.0.0.1:8765/ dans un navigateur. Vérifier le français, l'anglais, les cinq aperçus (applications, jeux Steam, fichiers, minuteur, calculatrice), les questions fréquentes et un écran étroit. Le contenu principal et le téléchargement fonctionnent aussi sans JavaScript.
 
 ## Publication GitHub Pages
