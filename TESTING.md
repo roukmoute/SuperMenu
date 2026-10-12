@@ -28,19 +28,13 @@ Le retour de lancement est également dessiné dans un bitmap natif : le test v�
 
 Les tests du suivi de désinstallation utilisent des processus PowerShell fictifs et un faux navigateur GUI compilé pour la fixture : un lanceur se termine avant son enfant différé, qui doit écrire son marqueur avant que la commande rende la main. Ils vérifient aussi le code du lanceur, l'absence d'interférence avec un processus extérieur et l'exclusion du seul navigateur validé, sans le fermer. Le test de l'alias WinGet exécute uniquement --version. Le nettoyage StreamFab utilise un dossier de fixture, avec son nom daté, des binaires et des fichiers personnels : seuls les binaires attribuables deviennent candidats. Aucun StreamFab réel n'est lancé, arrêté ou désinstallé par ces tests.
 
-Les régressions de focus vérifient les séquences de Win + Espace sans injecter de touches globales : relâchement du dernier Win, répétitions, annulation par un autre raccourci et deux ouvertures successives après une touche Windows seule. Des fenêtres natives de fixture vérifient le contrôle qui reçoit le focus, la fermeture lors d'une activation extérieure et la réconciliation des notifications reçues pendant une opération réentrante. La séquence avec le vrai menu Démarrer reste également un contrôle manuel sur un bureau interactif.
-
 ## Données et isolation
 
 `tests/fixtures/launcher.json` contient des applications et fichiers fictifs. `--smoke-test --smoke-fixture <fichier>` restaure leurs données de recherche et remplace l'indexation du PC. Le mode utilise les réglages par défaut et un historique de lancement vide. Il ne lit ni n'écrit l'index ou la configuration personnelle, n'installe pas de raccourci global et ne lance pas de surveillance de dossiers. Les activations de logiciels, fichiers, liens web, presse-papiers et actions système externes sont bloquées dans ce mode ; les tests utilisent les actions internes du menu.
 
 Chaque processus et dossier temporaire appartient à son test. Le support vérifie le PID de chaque fenêtre avant de la contrôler et borne les délais des messages Windows. Il ne ferme pas une instance de Super Menu déjà ouverte. Aucun logiciel utilisateur n'est installé ou désinstallé. Certains tests Rust créent des fichiers ou clés de registre jetables, et vérifient la Corbeille avec leurs propres fichiers ; ils nettoient uniquement ces ressources.
 
-Les suites Windows ne requièrent pas de clavier physique, de carte graphique particulière ou de nombre précis d'applications installées. Les tests Rust de focus utilisent deux fenêtres de fixture sur la même file UI. Leurs fenêtres actives modélisent le changement de premier plan et les assertions vérifient le vrai HWND du contrôle de saisie ; ils ne prennent pas le premier plan du bureau utilisateur. Les informations système disponibles varient sur une machine virtuelle : une valeur `Indisponible` est acceptée. La mémoire totale et les résolutions ne sont pas figées dans les assertions.
-
-## Contrôle manuel du focus
-
-Sur un bureau interactif, ouvrir Démarrer avec la touche Windows, puis appuyer sur Win + Espace et relâcher Windows. Taper un nom sans cliquer dans le champ : les caractères doivent apparaître dans Super Menu. Répéter après une fermeture et vérifier aussi un clic sur une autre fenêtre : le menu doit disparaître sans réactiver Démarrer ni reprendre la saisie. Les tests de fixture vérifient le contrôle natif et les séquences d'événements ; ils ne prétendent pas injecter ce raccourci dans le shell réel.
+Les tests natifs ne requièrent pas de clavier physique, de focus du bureau, de carte graphique particulière ou de nombre précis d'applications installées. Les informations système disponibles varient sur une machine virtuelle : une valeur `Indisponible` est acceptée. La mémoire totale et les résolutions ne sont pas figées dans les assertions.
 
 ## Rapports et diagnostics
 

@@ -30,7 +30,6 @@ const ABOUT: u32 = WM_APP + 9;
 const SMOKE_STATE: u32 = WM_APP + 10;
 const SMOKE_CTRL_BACKSPACE: u32 = WM_APP + 11;
 const SMOKE_LANGUAGE_PICKER: u32 = WM_APP + 12;
-const RECONCILE_ACTIVATION: u32 = WM_APP + 13;
 const TIMER_TICK: usize = 43;
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
@@ -916,10 +915,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             DEFERRED.with(|d| d.set(d.get() | 16));
         } else if msg == ABOUT {
             DEFERRED.with(|d| d.set(d.get() | 32));
-        } else if msg == WM_ACTIVATE || msg == RECONCILE_ACTIVATION {
-            // Activation can reenter while ShowWindow/SetFocus borrows State.
-            // Recheck the current foreground later instead of replaying a stale loss.
-            DEFERRED.with(|d| d.set(d.get() | 64));
         } else if msg == WM_TIMER && wp == TIMER_TICK {
             DEFERRED.with(|d| d.set(d.get() | 8));
         } else if msg == timer_alert::WM_TIMER_ALERT_DISMISSED {
@@ -1044,8 +1039,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             }
             0
         }
-        WM_ACTIVATE | RECONCILE_ACTIVATION => {
-            reconcile_activation(s.hwnd, s.edit, s.settings_open, s.smoke);
+        WM_ACTIVATE => {
+            if wp & 0xffff == WA_INACTIVE as usize && !s.settings_open && !s.smoke {
+                hide(s);
+            }
             0
         }
         WM_DPICHANGED => {
@@ -1466,9 +1463,7 @@ unsafe fn select(s: &mut State, delta: i32) {
 }
 unsafe fn set_query(s: &mut State, text: &str) {
     SetWindowTextW(s.edit, wide(text).as_ptr());
-    if !s.settings_open {
-        focus_search_if_foreground(s.hwnd, s.edit);
-    }
+    SetFocus(s.edit);
     let end = GetWindowTextLengthW(s.edit) as usize;
     SendMessageW(s.edit, EM_SETSEL, end, end as isize);
     SendMessageW(s.edit, EM_SCROLLCARET, 0, 0);
@@ -2651,59 +2646,12 @@ unsafe fn show(s: &mut State) {
         s.previous = foreground;
     }
     place(s);
-    ShowWindow(s.hwnd, SW_SHOWNOACTIVATE);
-    SetWindowPos(
-        s.hwnd,
-        HWND_TOPMOST,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-    );
-    set_query(s, "");
+    ShowWindow(s.hwnd, SW_SHOW);
+    SetWindowPos(s.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     if native::focus_window(s.hwnd).is_ok() {
-        focus_search_if_foreground(s.hwnd, s.edit);
-    } else {
-        // A rejected activation must not leave an unusable topmost popup behind.
-        // Give already queued activation notifications one turn to settle first.
-        PostMessageW(s.hwnd, RECONCILE_ACTIVATION, 0, 0);
+        SetFocus(s.edit);
     }
-}
-
-unsafe fn focus_search_if_foreground(hwnd: HWND, edit: HWND) {
-    focus_search_for_foreground(hwnd, edit, GetForegroundWindow());
-}
-
-unsafe fn focus_search_for_foreground(hwnd: HWND, edit: HWND, foreground: HWND) {
-    // SetFocus also activates its parent. Never let a query update compete with
-    // another application's foreground window after Windows rejects activation.
-    if foreground == hwnd && IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 {
-        SetFocus(edit);
-    }
-}
-
-unsafe fn reconcile_activation(hwnd: HWND, edit: HWND, modal: bool, smoke: bool) {
-    reconcile_activation_for_foreground(hwnd, edit, modal, smoke, GetForegroundWindow());
-}
-
-unsafe fn reconcile_activation_for_foreground(
-    hwnd: HWND,
-    edit: HWND,
-    modal: bool,
-    smoke: bool,
-    foreground: HWND,
-) {
-    if modal || IsWindowVisible(hwnd) == 0 {
-        return;
-    }
-    if foreground == hwnd {
-        focus_search_for_foreground(hwnd, edit, foreground);
-    } else if !smoke {
-        // The user or shell has already activated another window. Restoring the
-        // previous window here fights that activation (notably the Start menu).
-        ShowWindow(hwnd, SW_HIDE);
-    }
+    set_query(s, "");
 }
 unsafe fn hide(s: &mut State) {
     ShowWindow(s.hwnd, SW_HIDE);
@@ -3617,9 +3565,6 @@ unsafe fn replay_deferred(hwnd: HWND) {
     if deferred & 32 != 0 {
         PostMessageW(hwnd, ABOUT, 0, 0);
     }
-    if deferred & 64 != 0 {
-        PostMessageW(hwnd, RECONCILE_ACTIVATION, 0, 0);
-    }
     DEFERRED_TIMER_ACK.with(|d| {
         for generation in d.borrow_mut().drain(..) {
             PostMessageW(hwnd, timer_alert::WM_TIMER_ALERT_DISMISSED, generation, 0);
@@ -4467,243 +4412,6 @@ mod tests {
             ("= 1+1", ""),
         ] {
             assert_eq!(active_tab(query), expected, "query: {query}");
-        }
-    }
-
-    struct ActivationControls {
-        launcher: HWND,
-        edit: HWND,
-        other: HWND,
-        other_edit: HWND,
-        previous: HWND,
-    }
-
-    impl Drop for ActivationControls {
-        fn drop(&mut self) {
-            unsafe {
-                let foreground = GetActiveWindow();
-                let restore = (foreground == self.launcher || foreground == self.other)
-                    && IsWindow(self.previous) != 0;
-                DestroyWindow(self.launcher);
-                DestroyWindow(self.other);
-                if restore {
-                    SetActiveWindow(self.previous);
-                }
-                DEFERRED.with(|pending| pending.set(0));
-            }
-        }
-    }
-
-    impl ActivationControls {
-        unsafe fn new() -> Self {
-            let previous = GetActiveWindow();
-            let instance = GetModuleHandleW(null());
-            let parent = || {
-                CreateWindowExW(
-                    WS_EX_TOOLWINDOW,
-                    wide("STATIC").as_ptr(),
-                    wide("Super Menu activation fixture").as_ptr(),
-                    WS_POPUP,
-                    0,
-                    0,
-                    400,
-                    100,
-                    null_mut(),
-                    null_mut(),
-                    instance,
-                    null(),
-                )
-            };
-            let launcher = parent();
-            assert!(!launcher.is_null());
-            let other = parent();
-            let mut controls = Self {
-                launcher,
-                edit: null_mut(),
-                other,
-                other_edit: null_mut(),
-                previous,
-            };
-            assert!(!other.is_null());
-            let edit = |parent| {
-                CreateWindowExW(
-                    0,
-                    wide("EDIT").as_ptr(),
-                    null(),
-                    WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL as u32,
-                    0,
-                    0,
-                    300,
-                    30,
-                    parent,
-                    EDIT_ID as _,
-                    instance,
-                    null(),
-                )
-            };
-            controls.edit = edit(launcher);
-            controls.other_edit = edit(other);
-            assert!(!controls.edit.is_null() && !controls.other_edit.is_null());
-            ShowWindow(launcher, SW_SHOWNOACTIVATE);
-            ShowWindow(other, SW_SHOWNOACTIVATE);
-            controls
-        }
-
-        unsafe fn active(&self, hwnd: HWND, focus: HWND) {
-            // Model foreground transitions with real windows on our own input queue.
-            // This tests native edit focus without stealing the user's global foreground.
-            SetActiveWindow(hwnd);
-            assert_eq!(GetActiveWindow(), hwnd);
-            SetFocus(focus);
-            self.assert_focus(focus);
-        }
-        unsafe fn assert_focus(&self, expected: HWND) {
-            let mut information = GUITHREADINFO {
-                cbSize: size_of::<GUITHREADINFO>() as u32,
-                ..zeroed()
-            };
-            assert_ne!(GetGUIThreadInfo(GetCurrentThreadId(), &mut information), 0);
-            assert_eq!(information.hwndFocus, expected);
-            assert_eq!(GetFocus(), expected);
-        }
-    }
-
-    #[test]
-    fn native_activation_restores_focus_and_reconciles_stale_notifications() {
-        let _ui_test_guard = native::UI_TEST_LOCK.lock().unwrap();
-        unsafe {
-            let controls = ActivationControls::new();
-            controls.active(controls.launcher, controls.launcher);
-            reconcile_activation_for_foreground(
-                controls.launcher,
-                controls.edit,
-                false,
-                false,
-                GetActiveWindow(),
-            );
-            controls.assert_focus(controls.edit);
-
-            controls.active(controls.other, controls.other_edit);
-            reconcile_activation_for_foreground(
-                controls.launcher,
-                controls.edit,
-                false,
-                false,
-                GetActiveWindow(),
-            );
-            assert_eq!(IsWindowVisible(controls.launcher), 0);
-            assert_eq!(GetActiveWindow(), controls.other);
-            controls.assert_focus(controls.other_edit);
-
-            // A query update after rejected activation must not reactivate its parent.
-            ShowWindow(controls.launcher, SW_SHOWNOACTIVATE);
-            focus_search_for_foreground(controls.launcher, controls.edit, GetActiveWindow());
-            assert_eq!(GetActiveWindow(), controls.other);
-            controls.assert_focus(controls.other_edit);
-
-            // Modal dialogs and the existing fixture mode keep their own focus policy.
-            reconcile_activation_for_foreground(
-                controls.launcher,
-                controls.edit,
-                true,
-                false,
-                GetActiveWindow(),
-            );
-            reconcile_activation_for_foreground(
-                controls.launcher,
-                controls.edit,
-                false,
-                true,
-                GetActiveWindow(),
-            );
-            assert_ne!(IsWindowVisible(controls.launcher), 0);
-            assert_eq!(GetActiveWindow(), controls.other);
-            controls.assert_focus(controls.other_edit);
-
-            controls.active(controls.launcher, controls.launcher);
-            reconcile_activation_for_foreground(
-                controls.launcher,
-                controls.edit,
-                true,
-                false,
-                GetActiveWindow(),
-            );
-            controls.assert_focus(controls.launcher);
-
-            // Keep the same input queue and activation permission for both cases.
-            // Restore the user's original foreground only after all checks finish.
-            deferred_activation_checks(&controls);
-        }
-    }
-
-    unsafe extern "system" fn activation_test_proc(
-        hwnd: HWND,
-        msg: u32,
-        wp: WPARAM,
-        lp: LPARAM,
-        _: usize,
-        _: usize,
-    ) -> LRESULT {
-        if msg == RECONCILE_ACTIVATION {
-            reconcile_activation_for_foreground(
-                hwnd,
-                GetDlgItem(hwnd, EDIT_ID as i32),
-                false,
-                false,
-                GetActiveWindow(),
-            );
-            return 0;
-        }
-        DefSubclassProc(hwnd, msg, wp, lp)
-    }
-
-    unsafe fn deferred_activation_checks(controls: &ActivationControls) {
-        unsafe {
-            assert_ne!(
-                SetWindowSubclass(controls.launcher, Some(activation_test_proc), 2, 0),
-                0
-            );
-            controls.active(controls.other, controls.other_edit);
-            DEFERRED.with(|pending| pending.set(64));
-            replay_deferred(controls.launcher);
-
-            // The deferred loss is obsolete: Windows has since activated the launcher.
-            controls.active(controls.launcher, controls.launcher);
-            let mut message: MSG = zeroed();
-            assert_ne!(
-                PeekMessageW(
-                    &mut message,
-                    controls.launcher,
-                    RECONCILE_ACTIVATION,
-                    RECONCILE_ACTIVATION,
-                    PM_REMOVE,
-                ),
-                0
-            );
-            DispatchMessageW(&message);
-            assert_ne!(IsWindowVisible(controls.launcher), 0);
-            assert_eq!(GetActiveWindow(), controls.launcher);
-            controls.assert_focus(controls.edit);
-            assert_eq!(DEFERRED.with(Cell::get), 0);
-
-            // Conversely, a queued activation must not steal focus if it became stale.
-            DEFERRED.with(|pending| pending.set(64));
-            replay_deferred(controls.launcher);
-            controls.active(controls.other, controls.other_edit);
-            assert_ne!(
-                PeekMessageW(
-                    &mut message,
-                    controls.launcher,
-                    RECONCILE_ACTIVATION,
-                    RECONCILE_ACTIVATION,
-                    PM_REMOVE,
-                ),
-                0
-            );
-            DispatchMessageW(&message);
-            assert_eq!(IsWindowVisible(controls.launcher), 0);
-            assert_eq!(GetActiveWindow(), controls.other);
-            controls.assert_focus(controls.other_edit);
         }
     }
 
