@@ -51,6 +51,55 @@ try {
     Assert-Test -Context $context -Condition ([bool]$initial.indexing_finished) -Name 'the fixture is ready without a machine scan'
     Assert-Test -Context $context -Condition ($initial.applications -eq 5 -and $initial.files -eq 3 -and $initial.index_items -eq 8) -Name 'the fixture has five applications and three file entries'
 
+    # INDEX is the real notification delivered when background indexing publishes
+    # a new catalog. Repeating it with the isolated fixture makes the navigation
+    # regression deterministic without scanning the PC or starting another app.
+    Set-OwnQuery ''
+    $homeBeforeRefresh = Read-TestSnapshot -Context $context
+    $homePosition = @($homeBeforeRefresh.items).Count - 1
+    Assert-Test -Context $context -Condition ($homePosition -ge 9) -Name 'home has a navigation row beyond the initial nine-row viewport'
+    for ($step = 0; $step -lt $homePosition; $step++) { [void]$context.Api.Send($edit, 0x0100, 0x28, 0) }
+    $homeSelection = Read-TestSnapshot -Context $context
+    $homeId = $homeSelection.items[$homePosition].id
+    Assert-Test -Context $context -Condition ($homeSelection.selected -eq $homePosition -and $homeSelection.items[$homePosition].kind -ceq 'Navigation') -Name 'Down reaches the last home navigation row before an index refresh'
+    foreach ($refresh in 1..3) {
+        [void]$context.Api.Send($context.Main, 0x8002, 0, 0)
+        $homeAfterRefresh = Read-TestSnapshot -Context $context
+        $cases.Add([ordered]@{
+            case = 'home selection survives INDEX ' + $refresh; query = $homeAfterRefresh.query
+            selected = $homeAfterRefresh.selected; expected_selected = $homePosition
+            expected_id = $homeId; selected_id = $homeAfterRefresh.items[$homeAfterRefresh.selected].id
+        })
+        # The owner-drawn viewport offset derives from selected; keeping this
+        # lower row also prevents the visible list from jumping back to the top.
+        Assert-Test -Context $context -Condition ($homeAfterRefresh.query -ceq '') -Name ('home INDEX ' + $refresh + ': the query stays empty')
+        Assert-Test -Context $context -Condition ($homeAfterRefresh.selected -eq $homePosition) -Name ('home INDEX ' + $refresh + ': the lower selection and its viewport position are retained')
+        Assert-Test -Context $context -Condition ($homeAfterRefresh.items[$homeAfterRefresh.selected].id -ceq $homeId) -Name ('home INDEX ' + $refresh + ': the same navigation item remains selected')
+    }
+
+    Set-OwnQuery 'steam'
+    [void]$context.Api.Send($edit, 0x0100, 0x28, 0)
+    $searchSelection = Read-TestSnapshot -Context $context
+    Assert-Test -Context $context -Condition ($searchSelection.selected -eq 1 -and $searchSelection.items[1].id -ceq 'fixture:steam-support') -Name 'Down selects Steam Support Center before an index refresh'
+    foreach ($refresh in 1..3) {
+        [void]$context.Api.Send($context.Main, 0x8002, 0, 0)
+        $searchAfterRefresh = Read-TestSnapshot -Context $context
+        $cases.Add([ordered]@{
+            case = 'search selection survives INDEX ' + $refresh; query = $searchAfterRefresh.query
+            selected = $searchAfterRefresh.selected; expected_id = 'fixture:steam-support'
+            selected_id = $searchAfterRefresh.items[$searchAfterRefresh.selected].id
+        })
+        Assert-Test -Context $context -Condition ($searchAfterRefresh.query -ceq 'steam') -Name ('search INDEX ' + $refresh + ': the typed query is retained')
+        Assert-Test -Context $context -Condition ($searchAfterRefresh.selected -eq 1 -and $searchAfterRefresh.items[$searchAfterRefresh.selected].id -ceq 'fixture:steam-support') -Name ('search INDEX ' + $refresh + ': the second application remains selected')
+    }
+    # Replace the text through the native EDIT's EN_CHANGE path. The previously
+    # selected app is still present, but a different query must start at row zero.
+    [void]$context.Api.SendText($edit, 0x000C, 0, '@ steam')
+    $changedQuery = Read-TestSnapshot -Context $context
+    Assert-Test -Context $context -Condition ($changedQuery.query -ceq '@ steam') -Name 'changing the query updates the native search'
+    Assert-Test -Context $context -Condition ($changedQuery.selected -eq 0 -and $changedQuery.items[0].id -ceq 'fixture:steam') -Name 'changing the query selects the first result even when the previous item still exists'
+    $cases.Add([ordered]@{ case = 'changed query resets selection'; query = $changedQuery.query; selected = $changedQuery.selected; expected_id = 'fixture:steam'; selected_id = $changedQuery.items[$changedQuery.selected].id })
+
     # Inspect the application's current owner-drawn result list, not a second ranking implementation.
     Set-OwnQuery 'steam'
     $steam = Assert-OwnResults 'default applications' 'steam' @('fixture:steam', 'fixture:steam-support', 'uninstall:id:Valve.Steam') @('Application', 'Uninstall')

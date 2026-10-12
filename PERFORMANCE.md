@@ -1,5 +1,19 @@
 # Performances de Super Menu
 
+## Version 0.6.14
+
+Correctif de navigation : les mises à jour automatiques restaurent l’identité du résultat sélectionné avant de demander les icônes visibles. Si le résultat disparaît, la position précédente est bornée à la nouvelle liste ; une vraie modification de requête sélectionne toujours la première ligne. Le chemin de frappe ne clone aucun identifiant et ne parcourt pas les résultats pour conserver la sélection. Les rafraîchissements utilisent un seul identifiant et un parcours borné par le nombre de résultats. Aucun thread, temporisateur, état persistant, import ou dépendance n’est ajouté.
+
+Avec la même chaîne stable et le même profil que la mesure locale 0.6.13, le binaire fait **1 014 784 octets**, contre **1 014 272 octets** : **512 octets supplémentaires (+0,05 %)**. Le profil et les optimisations 0.6.13 sont conservés ; la variante nightly reste facultative et expérimentale. Cette comparaison de taille ne constitue pas une nouvelle mesure de latence.
+
+Le test natif échoue sur l’EXE officiel 0.6.13 au premier rafraîchissement et passe sur le correctif. Il vérifie une sélection en bas de l’accueil, une deuxième application sélectionnée, trois notifications d’index successives dans chaque cas, puis le retour à la première ligne lors d’un changement de requête. Trois tests Rust couvrent le réordonnancement, la disparition ou limitation des résultats et la liste vide. Validation locale : **226 tests Rust**, un benchmark facultatif ignoré et **1 017 assertions Windows** (382 lanceur, 278 À propos, 171 traductions, 40 console, 146 installateur).
+
+SHA-256 du binaire local mesuré :
+
+```text
+9052964F0D8A194F03A2BADB0DFAB6B4EC7BC97090DD4D1D358A8656272420F4
+```
+
 ## Version 0.6.13
 
 Le binaire mesuré fait **1 014 272 octets (0,97 Mio)**, contre **1 210 368 octets** pour la version 0.6.12 reconstruite avec la même chaîne de compilation : **196 096 octets économisés, soit 16,2 %**. Les deux versions utilisent Rust 1.94.1, MSVC, le runtime C statique et le profil Release inchangé (`opt-level = "z"`, LTO complet, une unité de compilation, symboles supprimés, `panic = "abort"`). La référence est le commit [`143f449`](https://github.com/roukmoute/SuperMenu/commit/143f449).

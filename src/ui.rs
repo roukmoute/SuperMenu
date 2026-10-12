@@ -1132,7 +1132,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 && s.clipboard.capture(s.settings.max_clipboard_entries)
                 && s.query.starts_with(':')
             {
-                update_results(s);
+                refresh_results(s);
             }
             0
         }
@@ -1219,7 +1219,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 )
             };
             drop(index);
-            update_results(s);
+            refresh_results(s);
             if !s.indexing.load(Ordering::Relaxed) && s.pending_refresh {
                 s.pending_refresh = false;
                 reindex(s);
@@ -1251,7 +1251,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                             &[("name", package.name.into())],
                         );
                     }
-                    update_results(s);
+                    refresh_results(s);
                 }
             }
             0
@@ -1274,7 +1274,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                     s.status = i18n::tr("Désinstallation interrompue · détails dans les rapports");
                     reindex(s);
                 }
-                update_results(s);
+                refresh_results(s);
             }
             0
         }
@@ -1389,7 +1389,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                 capture_bmp(s);
                 PostQuitMessage(0);
             } else if !s.edit.is_null() && IsWindowVisible(hwnd) != 0 && s.query.starts_with('~') {
-                update_results(s);
+                refresh_results(s);
             }
             0
         }
@@ -1620,6 +1620,21 @@ fn navigation_shortcut<'a>(item: &'a Item, cached: &'a CachedUi) -> Option<(&'a 
 }
 
 unsafe fn update_results(s: &mut State) {
+    rebuild_results(s, false);
+}
+
+// Background updates keep the selected item, including its derived scroll position.
+unsafe fn refresh_results(s: &mut State) {
+    rebuild_results(s, true);
+}
+
+fn selection_after_refresh(items: &[Item], previous: usize, selected_id: Option<&str>) -> usize {
+    selected_id
+        .and_then(|id| items.iter().position(|item| item.id == id))
+        .unwrap_or_else(|| previous.min(items.len().saturating_sub(1)))
+}
+
+unsafe fn rebuild_results(s: &mut State, preserve_selection: bool) {
     if s.edit.is_null() {
         return;
     }
@@ -1627,11 +1642,17 @@ unsafe fn update_results(s: &mut State) {
     s.query_text.resize(len + 1, 0);
     let read = GetWindowTextW(s.edit, s.query_text.as_mut_ptr(), s.query_text.len() as i32).max(0)
         as usize;
-    if !s
+    let query_changed = !s
         .query
         .encode_utf16()
-        .eq(s.query_text[..read].iter().copied())
-    {
+        .eq(s.query_text[..read].iter().copied());
+    let preserve_selection = preserve_selection && !query_changed;
+    let previous_selection = if preserve_selection { s.selected } else { 0 };
+    // Only background refreshes clone one result ID; typing keeps its existing fast path.
+    let selected_id = preserve_selection
+        .then(|| s.items.get(s.selected).map(|item| item.id.clone()))
+        .flatten();
+    if query_changed {
         s.timer_focus = None;
         s.query = String::from_utf16_lossy(&s.query_text[..read]);
     }
@@ -1819,7 +1840,7 @@ unsafe fn update_results(s: &mut State) {
             item.subtitle = i18n::tr("Désinstallation en cours · progression dans la console");
         }
     }
-    s.selected = 0;
+    s.selected = selection_after_refresh(&s.items, previous_selection, selected_id.as_deref());
     s.timing = format!("{:.1} ms", start.elapsed().as_secs_f64() * 1000.);
     prepare_result_icons(s);
     request_result_icons(s);
@@ -2071,11 +2092,7 @@ unsafe fn refresh_timer_view(s: &mut State) {
     {
         return;
     }
-    let selected = s.items.get(s.selected).map(|item| item.id.clone());
-    update_results(s);
-    if let Some(index) = selected.and_then(|id| s.items.iter().position(|item| item.id == id)) {
-        s.selected = index;
-    }
+    refresh_results(s);
 }
 
 unsafe fn schedule_timer_tick(s: &mut State) {
@@ -4185,6 +4202,36 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refreshed_selection_follows_identity_when_results_move() {
+        let item = |id| Item::new(id, id, "", "", Kind::Application, "");
+        let results = [item("new"), item("first"), item("selected")];
+        assert_eq!(selection_after_refresh(&results, 1, Some("selected")), 2);
+        assert_eq!(selection_after_refresh(&results, 2, Some("first")), 1);
+        assert_eq!(selection_after_refresh(&results, 0, None), 0);
+    }
+
+    #[test]
+    fn missing_selection_keeps_the_nearest_valid_row() {
+        let item = |id| Item::new(id, id, "", "", Kind::Application, "");
+        let results = [item("first"), item("second"), item("third")];
+        assert_eq!(selection_after_refresh(&results, 1, Some("removed")), 1);
+        assert_eq!(
+            selection_after_refresh(&results, 8, Some("outside-limit")),
+            2
+        );
+        assert_eq!(
+            selection_after_refresh(&results[..1], 8, Some("removed")),
+            0
+        );
+    }
+
+    #[test]
+    fn empty_refresh_resets_selection_without_underflow() {
+        assert_eq!(selection_after_refresh(&[], 9, Some("removed")), 0);
+        assert_eq!(selection_after_refresh(&[], usize::MAX, None), 0);
+    }
 
     #[test]
     fn glyph_origin_centers_visible_contours_instead_of_character_advance() {
