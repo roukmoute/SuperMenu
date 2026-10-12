@@ -10,7 +10,7 @@ Modifier `site/index.html`, `site/styles.css` et `site/script.js`. Les captures 
 python -m http.server 8765 --bind 127.0.0.1 --directory site
 ```
 
-Ouvrir http://127.0.0.1:8765/ dans un navigateur. Vérifier le français, l'anglais, les quatre aperçus, les questions fréquentes et un écran étroit. Le contenu principal et le téléchargement fonctionnent aussi sans JavaScript.
+Ouvrir http://127.0.0.1:8765/ dans un navigateur. Vérifier le français, l'anglais, les cinq aperçus (applications, jeux Steam, fichiers, minuteur, calculatrice), les questions fréquentes et un écran étroit. Le contenu principal et le téléchargement fonctionnent aussi sans JavaScript.
 
 ## Publication GitHub Pages
 

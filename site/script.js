@@ -2,26 +2,44 @@
 
 (() => {
   const english = {
+    navSpeed: "Responsiveness",
+    demoGames: "Steam games",
+    factSteamTitle: "Steam games",
+    factSteamText: "Your installed games, if you want them.",
+    speedEyebrow: "RESPONSIVE FROM THE FIRST LETTERS",
+    speedTitle: "A quick shortcut.\nA quick next step.",
+    speed1Title: "Results that keep up with your typing.",
+    speed1Text: "Search for apps in a local, in-memory index. Each letter narrows the results without waiting for a disk search or an online service.",
+    speed2Title: "Ready when you come back.",
+    speed2Text: "Win + Space brings back results that are already available. Index updates and icons are prepared in the background.",
+    speed3Title: "Quiet between shortcuts.",
+    speed3Text: "File changes are grouped while the menu is hidden. When you open it, results in memory appear before the update runs.",
+    speedProof: "Search, display, memory: measurements and their methods are public. Results depend on your PC and indexed catalog.",
+    viewPerformance: "View the measurements",
+    moduleSteam: "Steam games",
+    moduleSteamText: "Your installed games in app search. Enable the option in settings; it is off by default.",
+    faqSteamQuestion: "How do I add my Steam games?",
+    faqSteamAnswer: "Enable “Installed Steam games” in settings. Games registered by Steam on Windows appear in app search with their local icons. Enter launches them through Steam. The option is off by default; games without these registrations are not added automatically.",
     skip: "Skip to content", navModules: "What it can do", navSource: "Source code ↗", navDownload: "Download ↓",
-    heroEyebrow: "NATIVE WINDOWS. RIGHT AT YOUR FINGERTIPS.", heroTitle: "It all starts with", heroEmphasis: "a shortcut.",
-    heroDescription: "Open an app. Find a file. Set a timer. Super Menu brings everyday actions together in one quiet little window.",
+    heroEyebrow: "NATIVE WINDOWS. SMALL. RESPONSIVE.", heroTitle: "A menu that", heroEmphasis: "keeps up with you.",
+    heroDescription: "One shortcut, results that keep up with your typing. Apps, files, timers, and optional Steam games: everyday actions in a launcher smaller than 1 MiB.",
     downloadWindows: "Download for Windows", releaseNotes: "Explore version 0.6.17", downloadNote: "Windows 10 / 11 · x64 · free and open source",
     space: "Space", shortcutHint: "Your new starting point.", previewLabel: "TRY THE PREVIEW", previewType: "illustrative demo", tagline: "Right at your fingertips",
     demoInputLabel: "Search the illustrative demo examples", demoApps: "Applications", demoFiles: "Files", demoTimer: "Timer", demoCalc: "Calculator", demoLocal: "local index", demoHelp: "↑ ↓ navigate   ↵ open   Esc close",
-    previewHint: "Switch modules or try “chrome”, “steam”, “/ project”, “timer 5m”.",
-    sizeNumber: "≈ 0.97", sizeUnit: "MiB", factSize: "The executable in version 0.6.17", native: "native", factNative: "Rust + Win32. No embedded browser.", file: "file", factFile: "One standalone executable. No .NET required.", factProof: "Small by choice.\nPublic measurements.",
+    previewHint: "Switch previews or try “artisan”, “chrome”, “/ project”, “timer 5m”.",
+    sizeNumber: "< 1", sizeUnit: "MiB", factSize: "The Windows executable in version 0.6.17", native: "native", factNative: "Rust + Win32. No embedded browser.", factProof: "Small and responsive.\nPublic measurements.",
     overviewEyebrow: "LET THE KEYBOARD LEAD THE WAY", overviewTitle: "Fewer detours.\nMore everyday flow.",
     screenshotAlt: "A real screenshot of Super Menu in its light theme: applications, installation, files, calculator, timers and clipboard.", screenshotCaption: "The real app, in its light theme.",
     note1Title: "The right result, front and center.", note1Text: "Without a prefix, search your applications. Files have their own entry with /. Real Windows shortcuts and icons keep their place.",
     note2Title: "Missing an app? Install it.", note2Text: "Chrome, Steam, VLC, Obsidian… The 245-app catalog, including all 236 Chris Titus WinUtil applications, offers installation through WinGet. Installed applications can also be uninstalled and cleaned up.",
-    note3Title: "An index working behind the scenes.", note3Text: "Search uses an in-memory index. Rebuilding it and loading icons happen in the background, with a local cache for the next launch.",
+    note3Title: "Your games too, if you want them.", note3Text: "Enable “Installed Steam games” in settings. Find games registered by Steam on Windows with their icons, then launch them from the same search as your applications.",
     localNote: "Your application and file searches stay local. No remote service is required.",
     modulesEyebrow: "ONE SMALL WINDOW. PLENTY OF POSSIBILITIES.", modulesTitle: "Everyday actions,\nin a few characters.", modulesAside: "A prefix to switch context.\nEnter to take action.",
-    moduleApps: "Applications", moduleAppsText: "Launch installed applications with their real Windows icons.", moduleFiles: "Files & folders", moduleFilesText: "Find files in the folders you choose to index.", moduleFilesExample: "/ project",
+    moduleApps: "Applications", moduleAppsText: "Search without a prefix and launch your apps with their real Windows icons.", moduleFiles: "Files & folders", moduleFilesText: "Find files in the folders you choose to index.", moduleFilesExample: "/ project",
     moduleInstall: "Install & remove", moduleInstallText: "A WinGet catalog to install, an action to uninstall.", moduleTimer: "Timers", moduleTimerText: "Multiple countdowns, a pause button, and an alert when time is up.", moduleTimerExample: "timer 5m Tea",
     moduleCalc: "Calculator", moduleCalcText: "Calculate locally and copy the result without opening another app.", moduleClipboard: "Clipboard", moduleClipboardText: "A local, in-memory text history you can enable if you want it.",
     moduleWeb: "Web & commands", moduleWebText: "Search in your browser or run your own custom commands.", modulesMore: "Also included: open windows, symbols, system actions, and customizable themes.", allShortcuts: "All the shortcuts",
-    downloadEyebrow: "A SMALL INSTALLER. AN AUTOMATIC LOCATION.", downloadTitle: "Three steps.", downloadEmphasis: "And it’s yours.", downloadSetup: "Download the installer", portableZip: "Portable version (.zip)", versionNote: "Version 0.6.17 · Windows x64",
+    downloadEyebrow: "A SMALL INSTALLER. AN AUTOMATIC LOCATION.", downloadTitle: "Three steps.", downloadEmphasis: "And it’s yours.", downloadSetup: "Download the installer", portableZip: "Portable version (.zip)", versionNote: "Version 0.6.17 · prerelease · Windows x64",
     step1Title: "Download and install.", step1Text: "Open the installer: it puts Super Menu in the right place and adds its Start Menu shortcut. No administrator rights required.",
     step2Title: "Launch Super Menu.", step2Text: "Choose French or English on first launch. English is downloaded once, then cached locally.",
     step3Title: "Press Win + Space.", step3Text: "Type, select, and confirm. The menu waits in the system tray, and you can customize its shortcut in settings.",
@@ -52,8 +70,8 @@
   let language = "fr";
   let mode = "apps";
   const strings = {
-    fr: { apps: "APPLICATIONS", files: "FICHIERS", timer: "MINUTEUR", calc: "CALCULATRICE", app: "Application Windows", remove: "Désinstaller et nettoyer", install: "Installer · WinGet", demo: "Exemples de présentation : aucune application n’est lancée ou installée depuis cette page.", empty: "Aucun exemple pour cette recherche. Essayez obsidian, steam, chrome, / projet ou minuteur 5m.", doc: "Document · Dossier choisi", folder: "Dossier · Index local", startTimer: "Démarrer le minuteur", minutes: "minutes", timerHelp: "Dans l’application, Entrée démarre le compte à rebours. L’alerte reste visible jusqu’à sa fermeture.", timerInvalid: "Essayez minuteur 5m. L’application accepte aussi les secondes et les heures.", copy: "Copier le résultat", calcHelp: "Exemple de calcul local. Dans l’application, le résultat est copié dans votre presse-papiers.", calcInvalid: "Essayez = (15 + 5) * 3, ou une expression avec + − * / et des parenthèses." },
-    en: { apps: "APPLICATIONS", files: "FILES", timer: "TIMER", calc: "CALCULATOR", app: "Windows application", remove: "Uninstall and clean up", install: "Install · WinGet", demo: "Illustrative examples: no application is launched or installed from this page.", empty: "No example for this search. Try obsidian, steam, chrome, / project, or timer 5m.", doc: "Document · Chosen folder", folder: "Folder · Local index", startTimer: "Start timer", minutes: "minutes", timerHelp: "In the application, Enter starts the countdown. The alert stays visible until dismissed.", timerInvalid: "Try timer 5m. The application also accepts seconds and hours.", copy: "Copy result", calcHelp: "An example of a local calculation. In the application, the result is copied to your clipboard.", calcInvalid: "Try = (15 + 5) * 3, or an expression with + − * / and parentheses." }
+    fr: { apps: "APPLICATIONS", games: "JEUX STEAM", steamGame: "Jeu Steam", steamDemo: "Exemple avec l’option Steam activée : aucun jeu n’est lancé depuis cette page.", files: "FICHIERS", timer: "MINUTEUR", calc: "CALCULATRICE", app: "Application Windows", remove: "Désinstaller et nettoyer", install: "Installer · WinGet", demo: "Exemples de présentation : aucune application n’est lancée ou installée depuis cette page.", empty: "Aucun exemple pour cette recherche. Essayez obsidian, artisan, chrome, / projet ou minuteur 5m.", doc: "Document · Dossier choisi", folder: "Dossier · Index local", startTimer: "Démarrer le minuteur", minutes: "minutes", timerHelp: "Dans l’application, Entrée démarre le compte à rebours. L’alerte reste visible jusqu’à sa fermeture.", timerInvalid: "Essayez minuteur 5m. L’application accepte aussi les secondes et les heures.", copy: "Copier le résultat", calcHelp: "Exemple de calcul local. Dans l’application, le résultat est copié dans votre presse-papiers.", calcInvalid: "Essayez = (15 + 5) * 3, ou une expression avec + − * / et des parenthèses." },
+    en: { apps: "APPLICATIONS", games: "STEAM GAMES", steamGame: "Steam game", steamDemo: "Example with the Steam option enabled: no game is launched from this page.", files: "FILES", timer: "TIMER", calc: "CALCULATOR", app: "Windows application", remove: "Uninstall and clean up", install: "Install · WinGet", demo: "Illustrative examples: no application is launched or installed from this page.", empty: "No example for this search. Try obsidian, artisan, chrome, / project, or timer 5m.", doc: "Document · Chosen folder", folder: "Folder · Local index", startTimer: "Start timer", minutes: "minutes", timerHelp: "In the application, Enter starts the countdown. The alert stays visible until dismissed.", timerInvalid: "Try timer 5m. The application also accepts seconds and hours.", copy: "Copy result", calcHelp: "An example of a local calculation. In the application, the result is copied to your clipboard.", calcInvalid: "Try = (15 + 5) * 3, or an expression with + − * / and parentheses." }
   };
 
   function textWithBreaks(element, value) {
@@ -104,6 +122,13 @@
         path.setAttribute("fill", fill); path.setAttribute("d", d); svg.append(path);
       }
       symbol.append(svg);
+    } else if (icon === "game") {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor"); svg.setAttribute("stroke-width", "1.4");
+      for (const d of ["M8 7h8a4 4 0 0 1 4 3l1 6a2 2 0 0 1-3 2l-3-2H9l-3 2a2 2 0 0 1-3-2l1-6a4 4 0 0 1 4-3Z", "M6 11h4m-2-2v4m7-3h.01m3 3h.01"]) {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path"); path.setAttribute("d", d); path.setAttribute("stroke-linecap", "round"); svg.append(path);
+      }
+      symbol.append(svg);
     } else symbol.textContent = icon;
     const description = document.createElement("div");
     const strong = document.createElement("strong"); strong.textContent = title;
@@ -145,18 +170,19 @@
     if (input.startsWith("/")) mode = "files";
     else if (input.startsWith("=")) mode = "calc";
     else if (/^(minuteur|timer)(?:\s|$)/i.test(input)) mode = "timer";
+    else if (/^(?:@\s*)?(?:artisan|stardew)(?:\s|$)/i.test(input)) mode = "games";
     else mode = "apps";
     const s = strings[language];
     category.textContent = s[mode];
     for (const tab of tabs) { const active = tab.dataset.demo === mode; tab.classList.toggle("is-active", active); tab.setAttribute("aria-pressed", String(active)); }
     results.replaceChildren();
-    if (mode === "apps") {
+    if (mode === "apps" || mode === "games") {
       const term = lower.replace(/^[@+]\s*/, "");
-      const examples = [{ name: "Obsidian", icon: "obsidian", installed: true }, { name: "Steam", icon: "◉", installed: true }, { name: "VLC media player", icon: "△", installed: true }, { name: "Google Chrome", icon: "↓", installed: false }];
+      const examples = [{ name: "Obsidian", icon: "obsidian", installed: true }, { name: "Steam", icon: "◉", installed: true }, { name: "Artisan TD", icon: "game", installed: true, game: true }, { name: "Stardew Valley", icon: "game", installed: true, game: true }, { name: "VLC media player", icon: "△", installed: true }, { name: "Google Chrome", icon: "↓", installed: false }];
       const matches = examples.filter(app => app.name.toLowerCase().includes(term) && (!input.startsWith("+") || !app.installed) && (!input.startsWith("@") || app.installed));
-      for (const [index, app] of matches.entries()) makeResult(app.name, app.installed ? s.app : s.install, app.icon, index === 0);
-      if (matches.length === 1 && matches[0].installed && !input.startsWith("@")) makeResult(`${language === "en" ? "Uninstall" : "Désinstaller"} ${matches[0].name}`, s.remove, "−");
-      note(matches.length ? s.demo : s.empty, !matches.length);
+      for (const [index, app] of matches.entries()) makeResult(app.name, app.game ? s.steamGame : app.installed ? s.app : s.install, app.icon, index === 0);
+      if (matches.length === 1 && matches[0].installed && !matches[0].game && !input.startsWith("@")) makeResult(`${language === "en" ? "Uninstall" : "Désinstaller"} ${matches[0].name}`, s.remove, "−");
+      note(matches.length ? (mode === "games" ? s.steamDemo : s.demo) : s.empty, !matches.length);
     } else if (mode === "files") {
       const term = lower.replace(/^\/\s*/, "");
       const names = language === "en" ? ["Project notes.md", "Projects", "Project sketch.pdf"] : ["Notes du projet.md", "Projets", "Croquis du projet.pdf"];
@@ -179,7 +205,7 @@
   query.addEventListener("input", render);
   query.addEventListener("keydown", event => { if (event.key === "Enter") event.preventDefault(); });
   for (const tab of tabs) tab.addEventListener("click", () => {
-    const values = { apps: "obsidian", files: language === "en" ? "/ project" : "/ projet", timer: language === "en" ? "timer 5m" : "minuteur 5m", calc: "= (15 + 5) * 3" };
+    const values = { apps: "obsidian", games: "artisan", files: language === "en" ? "/ project" : "/ projet", timer: language === "en" ? "timer 5m" : "minuteur 5m", calc: "= (15 + 5) * 3" };
     query.value = values[tab.dataset.demo]; render();
   });
   render();

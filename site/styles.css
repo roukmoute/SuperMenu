@@ -427,11 +427,13 @@ kbd {
 
 .demo-tabs {
   display:flex;
+  flex-wrap:wrap;
   gap:17px;
   padding:17px 2px 12px;
 }
 
 .demo-tabs button {
+  white-space:nowrap;
   border:0;
   background:none;
   min-height:24px;
@@ -1627,6 +1629,31 @@ details p a {
   .site-footer nav {
     gap:16px;
   }
+}
+
+
+.fact-steam:hover strong { color:var(--accent); }
+.fact-steam strong { font-size:27px; }
+.speed-section { border-bottom:1px solid var(--line); }
+.speed-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:36px; }
+.speed-card .note-number { display:block; margin-bottom:17px; }
+.speed-card h3 { max-width:310px; }
+.speed-card p { color:var(--muted); font-size:13px; line-height:1.85; margin:13px 0 0; }
+.speed-proof { display:flex; align-items:center; justify-content:space-between; gap:28px; border-top:1px solid var(--line); margin-top:35px; padding-top:22px; }
+.speed-proof p { max-width:650px; margin:0; color:var(--muted); font-size:11px; line-height:1.8; }
+.speed-proof .text-link { flex-shrink:0; font-size:12px; }
+@media(max-width:800px) {
+  .speed-grid { grid-template-columns:1fr; gap:28px; }
+  .speed-card { display:grid; grid-template-columns:26px 1fr; gap:8px 16px; }
+  .speed-card .note-number { grid-row:1/3; margin:4px 0 0; }
+  .speed-card h3 { max-width:none; }
+  .speed-card p { grid-column:2; margin:0; }
+  .speed-proof { align-items:flex-start; flex-direction:column; gap:13px; }
+}
+@media(max-width:480px) {
+  .fact-steam strong { font-size:23px; }
+  .speed-card h3 { font-size:16px; }
+  .speed-card p { font-size:12px; }
 }
 
 @media(prefers-reduced-motion:reduce) {
