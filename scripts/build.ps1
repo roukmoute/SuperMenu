@@ -2,6 +2,7 @@ param(
     [switch]$SkipChecks,
     [switch]$Archive,
     [switch]$Setup,
+    [switch]$Nightly,
     [string]$OutputDirectory = ''
 )
 
@@ -20,6 +21,34 @@ function Invoke-Cargo {
     if ($LASTEXITCODE -ne 0) { throw "cargo a échoué avec le code $LASTEXITCODE." }
 }
 
+# Optional smaller build: nightly Rust rebuilds the standard library for size and aborts
+# panics without formatting a message. A windows-subsystem executable has no console to
+# print one anyway, so only the panic and backtrace machinery disappears from the binary.
+# The toolchain is selected through PATH so that cargo, rustc and the sysroot all match.
+function Build-NightlyRelease {
+    param([string]$TargetDirectory, [string]$BinaryName)
+    $nightlyCargo = & rustup which --toolchain nightly cargo 2>$null
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($nightlyCargo)) {
+        throw 'La construction nightly nécessite rustup et le toolchain nightly : rustup toolchain install nightly --component rust-src'
+    }
+    $installed = @(& rustup component list --toolchain nightly --installed)
+    if (-not ($installed | Where-Object { $_ -match '^rust-src' })) {
+        throw 'Le composant rust-src du toolchain nightly est requis : rustup component add rust-src --toolchain nightly'
+    }
+    $previousPath = $env:PATH
+    $previousFlags = $env:RUSTFLAGS
+    try {
+        $env:PATH = (Split-Path -Parent $nightlyCargo) + [IO.Path]::PathSeparator + $env:PATH
+        $env:RUSTFLAGS = ($previousFlags + ' -Zunstable-options -Cpanic=immediate-abort').Trim()
+        Invoke-Cargo -CargoArguments @('build', '--release', '--locked', '--target', 'x86_64-pc-windows-msvc', '-Zbuild-std=std,panic_abort', '-Zbuild-std-features=optimize_for_size')
+    }
+    finally {
+        $env:PATH = $previousPath
+        $env:RUSTFLAGS = $previousFlags
+    }
+    return Join-Path $TargetDirectory ('x86_64-pc-windows-msvc\release\' + $BinaryName + '.exe')
+}
+
 Push-Location -LiteralPath $repositoryRoot
 try {
     # Embed the MSVC C runtime so the shipped executable needs no runtime installer.
@@ -30,19 +59,27 @@ try {
         Invoke-Cargo -CargoArguments @('clippy', '--locked', '--all-targets', '--', '-D', 'warnings')
         Invoke-Cargo -CargoArguments @('test', '--locked')
     }
-    Invoke-Cargo -CargoArguments @('build', '--release', '--locked')
-    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-    $benchmarkPath = Join-Path $OutputDirectory 'benchmark.txt'
-    Invoke-Cargo -CargoArguments @('run', '--release', '--locked', '--', '--benchmark', '--report', $benchmarkPath)
-    if (-not (Test-Path -LiteralPath $benchmarkPath) -or (Get-Item -LiteralPath $benchmarkPath).Length -eq 0) {
-        throw 'Le benchmark n''a pas produit son rapport.'
-    }
     $metadataText = & cargo metadata --locked --format-version 1 --no-deps
     if ($LASTEXITCODE -ne 0) { throw 'Impossible de lire les métadonnées Cargo.' }
     $metadata = $metadataText | ConvertFrom-Json
     $binaryTarget = @($metadata.packages | ForEach-Object { $_.targets } | Where-Object { $_.kind -contains 'bin' })[0]
     if ($null -eq $binaryTarget) { throw 'Aucune cible exécutable Cargo trouvée.' }
-    $binaryPath = Join-Path $metadata.target_directory ("release\" + $binaryTarget.name + '.exe')
+    if ($Nightly) {
+        $binaryPath = Build-NightlyRelease -TargetDirectory $metadata.target_directory -BinaryName $binaryTarget.name
+    } else {
+        Invoke-Cargo -CargoArguments @('build', '--release', '--locked')
+        $binaryPath = Join-Path $metadata.target_directory ("release\" + $binaryTarget.name + '.exe')
+    }
+    if (-not (Test-Path -LiteralPath $binaryPath)) { throw "Exécutable absent après la compilation : $binaryPath" }
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    $benchmarkPath = Join-Path $OutputDirectory 'benchmark.txt'
+    # The benchmark runs the exact executable that is distributed, whichever toolchain built it.
+    # Start-Process waits for this windows-subsystem program, unlike the call operator.
+    $benchmark = Start-Process -FilePath $binaryPath -ArgumentList @('--benchmark', '--report', $benchmarkPath) -NoNewWindow -Wait -PassThru
+    if ($benchmark.ExitCode -ne 0) { throw "Le benchmark a échoué avec le code $($benchmark.ExitCode)." }
+    if (-not (Test-Path -LiteralPath $benchmarkPath) -or (Get-Item -LiteralPath $benchmarkPath).Length -eq 0) {
+        throw 'Le benchmark n''a pas produit son rapport.'
+    }
     if (-not $SkipChecks) {
         & (Join-Path $PSScriptRoot 'test.ps1') -Executable $binaryPath -SkipRustChecks
         if (-not $?) { throw 'Les tests du menu Windows ont échoué.' }
