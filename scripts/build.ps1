@@ -75,7 +75,8 @@ try {
     $benchmarkPath = Join-Path $OutputDirectory 'benchmark.txt'
     # The benchmark runs the exact executable that is distributed, whichever toolchain built it.
     # Start-Process waits for this windows-subsystem program, unlike the call operator.
-    $benchmark = Start-Process -FilePath $binaryPath -ArgumentList @('--benchmark', '--report', $benchmarkPath) -NoNewWindow -Wait -PassThru
+    # It joins the argument list without quoting, so the report path is quoted here.
+    $benchmark = Start-Process -FilePath $binaryPath -ArgumentList @('--benchmark', '--report', ('"' + $benchmarkPath + '"')) -NoNewWindow -Wait -PassThru
     if ($benchmark.ExitCode -ne 0) { throw "Le benchmark a échoué avec le code $($benchmark.ExitCode)." }
     if (-not (Test-Path -LiteralPath $benchmarkPath) -or (Get-Item -LiteralPath $benchmarkPath).Length -eq 0) {
         throw 'Le benchmark n''a pas produit son rapport.'

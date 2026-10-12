@@ -38,7 +38,7 @@ Chaque changement a été construit et mesuré isolément sur la version 0.6.12,
 
 Le total intégré (196 096 octets) dépasse légèrement la somme des mesures isolées, LTO éliminant davantage de code commun une fois les crates `windows-core`, `windows-strings`, `windows-result` et `unicode-normalization` absents du graphe de dépendances. Le graphe d'exécution se limite désormais à `serde`, `serde_json`, `sha2` et `windows-sys` ; `unicode-normalization` reste une dépendance de test pour vérifier la parité.
 
-La normalisation Win32 est identique au crate pour chaque caractère des blocs Latin-1 Supplément, Latin étendu A et B, grec, cyrillique et Latin étendu additionnel, ainsi que pour les titres de la fixture. Les divergences restantes sont documentées par des tests : les marques d'espacement indiennes et birmanes que Windows ne classe ni comme diacritiques ni comme voyelles sont conservées, de même que les marques combinantes ajoutées après Unicode 5.1 et les marques hors plan multilingue de base ; trois caractères reclassés par Unicode sont encore supprimés. Les non-caractères, acceptés par NTFS mais refusés par `NormalizeString`, sont remplacés par U+FFFD avant l'appel. Le chemin ASCII, majoritaire pour les noms d'applications et de fichiers, ne fait ni allocation ni appel Win32. L'exécutable importe désormais `normaliz.dll`, chargée au démarrage comme les autres bibliothèques système.
+La normalisation Win32 est identique au crate pour chaque caractère des blocs Latin-1 Supplément, Latin étendu A et B, grec, cyrillique et Latin étendu additionnel, ainsi que pour les titres de la fixture. Les divergences restantes sont documentées par des tests : les marques d'espacement indiennes et birmanes que Windows ne classe ni comme diacritiques ni comme voyelles sont conservées, de même que les marques combinantes ajoutées après Unicode 5.1 et les marques hors plan multilingue de base ; trois caractères reclassés par Unicode sont encore supprimés. Les non-caractères, acceptés par NTFS mais refusés par `NormalizeString`, sont remplacés par U+FFFD avant l'appel. Le chemin ASCII, majoritaire pour les noms d'applications et de fichiers, ne fait ni allocation ni appel Win32. Pour un titre accentué, la version Win32 coûte **1,3 µs** contre 0,95 µs pour le crate (20 000 titres accentués : 27 ms contre 19 ms, sur le thread d'indexation) ; pour une requête accentuée, **0,7 µs** contre 0,2 µs, à comparer aux 3 ms d'une recherche suivie d'un dessin. La table des imports ne contient aucune nouvelle bibliothèque : `NormalizeString` est résolue par `kernel32.dll`, et `oleaut32.dll` ainsi que les tubes nommés de `ntdll.dll` utilisés par `std::process` ne sont plus importés.
 
 ### Compromis écartés
 
@@ -71,6 +71,27 @@ Trois séries par version, en ordre alterné (référence, 0.6.13, 0.6.13, réf�
 
 La première série de la 0.6.13 est la plus lente des six (recherche puis dessin 3,78 ms, p95 6,13 ms), les deux suivantes les plus rapides (3,05 et 3,09 ms) : aucune des deux versions ne se distingue au-delà du bruit de mesure. La mémoire privée (2,70 Mo), l'ensemble de travail (15,9 Mo) et les compteurs GDI et USER (26 chacun) sont identiques. Comme pour la version 0.6.1, ces chiffres n'indiquent pas une latence garantie et excluent le démarrage à froid.
 
+### Démarrage complet et requêtes accentuées
+
+`first_frame_ms` exclut la création du processus et le chargement des DLL. Un chronomètre externe mesure ici le délai entre `CreateProcess` et la première fenêtre `SuperMenuWindow` visible, en mode fixture, quinze lancements alternés par version, caches Windows chauds :
+
+| Démarrage externe | Référence | 0.6.13 |
+| --- | ---: | ---: |
+| Médiane | 66,3 ms | 64,0 ms |
+| p95 | 145,2 ms | 90,6 ms |
+| Minimum | 61,1 ms | 54,7 ms |
+
+Les benchmarks précédents n'utilisent que des requêtes ASCII, qui ne passent pas par la normalisation remplacée. La même mesure du menu a donc été reprise avec `tests/fixtures/launcher-accents.json` (vingt entrées dont douze titres accentués, grecs et cyrilliques) et des requêtes accentuées (`@ éditeur`, `@ caméra`, `@ télé`, `@ désinst`, `@ ångs`, `@ no-match`, `/ vidéo`, `@ é`), deux séries par version en ordre référence / 0.6.13 / 0.6.13 / référence :
+
+| Mesure | Référence | 0.6.13 |
+| --- | ---: | ---: |
+| Premier dessin, horloge interne | 65,8–76,4 ms | 72,7–75,4 ms |
+| Dessin seul | 0,062–0,063 ms | 0,066–0,070 ms |
+| Recherche accentuée puis dessin, médiane | 2,33–2,78 ms | 2,39–2,51 ms |
+| Recherche accentuée puis dessin, p95 | 5,47–5,67 ms | 6,10–6,21 ms |
+
+Les médianes se recouvrent ; les p95 de la 0.6.13 sont supérieurs d'environ 0,5 ms sur ces deux séries, alors que les séries ASCII précédentes les plaçaient tantôt au-dessus, tantôt en dessous de la référence. Le coût mesuré de la normalisation Win32 (0,5 µs de plus par requête accentuée) ne peut pas produire un tel écart ; il relève du bruit d'ordonnancement de la machine, et ces chiffres ne garantissent pas une latence donnée.
+
 ### Construction nightly facultative
 
 Une part importante du binaire reste la bibliothèque standard précompilée et la machinerie de panique, qu'un exécutable sans console ne peut pas afficher. Rust nightly permet de recompiler la bibliothèque standard avec le profil taille du projet et d'abandonner les paniques sans formater de message. Mesures sur la version 0.6.12, même machine :
@@ -94,7 +115,7 @@ cargo build --release --locked
 .\target\release\supermenu.exe --benchmark --report .\artifacts\benchmark.txt
 ```
 
-Validation fonctionnelle : **223 tests Rust**, dont les tests de parité de la normalisation Unicode, des vecteurs FIPS, du vrai raccourci `.lnk` et de la Corbeille, et **997 assertions Windows** (362 lanceur, 278 À propos, 171 traductions, 40 console d'aide, 146 installateur). Clippy sans avertissement et `rustfmt` sont imposés.
+Validation fonctionnelle : **223 tests Rust**, dont les tests de parité de la normalisation Unicode, du vrai raccourci `.lnk` et de la Corbeille. Sur le binaire mesuré ici, **851 assertions Windows** ont été rejouées localement (362 lanceur, 278 À propos, 171 traductions, 40 console d'aide). Les **146 assertions de l'installateur** demandent une vraie installation NSIS et n'ont pas été rejouées sur ce poste ; elles ont été exécutées par l'intégration continue sur le commit publié ([exécution 38255429297](https://github.com/roukmoute/SuperMenu/actions/runs/38255429297)), ce qui porte le total validé à 997. Clippy sans avertissement et `rustfmt` sont imposés.
 
 ## Version 0.6.1
 

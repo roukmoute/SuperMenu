@@ -1,0 +1,182 @@
+[
+  {
+    "id": "fixture:steam",
+    "title": "Steam",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/steam.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:steam-support",
+    "title": "Steam Support Center",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/steam-support.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:streamfab",
+    "title": "StreamFab",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/streamfab.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:telegram-uninstaller",
+    "title": "Désinstaller Telegram",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://steam/path-only-token/telegram-uninstaller.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:gamespy",
+    "title": "Register GameSpy Arcade",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/gamespy.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:steam-notes",
+    "title": "SteamNotes.txt",
+    "subtitle": "fixture://documents/SteamNotes.txt",
+    "glyph": "▤",
+    "kind": "File",
+    "target": "fixture://documents/SteamNotes.txt",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:zebra-document",
+    "title": "Zebra.txt",
+    "subtitle": "fixture://documents/Zebra.txt",
+    "glyph": "▤",
+    "kind": "File",
+    "target": "fixture://documents/Zebra.txt",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:steam-backups",
+    "title": "SteamBackups",
+    "subtitle": "fixture://documents/SteamBackups",
+    "glyph": "▱",
+    "kind": "Folder",
+    "target": "fixture://documents/SteamBackups",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:editeur-presentations",
+    "title": "Éditeur de présentations",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/editeur-presentations.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:camera-zurich",
+    "title": "Caméra Zürich",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/camera-zurich.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:telechargements-videos",
+    "title": "Téléchargements vidéos",
+    "subtitle": "Dossier",
+    "glyph": "▦",
+    "kind": "Folder",
+    "target": "fixture://folders/telechargements-videos.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:angstrom-calc",
+    "title": "Ångström Calc",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/angstrom-calc.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:espanol-diccionario",
+    "title": "Español – Diccionario",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/espanol-diccionario.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:bibliotheque-medias",
+    "title": "Bibliothèque médias",
+    "subtitle": "Dossier",
+    "glyph": "▦",
+    "kind": "Folder",
+    "target": "fixture://folders/bibliotheque-medias.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:aeroskobing-cafe",
+    "title": "Ærøskøbing Café",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/aeroskobing-cafe.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:tcheque-cestina",
+    "title": "Čeština – Klávesnice",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/tcheque-cestina.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:grec-lexiko",
+    "title": "Ελληνικά Λεξικό",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/grec-lexiko.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:russe-chertezhnik",
+    "title": "Чертёжник Pro",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/russe-chertezhnik.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:rapport-ete",
+    "title": "Rapport été 2026.docx",
+    "subtitle": "Fichier",
+    "glyph": "▦",
+    "kind": "File",
+    "target": "fixture://files/rapport-ete.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:reunion-equipe",
+    "title": "Réunion d'équipe.pptx",
+    "subtitle": "Fichier",
+    "glyph": "▦",
+    "kind": "File",
+    "target": "fixture://files/reunion-equipe.placeholder",
+    "arguments": ""
+  }
+]

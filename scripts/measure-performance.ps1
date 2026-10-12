@@ -6,7 +6,8 @@ param(
     [ValidateRange(3, 30)][int]$StartupRuns = 9,
     [ValidateRange(20, 5000)][int]$Rounds = 300,
     [ValidateRange(1, 500)][int]$WarmupRounds = 30,
-    [ValidateSet('dark', 'light')][string]$Theme = 'dark'
+    [ValidateSet('dark', 'light')][string]$Theme = 'dark',
+    [ValidateCount(2, 64)][string[]]$Queries = @('@ steam', '@ stream', '@ gamespy', '@ telegram', '@ no-match', '/ steam', '@ ste', '@ ')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -172,7 +173,8 @@ if (@($fixtureItems | Where-Object { -not ([string]$_.target).StartsWith('fixtur
 $startup = [Collections.Generic.List[object]]::new()
 $context = $null
 $measurement = $null
-$queries = [string[]]@('@ steam', '@ stream', '@ gamespy', '@ telegram', '@ no-match', '/ steam', '@ ste', '@ ')
+# The timed loop cycles through these queries; accented ones exercise the non-ASCII normalization path.
+$queries = [string[]]$Queries
 try {
     for ($run = 0; $run -lt $StartupRuns; $run++) {
         $context = Start-TestLauncher -Executable $Executable -Fixture $Fixture -Theme $Theme
