@@ -2,6 +2,8 @@
   "schema_version": 1,
   "language": "en",
   "messages": {
+    "Jeux Steam installés": "Installed Steam games",
+    "Jeu Steam": "Steam game",
     "Attente de la fin du désinstallateur…": "Waiting for the uninstaller to finish…",
     "\nCe logiciel est déjà installé. Aucune mise à jour n'a été effectuée.": "\nThis application is already installed. No upgrade was performed.",
     "\nDésinstallation terminée. Le catalogue de Super Menu va être actualisé.": "\nUninstall finished. The Super Menu catalog will be refreshed.",

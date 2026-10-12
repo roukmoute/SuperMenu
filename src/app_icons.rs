@@ -341,6 +341,13 @@ fn parsing_name(target: &str) -> Option<String> {
 }
 
 fn extract_icon(target: &str, size: u32) -> Option<OwnedIcon> {
+    let steam_icon;
+    let target = if let Some(app_id) = crate::steam::app_id(target) {
+        steam_icon = crate::steam::icon_source(app_id)?;
+        steam_icon.as_str()
+    } else {
+        target
+    };
     let parsing = parsing_name(target)?;
     let wide: Vec<u16> = parsing.encode_utf16().chain(Some(0)).collect();
     unsafe {

@@ -1,5 +1,46 @@
 # Performances de Super Menu
 
+## Version 0.6.16
+
+Les jeux Steam sont une option désactivée par défaut, accessible dans **Paramètres → Jeux Steam installés**. Le parcours du registre déjà utilisé pour la présence et la désinstallation fournit aussi les entrées de lancement lorsqu’elle est activée. Désactivée, la branche retourne avant l’analyse des identifiants Steam et avant toute allocation de jeu ; les noms nécessaires à la désinstallation restent dans l’inventaire commun. Aucun SDK, fichier de bibliothèque Steam, réseau, thread, temporisateur ou dépendance supplémentaire n’est utilisé.
+
+Les jeux gardent un identifiant stable `steam:<AppID>` et une cible `steam://run/<AppID>`. Les doublons entre vues du registre et raccourcis existants sont évités. L’icône est lue dans le registre uniquement à la demande d’un résultat visible, sur le worker d’icônes existant. Aucun champ n’est ajouté aux quelque 20 000 éléments de fichiers. Un booléen partagé protège les publications en cours : désactiver l’option retire les jeux et purge les icônes sans qu’un ancien worker puisse les réintroduire.
+
+Les entrées générées ne sont jamais enregistrées dans le cache principal. Le cache des applications et fichiers reste compatible ; les jeux reviennent pendant la phase d’indexation des applications, après activation, sans bloquer l’ouverture du menu. Cela évite de désérialiser des jeux au démarrage lorsque l’option est désactivée.
+
+Le binaire local stable fait **1 019 904 octets**, contre **1 015 808 octets** pour la 0.6.15 conservée sur cette machine : **4 096 octets supplémentaires (+0,40 %)**, soit 0,97 Mio. Le profil Release, la chaîne stable MSVC et les dépendances sont inchangés. Le code de l’option reste dans l’EXE même lorsqu’elle est désactivée ; son activation conditionne le travail et les données supplémentaires en mémoire.
+
+### Mesures du menu, option désactivée
+
+Même fixture de huit éléments, thème clair, DPI 96 et vraie peinture parent `WM_PAINT`. Chaque série comporte trois lancements, trente échauffements et trois cents mesures par opération. Une première séquence référence / 0.6.16 / 0.6.16 / référence a été suivie d’une séquence inverse 0.6.16 / référence / référence / 0.6.16 pour vérifier l’influence de l’ordre. Médiane / p95 en millisecondes :
+
+| Série | Premier dessin, médiane interne | Peinture parent | Recherche puis peinture |
+| --- | ---: | ---: | ---: |
+| Référence A | 115,501 | 1,900 / 3,419 | 4,528 / 6,708 |
+| 0.6.16 A | 90,561 | 2,097 / 3,111 | 5,598 / 9,084 |
+| 0.6.16 B | 121,136 | 2,369 / 3,381 | 5,469 / 8,086 |
+| Référence B | 104,566 | 2,041 / 2,764 | 5,099 / 7,981 |
+| 0.6.16 C | 119,341 | 2,543 / 4,831 | 4,749 / 7,396 |
+| Référence C | 118,231 | 3,032 / 4,307 | 5,192 / 7,872 |
+| Référence D | 114,921 | 2,323 / 3,669 | 5,014 / 8,060 |
+| 0.6.16 D | 113,411 | 2,278 / 3,556 | 5,299 / 7,833 |
+
+La première comparaison donnait des recherches plus lentes pour la nouvelle version ; la séquence inverse montre des médianes qui se recouvrent et une série nouvelle plus rapide que les références. Le PC était fortement sollicité par d’autres compilations. Ces données ne montrent pas un décalage constant et ne garantissent pas une latence donnée. Le chemin de classement à chaque frappe n’a pas changé. Les premiers dessins sont des mesures internes avec caches Windows non contrôlés ; la présentation DWM et le dessin du contrôle EDIT enfant restent exclus.
+
+Les compteurs restent à **28 objets GDI et 26 USER**. Les mémoires privées des fixtures se recouvrent : 2,58–2,68 Mo pour la référence et 2,60–2,64 Mo pour la nouvelle version. Ces fixtures vérifient le menu désactivé ; elles ne mesurent pas le coût d’une bibliothèque Steam complète.
+
+### Vérification
+
+**241 tests Rust**, un benchmark ignoré et **1 093 assertions Windows** passent, installateur inclus. Onze tests ajoutés couvrent le caractère facultatif du réglage, sa compatibilité et sa sauvegarde, l’absence d’allocation du vecteur de jeux désactivé, les identifiants bornés, les titres Unicode, les doublons, les chemins d’icône, le retrait des entrées et l’exclusion du cache.
+
+Un contrôle supplémentaire avec données temporaires et lecture seule du vrai registre vérifie les deux états du dialogue natif et l’absence de jeux dans le cache. Artisan TD apparaît avec sa propre icône et la mention « Jeu Steam » uniquement après activation. Le dialogue a été annulé ; aucun jeu n’a été lancé ou désinstallé, aucun réglage personnel n’a été enregistré.
+
+SHA-256 du binaire local mesuré :
+
+```text
+043F2343ECDC384437D96BCA9AEC3F862C9620F5625A6083E829422472B1A375
+```
+
 ## Version 0.6.15
 
 Le menu prépare l’image complète dans un bitmap GDI réutilisable avant une seule copie vers la fenêtre. Le découpage du DC destination protège le contrôle EDIT et son curseur. Le tampon est alloué au premier dessin, réutilisé à dimensions constantes, remplacé au redimensionnement et libéré à la destruction. Un échec d’allocation ou de copie conserve un dessin fonctionnel. Aucun thread, temporisateur, dépendance ou DLL supplémentaire n’est ajouté.

@@ -1,6 +1,6 @@
 use crate::{
     about, app_icons, brand_icon, catalog, config, core, i18n, installer, language_dialog,
-    launch_feedback, native, packages, paint_buffer::PaintBuffer, timer, timer_alert,
+    launch_feedback, native, packages, paint_buffer::PaintBuffer, steam, timer, timer_alert,
     timer_runtime,
 };
 use core::{Item, Kind};
@@ -97,6 +97,7 @@ struct State {
     paint_buffer: PaintBuffer,
     query_text: Vec<u16>,
     index: Arc<Mutex<Vec<Item>>>,
+    steam_enabled: Arc<AtomicBool>,
     installed_names: Arc<Mutex<Vec<String>>>,
     removable_names: Arc<Mutex<Vec<String>>>,
     confirmed_absent_packages: Arc<Mutex<HashSet<String>>>,
@@ -696,6 +697,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             paint_text: RefCell::new(Vec::with_capacity(256)),
             paint_buffer: PaintBuffer::default(),
             query_text: Vec::with_capacity(1025),
+            steam_enabled: Arc::new(AtomicBool::new(settings.steam_enabled)),
             settings,
             index: Arc::new(Mutex::new(cache)),
             installed_names: Arc::new(Mutex::new(Vec::new())),
@@ -2650,6 +2652,30 @@ unsafe fn refresh_index_and_icons(s: &mut State) {
     InvalidateRect(s.hwnd, null(), 0);
 }
 
+// Keep the opt-in path out of per-keystroke ranking: only publications and
+// settings changes filter generated entries. Ordinary Steam shortcuts stay intact.
+fn retain_enabled_steam(items: &mut Vec<Item>, enabled: bool) {
+    if !enabled {
+        items.retain(|item| !item.id.starts_with("steam:"));
+    }
+}
+
+fn merge_steam_games(apps: &mut Vec<Item>, games: Vec<Item>) {
+    for game in games {
+        let game_id = steam::app_id(&game.target);
+        let existing = apps.iter().any(|app| {
+            app.kind == Kind::Application
+                && steam::app_id(&app.target).map_or_else(
+                    || app.title.eq_ignore_ascii_case(&game.title),
+                    |id| game_id == Some(id),
+                )
+        });
+        if !existing {
+            apps.push(game);
+        }
+    }
+}
+
 unsafe fn reindex(s: &mut State) {
     if s.smoke_fixture {
         s.indexing.store(false, Ordering::Release);
@@ -2663,6 +2689,7 @@ unsafe fn reindex(s: &mut State) {
     s.status = i18n::tr("Indexation en arrière-plan…");
     InvalidateRect(s.hwnd, null(), 0);
     let index = s.index.clone();
+    let steam_enabled = s.steam_enabled.clone();
     let installed_names = s.installed_names.clone();
     let removable_names = s.removable_names.clone();
     let confirmed_absent_packages = s.confirmed_absent_packages.clone();
@@ -2684,8 +2711,10 @@ unsafe fn reindex(s: &mut State) {
                 }
             }
         }
-        let apps = native::app_catalog();
-        let (all_names, remove_names) = packages::installed_inventory();
+        let mut apps = native::app_catalog();
+        let (all_names, remove_names, steam_games) =
+            packages::installed_inventory_with_steam(settings.steam_enabled);
+        merge_steam_games(&mut apps, steam_games);
         let absent = packages::confirmed_absent_packages(&all_names);
         *confirmed_absent_packages
             .lock()
@@ -2702,6 +2731,11 @@ unsafe fn reindex(s: &mut State) {
             let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
             index.retain(|item| matches!(item.kind, Kind::File | Kind::Folder));
             published.append(&mut index);
+            // Toggle-off and publication share this lock: an older worker cannot
+            // put optional entries back after the settings dialog removed them.
+            if settings.steam_enabled {
+                retain_enabled_steam(&mut published, steam_enabled.load(Ordering::Acquire));
+            }
             *index = published;
         }
         catalog_ready.store(generation, Ordering::Release);
@@ -2712,7 +2746,11 @@ unsafe fn reindex(s: &mut State) {
         items.extend(catalog::files(&settings));
         if i18n::revision() == language_revision {
             let _ = catalog::save_cache(&items, &language);
-            *index.lock().unwrap_or_else(|e| e.into_inner()) = items;
+            let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
+            if settings.steam_enabled {
+                retain_enabled_steam(&mut items, steam_enabled.load(Ordering::Acquire));
+            }
+            *index = items;
         }
         busy.store(false, Ordering::Release);
         unsafe {
@@ -3588,6 +3626,17 @@ unsafe fn settings(s: &mut State) {
             finish_modal(s);
             return;
         }
+        s.steam_enabled
+            .store(settings.steam_enabled, Ordering::Release);
+        if s.settings.steam_enabled && !settings.steam_enabled {
+            retain_enabled_steam(
+                &mut s.index.lock().unwrap_or_else(|e| e.into_inner()),
+                false,
+            );
+            if let Some(icons) = s.app_icons.as_mut() {
+                icons.clear();
+            }
+        }
         s.settings = settings;
         s.timers.borrow_mut().settings = s.settings.clone();
         s.palette = Palette::from(&s.settings);
@@ -3824,7 +3873,7 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         parent.left + scale(20),
         parent.top + scale(15),
         scale(640),
-        scale(650),
+        scale(686),
         s.hwnd,
         null_mut(),
         instance,
@@ -3841,7 +3890,13 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
                 wide(&i18n::tr(label)).as_ptr(),
                 WS_CHILD | WS_VISIBLE | style,
                 scale(x),
-                scale(if y >= 54 { y + 42 } else { y }),
+                scale(if y >= 253 {
+                    y + 78
+                } else if y >= 54 {
+                    y + 42
+                } else {
+                    y
+                }),
                 scale(w),
                 scale(h),
                 hwnd,
@@ -4011,6 +4066,26 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         },
         0,
     );
+    let steam = control(
+        "BUTTON",
+        "Jeux Steam installés",
+        BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+        22,
+        247,
+        580,
+        26,
+        212,
+    );
+    SendMessageW(
+        steam,
+        BM_SETCHECK,
+        if s.settings.steam_enabled {
+            BST_CHECKED as usize
+        } else {
+            BST_UNCHECKED as usize
+        },
+        0,
+    );
     control(
         "STATIC",
         "Dossiers indexés (un dossier par ligne)",
@@ -4081,7 +4156,7 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         34,
         210,
     );
-    dialog.controls = vec![hotkey, theme, accent, clip, startup, roots, web];
+    dialog.controls = vec![hotkey, theme, accent, clip, startup, roots, web, steam];
     EnableWindow(s.hwnd, 0);
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
@@ -4152,7 +4227,7 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: usize, lp: isi
                 0
             }
             210 | 1 => {
-                if d.controls.len() < 7 {
+                if d.controls.len() < 8 {
                     return 0;
                 }
                 let mut settings = d.source.clone();
@@ -4181,6 +4256,8 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: usize, lp: isi
                 }
                 settings.clipboard_enabled =
                     SendMessageW(d.controls[3], BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
+                settings.steam_enabled =
+                    SendMessageW(d.controls[7], BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
                 settings.file_roots = control_text(d.controls[5])
                     .lines()
                     .map(str::trim)
@@ -4224,6 +4301,86 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn steam_game(id: u32, title: &str) -> Item {
+        Item::new(
+            format!("steam:{id}"),
+            title,
+            "Jeu Steam",
+            "",
+            Kind::Application,
+            format!("steam://run/{id}"),
+        )
+    }
+
+    #[test]
+    fn steam_toggle_removes_generated_entries_but_keeps_existing_shortcuts() {
+        let shortcut = Item::new(
+            "shortcut:artisan",
+            "Artisan TD",
+            "Application Windows",
+            "",
+            Kind::Application,
+            "steam://run/2224640",
+        );
+        let ordinary = Item::new("app", "Steam", "", "", Kind::Application, "steam.exe");
+        let mut items = vec![shortcut, steam_game(2224640, "Artisan TD"), ordinary];
+        retain_enabled_steam(&mut items, true);
+        assert_eq!(items.len(), 3);
+        retain_enabled_steam(&mut items, false);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["shortcut:artisan", "app"]
+        );
+        // A stale worker snapshot obeys the latest toggle before publication.
+        items.push(steam_game(2224640, "Artisan TD"));
+        retain_enabled_steam(&mut items, false);
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn steam_games_deduplicate_launch_ids_and_existing_shortcut_titles() {
+        let mut apps = vec![
+            Item::new(
+                "shortcut:alias",
+                "My favorite game",
+                "",
+                "",
+                Kind::Application,
+                "steam://run/2224640",
+            ),
+            Item::new(
+                "shortcut:name",
+                "Portal 2",
+                "",
+                "",
+                Kind::Application,
+                r"C:\Games\Portal 2.lnk",
+            ),
+        ];
+        merge_steam_games(
+            &mut apps,
+            vec![
+                steam_game(2224640, "Artisan TD"),
+                steam_game(620, "portal 2"),
+                steam_game(440, "Team Fortress 2"),
+                steam_game(440, "Team Fortress 2"),
+            ],
+        );
+        assert_eq!(apps.len(), 3);
+        assert_eq!(apps[2].id, "steam:440");
+        assert_eq!(apps[2].target, "steam://run/440");
+    }
+
+    #[test]
+    fn steam_deduplication_uses_known_launch_ids_before_names() {
+        let mut apps = vec![steam_game(100, "Same title")];
+        merge_steam_games(&mut apps, vec![steam_game(200, "Same title")]);
+        assert_eq!(apps.len(), 2);
+    }
 
     #[test]
     fn refreshed_selection_follows_identity_when_results_move() {

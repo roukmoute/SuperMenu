@@ -6,13 +6,13 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. L'exécutable autonome fait **moins de 1 Mio** (1 015 808 octets pour la version 0.6.15). Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances](PERFORMANCE.md) détaille les réductions de taille des versions 0.6.1, 0.6.13 et 0.6.15, la méthode et les compromis.
+Windows 10 et 11, x64. L'exécutable autonome fait **moins de 1 Mio** (1 019 904 octets pour la version 0.6.16). Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances](PERFORMANCE.md) détaille les réductions de taille des versions 0.6.1, 0.6.13, 0.6.15 et 0.6.16, la méthode et les compromis.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
 Les clés de recherche sont préparées pendant l'indexation ; la frappe filtre les candidats et sélectionne les meilleurs résultats sans trier tout le catalogue. Le menu garde ses fournisseurs fixes et ses textes traduits en mémoire, et réutilise sa mémoire de conversion UTF-16 ainsi que les ressources de dessin Windows. La restauration du cache utilise une vue de fichier en lecture seule ; sa sauvegarde écrit les éléments empruntés sans recopier l'index complet. Les mesures reproductibles du moteur, du cache et du menu sont décrites dans le [guide de tests](TESTING.md#mesurer-les-performances).
 
-Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **230 tests Rust**, le benchmark de cache facultatif et les **1 093 assertions Windows** passent, dont 146 assertions sur de vrais tests d'installation, de mise à jour et de désinstallation isolés.
+Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **241 tests Rust**, le benchmark de cache facultatif et les **1 093 assertions Windows** passent, dont 146 assertions sur de vrais tests d'installation, de mise à jour et de désinstallation isolés.
 
 ## Langues
 
@@ -72,6 +72,14 @@ Windows utilise déjà Win + Espace pour changer la langue de saisie. Super Menu
 | `!` | Actions système |
 
 Les flèches sélectionnent un résultat et **Entrée** l'active. **Échap** efface la recherche, puis masque le menu si elle est déjà vide. **Tab** ouvre le menu des fournisseurs. **Ctrl + Entrée** ouvre le dossier parent d'un fichier. **F1** affiche l'aide, **Ctrl + ,** ouvre les réglages et **F5** actualise l'index. Une commande shell ne s'exécute qu'après validation par Entrée. Les résultats de calcul, symboles et historique sont copiés dans le presse-papiers.
+
+## Jeux Steam, en option
+
+Dans les paramètres, cocher **Jeux Steam installés**, puis **Enregistrer** pour ajouter les jeux enregistrés par Steam sous Windows. L’option est désactivée par défaut, y compris lors d’une mise à jour. Les jeux apparaissent dans les applications, avec leur icône locale et le sous-titre **Jeu Steam** ; Entrée confie leur lancement à Steam.
+
+La détection réutilise la lecture du registre existante et ne parcourt pas les dossiers des jeux. Aucun SDK, compte, téléchargement ou nouvelle dépendance n’est nécessaire. Les icônes sont chargées uniquement pour les résultats visibles. Les jeux générés sont exclus du cache principal et reconstruits en arrière-plan lorsque l’option est activée. Désactiver puis enregistrer retire ces entrées et purge les icônes chargées, même si une indexation précédente se termine ensuite.
+
+Les raccourcis déjà présents dans Windows et les informations de désinstallation restent disponibles comme auparavant. Cette première intégration couvre les entrées `Steam App <AppID>` du registre ; un jeu absent du registre ne sera pas ajouté automatiquement. Le réglage JSON correspondant est `"steam_enabled": false`.
 
 ## Installer un logiciel
 

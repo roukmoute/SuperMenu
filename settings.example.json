@@ -6,6 +6,7 @@
   "max_results": 9,
   "window_width": 720,
   "clipboard_enabled": false,
+  "steam_enabled": false,
   "max_clipboard_entries": 30,
   "max_indexed_files": 20000,
   "file_roots": [

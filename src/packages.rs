@@ -1140,8 +1140,17 @@ pub fn suggestions(
 /// presence and removal snapshots. The latter excludes NoRemove/SystemComponent.
 /// Called on the catalog worker/helper, never in the typing path.
 pub fn installed_inventory() -> (Vec<String>, Vec<String>) {
+    let (names, removable, _) = installed_inventory_with_steam(false);
+    (names, removable)
+}
+
+/// Steam is opt-in. Reuse the existing registry traversal; disabled scans never
+/// parse Steam keys or allocate game entries, titles, URIs or artwork metadata.
+pub fn installed_inventory_with_steam(
+    steam_enabled: bool,
+) -> (Vec<String>, Vec<String>, Vec<Item>) {
     use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
-    inventory_from_roots(&[HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE])
+    inventory_from_roots(&[HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE], steam_enabled)
 }
 
 /// Determine whether this exact removal target is installed for the machine. This
@@ -1158,7 +1167,7 @@ pub fn removal_requires_elevation(target: &str) -> bool {
     {
         return false;
     }
-    let (all_names, removable_names) = inventory_from_roots(&[HKEY_LOCAL_MACHINE]);
+    let (all_names, removable_names, _) = inventory_from_roots(&[HKEY_LOCAL_MACHINE], false);
     removal_requires_elevation_in_inventory(target, &all_names, &removable_names)
 }
 
@@ -1191,7 +1200,8 @@ fn removal_requires_elevation_in_inventory(
 
 fn inventory_from_roots(
     roots: &[windows_sys::Win32::System::Registry::HKEY],
-) -> (Vec<String>, Vec<String>) {
+    steam_enabled: bool,
+) -> (Vec<String>, Vec<String>, Vec<Item>) {
     use windows_sys::Win32::Foundation::{ERROR_NO_MORE_ITEMS, ERROR_SUCCESS};
     use windows_sys::Win32::System::Registry::{
         RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
@@ -1201,6 +1211,7 @@ fn inventory_from_roots(
     let display_name = wide("DisplayName");
     let mut names = Vec::new();
     let mut removable = Vec::new();
+    let mut games = Vec::new();
     let mut seen = HashSet::new();
     let mut removable_seen = HashSet::new();
     let mut blocked = HashSet::new();
@@ -1217,7 +1228,7 @@ fn inventory_from_roots(
             for index in 0..8192 {
                 if names.len() >= 4096 {
                     removable.retain(|name: &String| !blocked.contains(&name.to_lowercase()));
-                    return (names, removable);
+                    return (names, removable, games);
                 }
                 let mut name = [0_u16; 256];
                 let mut name_length = name.len() as u32;
@@ -1280,6 +1291,12 @@ fn inventory_from_roots(
                 }
                 let cannot_remove = registry_removal_blocked(child.0, "SystemComponent")
                     || registry_removal_blocked(child.0, "NoRemove");
+                crate::steam::append_game(
+                    steam_enabled,
+                    &name[..name_length as usize],
+                    &text,
+                    &mut games,
+                );
                 if cannot_remove {
                     blocked.insert(text.to_lowercase());
                 }
@@ -1296,7 +1313,7 @@ fn inventory_from_roots(
         }
     }
     removable.retain(|name| !blocked.contains(&name.to_lowercase()));
-    (names, removable)
+    (names, removable, games)
 }
 
 fn registry_removal_blocked(key: windows_sys::Win32::System::Registry::HKEY, name: &str) -> bool {

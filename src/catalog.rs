@@ -191,7 +191,12 @@ pub fn save_cache(items: &[Item], language: &str) -> io::Result<()> {
 
 fn is_cacheable(item: &Item) -> bool {
     match item.kind {
-        Kind::Application => !crate::native::is_uninstall_shortcut_title(&item.title),
+        // Opt-in Steam games are rebuilt by the application worker and never
+        // persisted, so disabled startup does not parse or allocate their items.
+        Kind::Application => {
+            !item.id.starts_with("steam:")
+                && !crate::native::is_uninstall_shortcut_title(&item.title)
+        }
         Kind::File | Kind::Folder => true,
         _ => false,
     }
@@ -927,6 +932,76 @@ mod tests {
             "app"
         );
         assert!(read_cache_file(&fixture.0, "en").is_empty());
+    }
+
+    #[test]
+    fn steam_games_are_not_written_to_the_shared_startup_cache() {
+        let items = [
+            Item::new(
+                "steam:2224640",
+                "Artisan TD",
+                "Jeu Steam",
+                "□",
+                Kind::Application,
+                "steam://run/2224640",
+            ),
+            Item::new(
+                "app:steam",
+                "Steam",
+                "Application Windows",
+                "□",
+                Kind::Application,
+                "Steam.exe",
+            ),
+            Item::new("file:notes", "Notes.txt", "", "□", Kind::File, "Notes.txt"),
+        ];
+        let bytes = serde_json::to_vec(&CacheSnapshot {
+            version: CACHE_VERSION,
+            language: "fr",
+            items: CacheItems(&items),
+        })
+        .unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(!text.contains("steam:2224640"));
+        assert!(!text.contains("steam://run/2224640"));
+        assert!(!text.contains("Artisan TD"));
+        let fixture = CacheFixture::new(&bytes);
+        // The same startup file is safe after either enabling or disabling Steam.
+        for _ in 0..2 {
+            let restored = read_cache_file(&fixture.0, "fr");
+            assert_eq!(
+                restored
+                    .iter()
+                    .map(|item| item.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["app:steam", "file:notes"]
+            );
+        }
+    }
+
+    #[test]
+    fn old_cache_without_a_steam_setting_keeps_existing_shortcuts() {
+        let fixture = CacheFixture::new(
+            br#"{"version":1,"language":"fr","items":[{"id":"shortcut:artisan","title":"Artisan TD","subtitle":"Application Windows","glyph":"","kind":"Application","target":"artisan.url","arguments":""}]}"#,
+        );
+        let restored = read_cache_file(&fixture.0, "fr");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, "shortcut:artisan");
+        assert_eq!(restored[0].target, "artisan.url");
+        assert_eq!(
+            crate::core::rank(&restored, "artisan", 9, &HashMap::new())[0].id,
+            "shortcut:artisan"
+        );
+    }
+
+    #[test]
+    fn reading_cache_discards_reserved_steam_game_ids() {
+        let fixture = CacheFixture::new(
+            br#"{"version":1,"language":"fr","items":[{"id":"steam:2224640","title":"Artisan TD","subtitle":"Jeu Steam","glyph":"","kind":"Application","target":"steam://run/2224640","arguments":""},{"id":"app:steam","title":"Steam","subtitle":"Application Windows","glyph":"","kind":"Application","target":"Steam.exe","arguments":""}]}"#,
+        );
+        let restored = read_cache_file(&fixture.0, "fr");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, "app:steam");
     }
 
     #[test]

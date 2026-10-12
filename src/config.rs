@@ -20,6 +20,8 @@ pub struct Settings {
     pub max_results: usize,
     pub window_width: i32,
     pub clipboard_enabled: bool,
+    /// Steam launch entries are opt-in; ordinary shortcuts and removals stay available.
+    pub steam_enabled: bool,
     pub max_clipboard_entries: usize,
     pub max_indexed_files: usize,
     pub file_roots: Vec<String>,
@@ -46,6 +48,7 @@ impl Default for Settings {
             max_results: 9,
             window_width: 720,
             clipboard_enabled: false,
+            steam_enabled: false,
             max_clipboard_entries: 30,
             max_indexed_files: 20_000,
             file_roots: default_file_roots(),
@@ -373,6 +376,7 @@ mod tests {
             max_clipboard_entries: 0,
             max_indexed_files: usize::MAX,
             clipboard_enabled: true,
+            steam_enabled: true,
             web_search_template: "javascript:{query}".into(),
             file_roots: vec![
                 root.clone(),
@@ -416,6 +420,7 @@ mod tests {
         assert_eq!(loaded.commands[0].name, "Terminal");
         assert_eq!(loaded.language, "en");
         assert!(loaded.clipboard_enabled);
+        assert!(loaded.steam_enabled);
         assert!(loaded.web_search_template.starts_with("https://"));
         settings.hotkey = "Win+Space".into();
         settings.max_results = 11;
@@ -496,6 +501,25 @@ mod tests {
         assert_eq!(settings.hotkey, "Alt+Space");
         assert_eq!(settings.theme, "light");
         assert_eq!(settings.max_results, 12);
+        assert!(!settings.steam_enabled);
+    }
+
+    #[test]
+    fn steam_is_opt_in_and_persists_both_states() {
+        let temporary = Temporary::new();
+        let path = temporary.0.join("settings.json");
+        assert!(!Settings::default().steam_enabled);
+        assert!(
+            !serde_json::from_str::<Settings>("{}")
+                .unwrap()
+                .steam_enabled
+        );
+        let mut settings = Settings::default();
+        for enabled in [true, false] {
+            settings.steam_enabled = enabled;
+            save_to(&settings, &path).unwrap();
+            assert_eq!(load_from(&path).steam_enabled, enabled);
+        }
     }
 
     #[test]

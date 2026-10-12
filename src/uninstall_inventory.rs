@@ -705,7 +705,7 @@ fn is_dos_device(component: &str) -> bool {
 
 /// An icon index belongs to registry metadata, never to the filesystem path.
 /// Environment expansion is performed separately, only for REG_EXPAND_SZ.
-fn parse_display_icon(value: &str) -> Option<PathBuf> {
+pub(crate) fn parse_display_icon(value: &str) -> Option<PathBuf> {
     let value = value.trim();
     if let Some(quoted) = value.strip_prefix('"') {
         let end = quoted.find('"')?;
