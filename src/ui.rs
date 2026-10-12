@@ -1906,16 +1906,21 @@ fn timer_clock(seconds: u64) -> String {
     }
 }
 
+#[inline]
 fn timer_item(
     title: impl Into<String>,
     subtitle: impl Into<String>,
     target: impl Into<String>,
 ) -> Item {
-    let target = target.into();
+    timer_item_from_strings(title.into(), subtitle.into(), target.into())
+}
+
+// Non-generic body shared by every timer_item instantiation.
+fn timer_item_from_strings(title: String, subtitle: String, target: String) -> Item {
     Item::new(
         format!("timer:{target}"),
-        i18n::tr(&title.into()),
-        i18n::tr(&subtitle.into()),
+        i18n::tr(&title),
+        i18n::tr(&subtitle),
         "\u{E916}",
         Kind::Timer,
         target,

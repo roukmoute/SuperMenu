@@ -44,6 +44,7 @@ pub struct Item {
 }
 
 impl Item {
+    #[inline]
     pub fn new(
         id: impl Into<String>,
         title: impl Into<String>,
@@ -52,21 +53,39 @@ impl Item {
         kind: Kind,
         target: impl Into<String>,
     ) -> Self {
-        let title = title.into();
-        let subtitle = subtitle.into();
+        Self::from_strings(
+            id.into(),
+            title.into(),
+            subtitle.into(),
+            glyph.into(),
+            kind,
+            target.into(),
+        )
+    }
+
+    /// Non-generic body shared by every `new` instantiation: the search caches
+    /// are built by one copy of this code instead of one per argument-type mix.
+    fn from_strings(
+        id: String,
+        title: String,
+        subtitle: String,
+        glyph: String,
+        kind: Kind,
+        target: String,
+    ) -> Self {
         let search_title = normalize(&title);
         let search_subtitle = normalize(&subtitle);
         Self {
-            id: id.into(),
+            id,
             title_mask: character_mask(&search_title),
             subtitle_mask: character_mask(&search_subtitle),
             search_title,
             search_subtitle,
             title,
             subtitle,
-            glyph: glyph.into(),
+            glyph,
             kind,
-            target: target.into(),
+            target,
             arguments: String::new(),
         }
     }
