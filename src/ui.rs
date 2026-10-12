@@ -447,6 +447,38 @@ fn fixture_action_allowed(item: &Item) -> bool {
         || (item.kind == Kind::System && item.target == "about")
 }
 
+/// Launcher snapshot written to the `--report` path during smoke tests.
+/// Fields follow the alphabetical key order of the former `json!` document.
+#[derive(serde::Serialize)]
+struct SmokeReport<'a> {
+    about_collecting: bool,
+    about_created: bool,
+    about_hwnd: usize,
+    about_loaded: bool,
+    application_icons_loaded: usize,
+    applications: usize,
+    checks: &'a [(String, bool)],
+    edit_created: bool,
+    files: usize,
+    first_frame_ms: f64,
+    fixture_activation_attempts: usize,
+    fixture_mode: bool,
+    index_items: usize,
+    indexing_finished: bool,
+    items: &'a [Item],
+    language: String,
+    native_window_created: bool,
+    private_bytes: usize,
+    query: &'a str,
+    section: &'a str,
+    selected: usize,
+    timer_alert_hwnd: usize,
+    timer_alert_visible: bool,
+    timer_count: usize,
+    visible_results: usize,
+    working_set_bytes: usize,
+}
+
 unsafe fn write_smoke_report(state: &State) -> Result<(), String> {
     let Some(path) = &state.smoke_report else {
         return Ok(());
@@ -462,25 +494,52 @@ unsafe fn write_smoke_report(state: &State) -> Result<(), String> {
         (&mut memory as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
         memory.cb,
     );
-    let report = serde_json::json!({
-        "native_window_created":true,"edit_created":!state.edit.is_null(),
-        "fixture_mode":state.smoke_fixture,
-        "language":i18n::current_language(),
-        "fixture_activation_attempts":state.fixture_activation_attempts,
-        "query":state.query,"selected":state.selected,"section":state.section,"items":state.items,
-        "index_items":index.len(),"applications":index.iter().filter(|item|item.kind==Kind::Application).count(),
-        "files":index.iter().filter(|item|matches!(item.kind,Kind::File|Kind::Folder)).count(),
-        "visible_results":state.items.len(),"indexing_finished":!state.indexing.load(Ordering::Relaxed),
-        "application_icons_loaded":state.app_icons.as_ref().map_or(0, app_icons::IconCache::loaded_count),
-        "about_created":state.about.is_some(),"about_loaded":state.about.as_ref().is_some_and(about::AboutWindow::is_loaded),
-        "about_collecting":state.about.as_ref().is_some_and(about::AboutWindow::is_collecting),
-        "about_hwnd":state.about.as_ref().map_or(0, |window| window.hwnd() as usize),
-        "timer_count":state.timers.borrow().book.snapshots(Instant::now()).len(),
-        "timer_alert_visible":state.timers.borrow().alert_visible(),
-        "timer_alert_hwnd":state.timers.borrow().alert_hwnd() as usize,
-        "first_frame_ms":state.first_frame_ms,"private_bytes":memory.PrivateUsage,
-        "working_set_bytes":memory.WorkingSetSize,"checks":state.checks
-    });
+    let report = SmokeReport {
+        about_collecting: state
+            .about
+            .as_ref()
+            .is_some_and(about::AboutWindow::is_collecting),
+        about_created: state.about.is_some(),
+        about_hwnd: state
+            .about
+            .as_ref()
+            .map_or(0, |window| window.hwnd() as usize),
+        about_loaded: state
+            .about
+            .as_ref()
+            .is_some_and(about::AboutWindow::is_loaded),
+        application_icons_loaded: state
+            .app_icons
+            .as_ref()
+            .map_or(0, app_icons::IconCache::loaded_count),
+        applications: index
+            .iter()
+            .filter(|item| item.kind == Kind::Application)
+            .count(),
+        checks: &state.checks,
+        edit_created: !state.edit.is_null(),
+        files: index
+            .iter()
+            .filter(|item| matches!(item.kind, Kind::File | Kind::Folder))
+            .count(),
+        first_frame_ms: state.first_frame_ms,
+        fixture_activation_attempts: state.fixture_activation_attempts,
+        fixture_mode: state.smoke_fixture,
+        index_items: index.len(),
+        indexing_finished: !state.indexing.load(Ordering::Relaxed),
+        items: &state.items,
+        language: i18n::current_language(),
+        native_window_created: true,
+        private_bytes: memory.PrivateUsage,
+        query: &state.query,
+        section: &state.section,
+        selected: state.selected,
+        timer_alert_hwnd: state.timers.borrow().alert_hwnd() as usize,
+        timer_alert_visible: state.timers.borrow().alert_visible(),
+        timer_count: state.timers.borrow().book.snapshots(Instant::now()).len(),
+        visible_results: state.items.len(),
+        working_set_bytes: memory.WorkingSetSize,
+    };
     let json = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     std::fs::write(path, json).map_err(|error| format!("Rapport de test : {error}"))
 }

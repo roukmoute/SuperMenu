@@ -22,6 +22,12 @@ mod ui;
 mod unicode;
 mod uninstall_inventory;
 
+/// Written to the `--report` path when a smoke test fails before its own report.
+#[derive(serde::Serialize)]
+struct SmokeFailure<'a> {
+    error: &'a str,
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(code) = setup_control::run_from_args(&args) {
@@ -50,7 +56,8 @@ fn main() {
                 .position(|argument| argument == "--report")
                 .and_then(|position| args.get(position + 1))
             {
-                let _ = std::fs::write(path, serde_json::json!({"error":error}).to_string());
+                let _ = serde_json::to_string(&SmokeFailure { error: &error })
+                    .map(|json| std::fs::write(path, json));
             }
             eprintln!("{error}");
             std::process::exit(1);

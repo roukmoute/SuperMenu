@@ -1110,6 +1110,18 @@ fn perform_remove_and_cleanup(
     Ok(outcome)
 }
 
+/// Journal of an automatic cleanup, written before (`planned`) and after
+/// (`finished`) it runs. Fields follow the alphabetical key order of the
+/// former `json!` documents so existing reports keep the same layout.
+#[derive(serde::Serialize)]
+struct CleanupJournal<'a> {
+    cleanup: &'a crate::cleanup::CleanupReport,
+    phase: &'a str,
+    target: &'a str,
+    timestamp_ms: u128,
+    version: &'a str,
+}
+
 fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
     let directory = config::data_dir().join("uninstall-reports");
     let _journal_parents = match prepare_report_directory(&directory) {
@@ -1138,13 +1150,14 @@ fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
             return;
         }
     };
-    let intent = serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "phase": "planned",
-        "target": target,
-        "timestamp_ms": timestamp,
-        "cleanup": plan.preview_report(),
-    });
+    let preview = plan.preview_report();
+    let intent = CleanupJournal {
+        cleanup: &preview,
+        phase: "planned",
+        target,
+        timestamp_ms: timestamp,
+        version: env!("CARGO_PKG_VERSION"),
+    };
     let mut writer = io::BufWriter::new(file);
     if let Err(error) = serde_json::to_writer_pretty(&mut writer, &intent)
         .map_err(io::Error::other)
@@ -1169,13 +1182,13 @@ fn finish_cleanup(plan: &CleanupPlan, target: &str, request: usize) {
     for note in &report.notes {
         println!("  {note}");
     }
-    let document = serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "phase": "finished",
-        "target": target,
-        "timestamp_ms": timestamp,
-        "cleanup": report,
-    });
+    let document = CleanupJournal {
+        cleanup: &report,
+        phase: "finished",
+        target,
+        timestamp_ms: timestamp,
+        version: env!("CARGO_PKG_VERSION"),
+    };
     let file = match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1232,6 +1245,22 @@ fn bounded_text(text: &str, limit: usize) -> &str {
     &text[..end]
 }
 
+/// Outcome of one install or uninstall request, kept under `software-reports`.
+/// Fields follow the alphabetical key order of the former `json!` document.
+#[derive(serde::Serialize)]
+struct OperationReport<'a> {
+    console_tail: &'a str,
+    message: &'a str,
+    name: &'a str,
+    operation: &'a str,
+    result_code: i32,
+    result_hex: String,
+    status: &'a str,
+    target: String,
+    timestamp_ms: u128,
+    version: &'a str,
+}
+
 fn write_operation_report(
     directory: &std::path::Path,
     request: &Request,
@@ -1253,18 +1282,25 @@ fn write_operation_report(
         .write(true)
         .create_new(true)
         .open(&path)?;
-    let document = serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "operation": if request.remove.is_some() { "uninstall" } else { "install" },
-        "target": request.remove.as_ref().map_or_else(|| format!("id:{}", request.id), RemoveTarget::canonical),
-        "name": request.name,
-        "timestamp_ms": timestamp,
-        "result_code": result,
-        "result_hex": format!("0x{:08X}", result as u32),
-        "status": if result == 0 { "success" } else { "failure" },
-        "message": bounded_text(message.trim(), 8_192),
-        "console_tail": bounded_text(console_tail, 131_072),
-    });
+    let document = OperationReport {
+        console_tail: bounded_text(console_tail, 131_072),
+        message: bounded_text(message.trim(), 8_192),
+        name: &request.name,
+        operation: if request.remove.is_some() {
+            "uninstall"
+        } else {
+            "install"
+        },
+        result_code: result,
+        result_hex: format!("0x{:08X}", result as u32),
+        status: if result == 0 { "success" } else { "failure" },
+        target: request
+            .remove
+            .as_ref()
+            .map_or_else(|| format!("id:{}", request.id), RemoveTarget::canonical),
+        timestamp_ms: timestamp,
+        version: env!("CARGO_PKG_VERSION"),
+    };
     let mut writer = io::BufWriter::new(file);
     serde_json::to_writer_pretty(&mut writer, &document).map_err(io::Error::other)?;
     writer.flush()?;
