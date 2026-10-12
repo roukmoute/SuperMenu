@@ -409,11 +409,9 @@ pub fn focus_window(hwnd: HWND) -> Result<(), String> {
             ));
         }
         let owner = GetWindowThreadProcessId(hwnd, null_mut());
-        if owner == GetCurrentThreadId() {
-            // Own-thread activation is synchronous. Do not direct typing into a background window.
-            if GetForegroundWindow() != hwnd {
-                return Err(crate::i18n::tr("Windows n’a pas accordé le focus au menu."));
-            }
+        if owner == GetCurrentThreadId() && GetForegroundWindow() == hwnd {
+            // Acceptance can precede the foreground change during a Shell transition.
+            // The UI's WM_ACTIVATE reconciliation focuses the search once confirmed.
             BringWindowToTop(hwnd);
             SetFocus(hwnd);
         }
@@ -476,23 +474,36 @@ struct HookState {
     modifiers: u8,
     space_down: bool,
     suppress_space: bool,
+    activation_pending: bool,
+    activation_timer: usize,
 }
 #[derive(Debug, PartialEq, Eq)]
 enum KeyAction {
     Pass,
     Consume,
+    MaskStart,
     Activate,
 }
 
 impl HookState {
     fn key(&mut self, key: u16, down: bool) -> KeyAction {
         match key {
-            VK_LWIN => self.left_win = down,
-            VK_RWIN => self.right_win = down,
+            VK_LWIN | VK_RWIN => {
+                if key == VK_LWIN {
+                    self.left_win = down;
+                } else {
+                    self.right_win = down;
+                }
+                if !down && !self.left_win && !self.right_win && self.activation_pending {
+                    self.activation_pending = false;
+                    return KeyAction::Activate;
+                }
+            }
             key @ VK_LSHIFT..=VK_RMENU => {
                 let bit = 1 << (key - VK_LSHIFT);
                 if down {
-                    self.modifiers |= bit
+                    self.modifiers |= bit;
+                    self.activation_pending = false;
                 } else {
                     self.modifiers &= !bit
                 }
@@ -504,10 +515,11 @@ impl HookState {
                         && self.modifiers == 0;
                     if activate {
                         self.suppress_space = true;
+                        self.activation_pending = true;
                     }
                     self.space_down = true;
                     if activate {
-                        return KeyAction::Activate;
+                        return KeyAction::MaskStart;
                     }
                     if self.suppress_space {
                         return KeyAction::Consume;
@@ -520,6 +532,7 @@ impl HookState {
                     }
                 }
             }
+            _ if down => self.activation_pending = false,
             _ => {}
         }
         KeyAction::Pass
@@ -548,7 +561,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, message: WPARAM, parameter: L
         };
         (state.key(data.vkCode as u16, down), state.hwnd)
     });
-    if action == KeyAction::Activate {
+    if action == KeyAction::MaskStart {
         let mask = [
             INPUT {
                 r#type: INPUT_KEYBOARD,
@@ -572,9 +585,28 @@ unsafe extern "system" fn keyboard_hook(code: i32, message: WPARAM, parameter: L
         ];
         // Mark Win down as a used chord so Win up does not open Start. Never swallow Win up.
         SendInput(2, mask.as_ptr(), size_of::<INPUT>() as i32);
-        PostMessageW(hwnd as HWND, WM_ACTIVATE_MENU, 0, 0);
+    } else if action == KeyAction::Activate {
+        // A low-level hook runs before Win up reaches the Shell. Activate from the
+        // hotkey message pump shortly afterwards so Start can finish its transition.
+        let previous = HOOK.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map_or(0, |state| state.activation_timer)
+        });
+        let timer = SetTimer(null_mut(), previous, 10, None);
+        HOOK.with(|cell| {
+            if let Some(state) = cell.borrow_mut().as_mut() {
+                state.activation_timer = timer;
+            }
+        });
+        if timer == 0 {
+            if previous != 0 {
+                KillTimer(null_mut(), previous);
+            }
+            PostMessageW(hwnd as HWND, WM_ACTIVATE_MENU, 0, 0);
+        }
     }
-    if action != KeyAction::Pass {
+    if matches!(action, KeyAction::Consume | KeyAction::MaskStart) {
         1
     } else {
         CallNextHookEx(null_mut(), code, message, parameter)
@@ -705,6 +737,8 @@ pub fn install_hotkey(hwnd: HWND, hotkey: &str) -> Result<Hotkey, String> {
                         modifiers,
                         space_down: pressed(VK_SPACE),
                         suppress_space: false,
+                        activation_pending: false,
+                        activation_timer: 0,
                     })
                 });
                 let hook = SetWindowsHookExW(
@@ -734,7 +768,22 @@ pub fn install_hotkey(hwnd: HWND, hotkey: &str) -> Result<Hotkey, String> {
             while thread_running.load(Ordering::Acquire)
                 && GetMessageW(&mut message, null_mut(), 0, 0) > 0
             {
-                if message.message == WM_HOTKEY {
+                let activation_timer = message.message == WM_TIMER
+                    && HOOK.with(|cell| {
+                        let mut borrowed = cell.borrow_mut();
+                        let Some(state) = borrowed.as_mut() else {
+                            return false;
+                        };
+                        if state.activation_timer != 0 && message.wParam == state.activation_timer {
+                            state.activation_timer = 0;
+                            return true;
+                        }
+                        false
+                    });
+                if activation_timer {
+                    KillTimer(null_mut(), message.wParam);
+                    PostMessageW(hwnd as HWND, WM_ACTIVATE_MENU, 0, 0);
+                } else if message.message == WM_HOTKEY {
                     PostMessageW(hwnd as HWND, WM_ACTIVATE_MENU, 0, 0);
                 } else {
                     TranslateMessage(&message);
@@ -743,7 +792,13 @@ pub fn install_hotkey(hwnd: HWND, hotkey: &str) -> Result<Hotkey, String> {
             }
             if !hook.is_null() {
                 UnhookWindowsHookEx(hook);
-                HOOK.with(|cell| cell.borrow_mut().take());
+                HOOK.with(|cell| {
+                    if let Some(state) = cell.borrow_mut().take() {
+                        if state.activation_timer != 0 {
+                            KillTimer(null_mut(), state.activation_timer);
+                        }
+                    }
+                });
             } else {
                 UnregisterHotKey(null_mut(), 1);
             }
@@ -1149,6 +1204,8 @@ mod tests {
             modifiers: 0,
             space_down: false,
             suppress_space: false,
+            activation_pending: false,
+            activation_timer: 0,
         }
     }
 
@@ -1156,8 +1213,9 @@ mod tests {
     fn win_space_consumes_press_repeat_release_but_delivers_win_up() {
         let mut keys = state();
         assert_eq!(keys.key(VK_LWIN, true), KeyAction::Pass);
-        assert_eq!(keys.key(VK_SPACE, true), KeyAction::Activate);
+        assert_eq!(keys.key(VK_SPACE, true), KeyAction::MaskStart);
         assert_eq!(keys.key(VK_SPACE, true), KeyAction::Consume);
+        assert_eq!(keys.key(VK_LWIN, false), KeyAction::Activate);
         assert_eq!(keys.key(VK_LWIN, false), KeyAction::Pass);
         assert_eq!(keys.key(VK_SPACE, false), KeyAction::Consume);
         assert_eq!(keys.key(VK_SPACE, true), KeyAction::Pass);
@@ -1171,9 +1229,9 @@ mod tests {
             assert_eq!(keys.key(win, true), KeyAction::Pass);
             assert_eq!(keys.key(b'E' as u16, true), KeyAction::Pass);
             assert_eq!(keys.key(b'E' as u16, false), KeyAction::Pass);
-            assert_eq!(keys.key(VK_SPACE, true), KeyAction::Activate);
+            assert_eq!(keys.key(VK_SPACE, true), KeyAction::MaskStart);
             assert_eq!(keys.key(VK_SPACE, false), KeyAction::Consume);
-            assert_eq!(keys.key(win, false), KeyAction::Pass);
+            assert_eq!(keys.key(win, false), KeyAction::Activate);
         }
     }
 
@@ -1186,12 +1244,78 @@ mod tests {
             assert_eq!(keys.key(VK_SPACE, true), KeyAction::Pass);
             assert_eq!(keys.key(VK_SPACE, false), KeyAction::Pass);
             keys.key(modifier, false);
-            assert_eq!(keys.key(VK_SPACE, true), KeyAction::Activate);
+            assert_eq!(keys.key(VK_SPACE, true), KeyAction::MaskStart);
         }
         let mut keys = state();
         assert_eq!(keys.key(VK_SPACE, true), KeyAction::Pass);
         keys.key(VK_LWIN, true);
         assert_eq!(keys.key(VK_SPACE, true), KeyAction::Pass);
+    }
+
+    #[test]
+    fn win_space_waits_for_both_win_keys_and_activates_once() {
+        for (first, last) in [(VK_LWIN, VK_RWIN), (VK_RWIN, VK_LWIN)] {
+            let mut keys = state();
+            assert_eq!(keys.key(VK_LWIN, true), KeyAction::Pass);
+            assert_eq!(keys.key(VK_RWIN, true), KeyAction::Pass);
+            assert_eq!(keys.key(VK_SPACE, true), KeyAction::MaskStart);
+            assert_eq!(keys.key(VK_SPACE, true), KeyAction::Consume);
+            assert_eq!(keys.key(first, false), KeyAction::Pass);
+            assert_eq!(keys.key(first, false), KeyAction::Pass);
+            assert_eq!(keys.key(VK_SPACE, false), KeyAction::Consume);
+            assert_eq!(keys.key(last, false), KeyAction::Activate);
+            assert_eq!(keys.key(last, false), KeyAction::Pass);
+            assert!(!keys.activation_pending);
+        }
+    }
+
+    #[test]
+    fn another_chord_before_win_release_cancels_only_the_pending_activation() {
+        for other in (VK_LSHIFT..=VK_RMENU).chain([b'E' as u16, b'S' as u16, VK_ESCAPE]) {
+            let mut keys = state();
+            assert_eq!(keys.key(VK_LWIN, true), KeyAction::Pass);
+            assert_eq!(keys.key(VK_SPACE, true), KeyAction::MaskStart);
+            assert_eq!(keys.key(other, true), KeyAction::Pass);
+            assert_eq!(keys.key(VK_LWIN, false), KeyAction::Pass);
+            assert_eq!(keys.key(other, false), KeyAction::Pass);
+            assert_eq!(keys.key(VK_SPACE, false), KeyAction::Consume);
+            assert!(!keys.activation_pending);
+
+            // Cancellation does not leave Space or the next ordinary chord suppressed.
+            assert_eq!(keys.key(VK_SPACE, true), KeyAction::Pass);
+            assert_eq!(keys.key(VK_SPACE, false), KeyAction::Pass);
+            assert_eq!(keys.key(VK_RWIN, true), KeyAction::Pass);
+            assert_eq!(keys.key(VK_SPACE, true), KeyAction::MaskStart);
+            assert_eq!(keys.key(VK_SPACE, false), KeyAction::Consume);
+            assert_eq!(keys.key(VK_RWIN, false), KeyAction::Activate);
+        }
+    }
+
+    #[test]
+    fn standalone_win_then_successive_win_space_gestures_each_activate_on_release() {
+        let mut keys = state();
+        // Opening Start with a bare Win press must remain an ordinary system action.
+        assert_eq!(keys.key(VK_LWIN, true), KeyAction::Pass);
+        assert_eq!(keys.key(VK_LWIN, false), KeyAction::Pass);
+        for _ in 0..2 {
+            assert_eq!(keys.key(VK_LWIN, true), KeyAction::Pass);
+            assert_eq!(keys.key(VK_LWIN, true), KeyAction::Pass);
+            assert_eq!(keys.key(VK_SPACE, true), KeyAction::MaskStart);
+            assert_eq!(keys.key(VK_SPACE, false), KeyAction::Consume);
+            assert_eq!(keys.key(VK_LWIN, false), KeyAction::Activate);
+            assert!(!keys.activation_pending);
+        }
+    }
+
+    #[test]
+    fn unrelated_key_releases_do_not_cancel_win_space() {
+        let mut keys = state();
+        assert_eq!(keys.key(VK_RWIN, true), KeyAction::Pass);
+        assert_eq!(keys.key(VK_SPACE, true), KeyAction::MaskStart);
+        assert_eq!(keys.key(b'X' as u16, false), KeyAction::Pass);
+        assert_eq!(keys.key(VK_LCONTROL, false), KeyAction::Pass);
+        assert_eq!(keys.key(VK_RWIN, false), KeyAction::Activate);
+        assert_eq!(keys.key(VK_SPACE, false), KeyAction::Consume);
     }
 
     #[test]
