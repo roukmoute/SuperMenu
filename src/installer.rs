@@ -1,12 +1,12 @@
 //! A separate instance of this executable owns WinGet and its visible console.
 //! Package operations and their validation run outside the launcher's UI thread.
 
-use crate::{cleanup::CleanupPlan, config, native::wide, packages};
+use crate::{cleanup::CleanupPlan, config, native::wide, packages, uninstall_inventory};
 use std::io::{self, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::process::{CommandExt, ExitStatusExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::ptr::{null, null_mut};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -14,6 +14,7 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_CANCELLED, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND, INVALID_HANDLE_VALUE,
     WAIT_FAILED, WAIT_OBJECT_0,
 };
+use windows_sys::Win32::Globalization::CompareStringOrdinal;
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
@@ -28,8 +29,8 @@ use windows_sys::Win32::System::Threading::{
     GetExitCodeProcess, WaitForSingleObject, DETACHED_PROCESS, INFINITE,
 };
 use windows_sys::Win32::UI::Shell::{
-    ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
-    SHELLEXECUTEINFOW,
+    AssocQueryStringW, ShellExecuteExW, ASSOCF_IS_PROTOCOL, ASSOCSTR_EXECUTABLE,
+    SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetWindowThreadProcessId, IsWindow, MessageBoxW, PostMessageW, MB_ICONERROR,
@@ -212,7 +213,10 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
                     .map_err(Failure::local)
                     .and_then(|_| resolve_winget().map_err(Failure::local))
                     .and_then(|exe| {
-                        let mut runner = SystemRunner { exe };
+                        let mut runner = SystemRunner {
+                            exe,
+                            ignored_browser: None,
+                        };
                         match &request.remove {
                             Some(target) => {
                                 let plan = CleanupPlan::capture(&target.canonical());
@@ -220,6 +224,8 @@ pub fn run_from_args(args: &[String]) -> Option<i32> {
                                 if request.check_only {
                                     // Preview never deletes files or registry values.
                                     let _ = plan.preview_report();
+                                } else {
+                                    runner.ignored_browser = ignored_browser_for_removal(target);
                                 }
                                 perform_remove_and_cleanup(
                                     &mut runner,
@@ -775,10 +781,12 @@ fn command_args(operation: Operation, id: &str) -> Vec<&str> {
 trait Runner {
     fn run(&mut self, operation: Operation, id: &str) -> Result<i32, String>;
     fn executable_presence(&mut self, id: &str) -> Option<bool>;
+    fn verification_pause(&mut self) {}
 }
 
 struct SystemRunner {
     exe: PathBuf,
+    ignored_browser: Option<PathBuf>,
 }
 
 impl Runner for SystemRunner {
@@ -786,22 +794,143 @@ impl Runner for SystemRunner {
         packages::installed_executable_presence(id)
     }
 
+    fn verification_pause(&mut self) {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
     fn run(&mut self, operation: Operation, id: &str) -> Result<i32, String> {
         let args = command_args(operation, id);
         println!("> winget {}\n", args.join(" "));
         let _ = io::stdout().flush();
-        Command::new(&self.exe)
-            .args(args)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status()
+        let status = if matches!(operation, Operation::RemoveId | Operation::RemoveName) {
+            crate::process_tree::run_with_ignored_browser(
+                &self.exe,
+                &args,
+                self.ignored_browser.as_deref(),
+            )
+        } else {
+            Command::new(&self.exe)
+                .args(args)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()
+        };
+        status
             .map_err(|error| {
                 crate::i18n::fmt("WinGet ne peut pas être exécuté ({error}). Vérifiez App Installer et l'alias d'exécution des applications dans les paramètres Windows.", &[("error", error.to_string())])
             })?
             .code()
             .ok_or_else(|| crate::i18n::tr("WinGet a été interrompu sans résultat."))
     }
+}
+
+fn ignored_browser_for_removal(target: &RemoveTarget) -> Option<PathBuf> {
+    // Some uninstallers open their survey in a new browser process. Ignore only
+    // the exact HTTP handler outside the independently identified product root.
+    let browser = default_http_browser()?;
+    let inventory = uninstall_inventory::capture();
+    let root = browser_exclusion_root(&inventory, &target.canonical())?;
+    if !root.is_absolute() {
+        return None;
+    }
+    let root = std::fs::canonicalize(root).ok()?;
+    (root.is_dir() && browser_is_outside_root(&browser, Some(&root))).then_some(browser)
+}
+
+fn default_http_browser() -> Option<PathBuf> {
+    let protocol = wide("http");
+    let mut length = 0;
+    // SAFETY: the first query obtains a bounded size; no output buffer is passed.
+    unsafe {
+        AssocQueryStringW(
+            ASSOCF_IS_PROTOCOL,
+            ASSOCSTR_EXECUTABLE,
+            protocol.as_ptr(),
+            null(),
+            null_mut(),
+            &mut length,
+        );
+    }
+    if !(2..=32_768).contains(&length) {
+        return None;
+    }
+    let mut buffer = vec![0_u16; length as usize];
+    // SAFETY: the output size corresponds to this initialized UTF-16 buffer.
+    let result = unsafe {
+        AssocQueryStringW(
+            ASSOCF_IS_PROTOCOL,
+            ASSOCSTR_EXECUTABLE,
+            protocol.as_ptr(),
+            null(),
+            buffer.as_mut_ptr(),
+            &mut length,
+        )
+    };
+    if result != 0 || length as usize > buffer.len() {
+        return None;
+    }
+    let end = buffer.iter().position(|&unit| unit == 0)?;
+    let path = PathBuf::from(String::from_utf16(&buffer[..end]).ok()?);
+    if !path.is_absolute() {
+        return None;
+    }
+    let path = std::fs::canonicalize(path).ok()?;
+    path.is_file().then_some(path)
+}
+
+fn browser_exclusion_root(
+    inventory: &uninstall_inventory::Inventory,
+    target: &str,
+) -> Option<PathBuf> {
+    if !inventory.complete {
+        return None;
+    }
+    let mut matching = inventory
+        .entries
+        .iter()
+        .filter(|entry| packages::registry_name_matches_target(target, &entry.name));
+    let selected = matching.next()?;
+    if selected.protected || matching.next().is_some() {
+        return None;
+    }
+    selected.install_location.clone().or_else(|| {
+        selected
+            .display_icon
+            .as_ref()?
+            .parent()
+            .map(Path::to_path_buf)
+    })
+}
+
+fn browser_is_outside_root(browser: &Path, root: Option<&Path>) -> bool {
+    let Some(root) = root else { return false };
+    if !browser.is_absolute()
+        || !root.is_absolute()
+        || browser
+            .components()
+            .chain(root.components())
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    let mut browser_parts = browser.components();
+    !root.components().all(|part| {
+        browser_parts.next().is_some_and(|other| {
+            let left: Vec<u16> = part.as_os_str().encode_wide().collect();
+            let right: Vec<u16> = other.as_os_str().encode_wide().collect();
+            // SAFETY: explicit lengths describe live UTF-16 component buffers.
+            unsafe {
+                CompareStringOrdinal(
+                    left.as_ptr(),
+                    left.len() as i32,
+                    right.as_ptr(),
+                    right.len() as i32,
+                    1,
+                ) == 2
+            }
+        })
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -940,19 +1069,27 @@ fn perform_remove(
     match status as u32 {
         0 => {
             // A successful uninstaller exit alone is not proof that the product
-            // disappeared. Never clean program directories while WinGet still
-            // reports the exact target installed, or when verification failed.
-            let verified = runner.run(list, target.value()).map_err(Failure::local)?;
-            match verified as u32 {
-                NO_APPLICATIONS_FOUND => Ok(Outcome::Removed),
-                0 => Err(Failure::local(
-                    "Le logiciel est encore présent après la désinstallation. Aucun nettoyage de résidus n'a été lancé.",
-                )),
-                _ => Err(Failure::winget(
-                    verified,
-                    "Impossible de vérifier la disparition du logiciel. Aucun nettoyage de résidus n'a été lancé",
-                )),
+            // disappeared. All descendant processes have finished; allow a
+            // short registry grace period, without launching removal again.
+            for attempt in 0..3 {
+                if attempt != 0 {
+                    runner.verification_pause();
+                }
+                let verified = runner.run(list, target.value()).map_err(Failure::local)?;
+                match verified as u32 {
+                    NO_APPLICATIONS_FOUND => return Ok(Outcome::Removed),
+                    0 => {}
+                    _ => {
+                        return Err(Failure::winget(
+                            verified,
+                            "Impossible de vérifier la disparition du logiciel. Aucun nettoyage de résidus n'a été lancé",
+                        ))
+                    }
+                }
             }
+            Err(Failure::local(
+                "Le logiciel est encore présent après la désinstallation. Aucun nettoyage de résidus n'a été lancé.",
+            ))
         }
         NO_APPLICATIONS_FOUND => Err(Failure::winget(
             status,
@@ -1582,6 +1719,7 @@ mod tests {
         results: VecDeque<Result<i32, String>>,
         calls: Vec<Operation>,
         presence: VecDeque<Option<bool>>,
+        verification_pauses: usize,
     }
 
     impl FakeRunner {
@@ -1590,6 +1728,7 @@ mod tests {
                 results: codes.iter().map(|code| Ok(*code as i32)).collect(),
                 calls: Vec::new(),
                 presence: VecDeque::new(),
+                verification_pauses: 0,
             }
         }
     }
@@ -1597,6 +1736,10 @@ mod tests {
     impl Runner for FakeRunner {
         fn executable_presence(&mut self, _id: &str) -> Option<bool> {
             self.presence.pop_front().flatten()
+        }
+
+        fn verification_pause(&mut self) {
+            self.verification_pauses += 1;
         }
 
         fn run(&mut self, operation: Operation, _id: &str) -> Result<i32, String> {
@@ -2167,7 +2310,201 @@ mod tests {
             let outcome = perform_remove(&mut runner, &target, true);
             assert_eq!(outcome.is_ok(), code == 0);
             assert_eq!(runner.calls, vec![Operation::ListName]);
+            assert_eq!(runner.verification_pauses, 0);
         }
+    }
+
+    #[test]
+    fn removal_waits_for_delayed_absence_without_running_the_uninstaller_again() {
+        for (target, list, remove) in [
+            (
+                RemoveTarget::Id(packages::PACKAGES[0].id),
+                Operation::List,
+                Operation::RemoveId,
+            ),
+            (
+                RemoveTarget::Name("Delayed Removal Fixture".into()),
+                Operation::ListName,
+                Operation::RemoveName,
+            ),
+        ] {
+            for pauses in 0..=2 {
+                let mut codes = vec![0; pauses + 2];
+                codes.push(NO_APPLICATIONS_FOUND);
+                let mut runner = FakeRunner::codes(&codes);
+                let mut cleanup_count = 0;
+                let result = perform_remove_and_cleanup(&mut runner, &target, false, || {
+                    cleanup_count += 1;
+                });
+                assert_eq!(result.unwrap(), Outcome::Removed);
+                assert_eq!(cleanup_count, 1);
+                assert_eq!(runner.verification_pauses, pauses);
+                assert_eq!(runner.calls[0..2], [list, remove]);
+                assert_eq!(runner.calls[2..], vec![list; pauses + 1]);
+                assert!(runner.results.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn removal_stops_verification_on_uncertainty_and_never_cleans_a_present_target() {
+        let target = RemoveTarget::Name("Removal Verification Fixture".into());
+        for (codes, pauses, expected_code) in [
+            (vec![0, 0, 0, 0, 0], 2, 1),
+            (vec![0, 0, 5], 0, 5),
+            (vec![0, 0, 0, 0x8A15_0016], 1, 0x8A15_0016),
+            (vec![0, 0, 0, 0, 0x8A15_0045], 2, 0x8A15_0045),
+        ] {
+            let mut runner = FakeRunner::codes(&codes);
+            let mut cleaned = false;
+            let result = perform_remove_and_cleanup(&mut runner, &target, false, || {
+                cleaned = true;
+            });
+            assert_eq!(result.unwrap_err().code as u32, expected_code);
+            assert!(!cleaned);
+            assert_eq!(runner.verification_pauses, pauses);
+            assert_eq!(
+                runner
+                    .calls
+                    .iter()
+                    .filter(|&&call| call == Operation::RemoveName)
+                    .count(),
+                1
+            );
+            assert!(runner.results.is_empty());
+        }
+    }
+
+    #[test]
+    fn removal_verification_io_failure_never_retries_or_cleans() {
+        let target = RemoveTarget::Name("Removal IO Fixture".into());
+        let mut runner = FakeRunner::codes(&[0, 0, 0]);
+        runner.results.push_back(Err("Fixture query failed".into()));
+        let mut cleaned = false;
+        let error = perform_remove_and_cleanup(&mut runner, &target, false, || {
+            cleaned = true;
+        })
+        .unwrap_err();
+        assert_eq!(error.message, "Fixture query failed");
+        assert!(!cleaned);
+        assert_eq!(runner.verification_pauses, 1);
+        assert_eq!(
+            runner.calls,
+            [
+                Operation::ListName,
+                Operation::RemoveName,
+                Operation::ListName,
+                Operation::ListName,
+            ]
+        );
+    }
+
+    #[test]
+    fn browser_exclusion_uses_component_boundaries_and_windows_unicode_case_rules() {
+        for (browser, root, expected) in [
+            (
+                r"C:\Programs\Firefox\firefox.exe",
+                Some(r"C:\Programs\StreamFab"),
+                true,
+            ),
+            (
+                r"C:\Programs\StreamFab\browser.exe",
+                Some(r"C:\Programs\StreamFab"),
+                false,
+            ),
+            (
+                r"C:\Programs\StreamFabBrowser\browser.exe",
+                Some(r"C:\Programs\StreamFab"),
+                true,
+            ),
+            (
+                r"C:\PROGRAMS\ÉDITEUR\Firefox.exe",
+                Some(r"c:\programs\éditeur"),
+                false,
+            ),
+            (r"C:\Programs\Firefox\firefox.exe", None, false),
+            (
+                r"C:\Programs\Firefox\firefox.exe",
+                Some(r"relative\StreamFab"),
+                false,
+            ),
+            (
+                r"relative\browser.exe",
+                Some(r"C:\Programs\StreamFab"),
+                false,
+            ),
+            (
+                r"C:\Programs\Other\..\Firefox\firefox.exe",
+                Some(r"C:\Programs\StreamFab"),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                browser_is_outside_root(Path::new(browser), root.map(Path::new)),
+                expected,
+                "{browser} / {root:?}"
+            );
+        }
+    }
+
+    fn browser_policy_inventory() -> uninstall_inventory::Inventory {
+        use uninstall_inventory::{Hive, InstalledEntry, Inventory, RegistryKey, RegistryView};
+        Inventory {
+            entries: vec![InstalledEntry {
+                name: "Browser Policy Fixture".into(),
+                publisher: "Fixture".into(),
+                install_location: Some(PathBuf::from(r"C:\Programs\StreamFab")),
+                display_icon: Some(PathBuf::from(r"C:\Programs\StreamFab\app.exe")),
+                uninstall_key: RegistryKey {
+                    hive: Hive::User,
+                    view: RegistryView::Registry64,
+                    path: r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Fixture".into(),
+                },
+                protected: false,
+            }],
+            complete: true,
+            notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn browser_exclusion_refuses_incomplete_ambiguous_and_protected_ownership() {
+        let target = "name:Browser Policy Fixture";
+        let inventory = browser_policy_inventory();
+        assert_eq!(
+            browser_exclusion_root(&inventory, target),
+            inventory.entries[0].install_location
+        );
+        assert!(browser_exclusion_root(&inventory, "name:Other Fixture").is_none());
+        let mut incomplete = inventory.clone();
+        incomplete.complete = false;
+        assert!(browser_exclusion_root(&incomplete, target).is_none());
+        let mut ambiguous = inventory.clone();
+        ambiguous.entries.push(ambiguous.entries[0].clone());
+        assert!(browser_exclusion_root(&ambiguous, target).is_none());
+        let mut protected = inventory;
+        protected.entries[0].protected = true;
+        assert!(browser_exclusion_root(&protected, target).is_none());
+    }
+
+    #[test]
+    fn browser_exclusion_requires_a_known_location_or_icon_parent() {
+        let mut inventory = browser_policy_inventory();
+        let target = "name:Browser Policy Fixture";
+        inventory.entries[0].install_location = None;
+        assert_eq!(
+            browser_exclusion_root(&inventory, target),
+            Some(PathBuf::from(r"C:\Programs\StreamFab"))
+        );
+        inventory.entries[0].display_icon = None;
+        assert!(browser_exclusion_root(&inventory, target).is_none());
+        inventory.entries[0].name = "Mozilla Firefox".into();
+        inventory.entries[0].install_location = Some(PathBuf::from(r"C:\Programs\Firefox"));
+        let root = browser_exclusion_root(&inventory, "id:Mozilla.Firefox").unwrap();
+        assert!(!browser_is_outside_root(
+            Path::new(r"C:\Programs\Firefox\firefox.exe"),
+            Some(&root)
+        ));
     }
 
     #[test]
@@ -2176,7 +2513,7 @@ mod tests {
         let target = RemoveTarget::Name("SuperMenu Cleanup Fixture".into());
         for (codes, diagnostic, should_clean) in [
             (vec![0, 0, NO_APPLICATIONS_FOUND], false, true),
-            (vec![0, 0, 0], false, false),
+            (vec![0, 0, 0, 0, 0], false, false),
             (vec![0, 0, 5], false, false),
             (vec![0, 1603], false, false),
             (vec![NO_APPLICATIONS_FOUND], false, false),

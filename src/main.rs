@@ -12,6 +12,7 @@ mod language_dialog;
 mod launch_feedback;
 mod native;
 mod packages;
+mod process_tree;
 mod setup_control;
 mod system_info;
 mod timer;

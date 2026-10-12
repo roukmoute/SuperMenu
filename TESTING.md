@@ -26,6 +26,8 @@ Le test natif de l'icône de notification vérifie son rendu réel avec `DrawIco
 
 Le retour de lancement est également dessiné dans un bitmap natif : le test vérifie le centrage et la transparence de l'icône d'application dans les deux thèmes, sa propriété indépendante du cache, son remplacement sans prolongation et l'absence de réapparition après expiration. `SUPER_MENU_LAUNCH_TEST_DIR` permet d'exporter facultativement ces rendus pendant les tests.
 
+Les tests du suivi de désinstallation utilisent des processus PowerShell fictifs et un faux navigateur GUI compilé pour la fixture : un lanceur se termine avant son enfant différé, qui doit écrire son marqueur avant que la commande rende la main. Ils vérifient aussi le code du lanceur, l'absence d'interférence avec un processus extérieur et l'exclusion du seul navigateur validé, sans le fermer. Le test de l'alias WinGet exécute uniquement --version. Le nettoyage StreamFab utilise un dossier de fixture, avec son nom daté, des binaires et des fichiers personnels : seuls les binaires attribuables deviennent candidats. Aucun StreamFab réel n'est lancé, arrêté ou désinstallé par ces tests.
+
 ## Données et isolation
 
 `tests/fixtures/launcher.json` contient des applications et fichiers fictifs. `--smoke-test --smoke-fixture <fichier>` restaure leurs données de recherche et remplace l'indexation du PC. Le mode utilise les réglages par défaut et un historique de lancement vide. Il ne lit ni n'écrit l'index ou la configuration personnelle, n'installe pas de raccourci global et ne lance pas de surveillance de dossiers. Les activations de logiciels, fichiers, liens web, presse-papiers et actions système externes sont bloquées dans ce mode ; les tests utilisent les actions internes du menu.

@@ -823,6 +823,7 @@ fn known_program_relative(relative: &str, entry: &InstalledEntry) -> bool {
             | ("videolan\\vlc", "vlc.exe")
             | ("obs-studio", "obs64.exe")
             | ("obs-studio\\bin\\64bit", "obs64.exe")
+            | ("streamfab\\streamfab", "streamfab64.exe")
     )
 }
 
@@ -2101,6 +2102,120 @@ mod tests {
         assert!(report.inspection_only);
         assert!(report.removed.is_empty());
         assert!(directory.join("fixture.exe").exists());
+    }
+
+    #[test]
+    fn dated_streamfab_entry_identifies_only_exact_program_binaries() {
+        let fixture = Fixture::new();
+        let entry = fixture.entry(
+            "StreamFab (x64) (23/07/2026)",
+            r"StreamFab\StreamFab",
+            "StreamFab64.exe",
+        );
+        let directory = entry.install_location.clone().unwrap();
+        let binaries = [
+            directory.join("StreamFab64.exe"),
+            directory.join("Qt6Core.dll"),
+            directory.join("StreamFab64.pdb"),
+            directory.join("StreamFab64.exe.manifest"),
+        ];
+        for binary in &binaries[1..] {
+            fs::write(binary, b"fixture program binary").unwrap();
+        }
+        let personal = [
+            directory.join("settings.ini"),
+            directory.join(r"Profiles\Default\profile.sqlite"),
+            directory.join(r"Downloads\video.mp4"),
+            fixture
+                .roots
+                .local
+                .as_ref()
+                .unwrap()
+                .join(r"StreamFab\StreamFab\settings.json"),
+            fixture
+                .roots
+                .roaming
+                .as_ref()
+                .unwrap()
+                .join(r"StreamFab\StreamFab\profile.sqlite"),
+            fixture.root.join(r"Downloads\video.mp4"),
+        ];
+        for path in &personal {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"personal fixture data").unwrap();
+        }
+        let plan = fixture_plan(&fixture, entry);
+        assert_eq!(plan.program_roots.len(), 1);
+        assert!(same_path(&plan.program_roots[0], &directory));
+        assert_eq!(plan.files.len(), binaries.len());
+        for binary in &binaries {
+            assert!(plan.files.iter().any(|candidate| {
+                matches!(candidate.kind, FileKind::Program) && same_path(&candidate.path, binary)
+            }));
+        }
+        for path in &personal {
+            assert!(!plan
+                .files
+                .iter()
+                .any(|candidate| same_path(&candidate.path, path)));
+            assert_eq!(fs::read(path).unwrap(), b"personal fixture data");
+        }
+        let report = plan.preview_report();
+        assert!(report.inspection_only);
+        assert!(report.removed.is_empty());
+        assert!(binaries.iter().all(|path| path.exists()));
+    }
+
+    #[test]
+    fn streamfab_path_exception_keeps_metadata_and_shared_owner_guards() {
+        let fixture = Fixture::new();
+        let entry = fixture.entry(
+            "StreamFab (x64) (23/07/2026)",
+            r"StreamFab\StreamFab",
+            "StreamFab64.exe",
+        );
+        let directory = entry.install_location.clone().unwrap();
+        let other = fixture.entry("Other App", "Other App", "other.exe");
+        let mut wrong_executable = entry.clone();
+        let wrong_icon = directory.join("other.exe");
+        fs::write(&wrong_icon, b"different fixture executable").unwrap();
+        wrong_executable.display_icon = Some(wrong_icon);
+        let parent = fixture.entry(&entry.name, "StreamFab", "StreamFab64.exe");
+        let mut missing_icon = entry.clone();
+        missing_icon.display_icon = None;
+        let mut external_icon = entry.clone();
+        external_icon.display_icon = other.display_icon.clone();
+        let mut protected = entry.clone();
+        protected.protected = true;
+        for (case, candidate) in [
+            ("different executable", wrong_executable),
+            ("publisher parent folder", parent),
+            ("absent executable metadata", missing_icon),
+            ("external executable metadata", external_icon),
+            ("protected target", protected),
+        ] {
+            let plan = fixture_plan(&fixture, candidate);
+            assert!(plan.files.is_empty(), "{case}");
+            assert!(plan.program_roots.is_empty(), "{case}");
+        }
+        for protected_other in [false, true] {
+            let mut shared = other.clone();
+            shared.install_location = entry.install_location.clone();
+            shared.protected = protected_other;
+            let plan = CleanupPlan::from_inventory(
+                &format!("name:{}", entry.name),
+                inventory(vec![entry.clone(), shared]),
+                fixture.roots.clone(),
+            );
+            assert!(plan.files.is_empty());
+            assert!(plan.program_roots.is_empty());
+            assert!(plan
+                .retained
+                .iter()
+                .any(|item| item.reason.contains("partagé")));
+        }
+        assert!(directory.join("StreamFab64.exe").exists());
+        assert!(other.display_icon.unwrap().exists());
     }
 
     #[test]
