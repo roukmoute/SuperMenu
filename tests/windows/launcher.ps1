@@ -100,6 +100,70 @@ try {
     Assert-Test -Context $context -Condition ($changedQuery.selected -eq 0 -and $changedQuery.items[0].id -ceq 'fixture:steam') -Name 'changing the query selects the first result even when the previous item still exists'
     $cases.Add([ordered]@{ case = 'changed query resets selection'; query = $changedQuery.query; selected = $changedQuery.selected; expected_id = 'fixture:steam'; selected_id = $changedQuery.items[$changedQuery.selected].id })
 
+    # Force the real WM_PAINT path after indexing, icons, keyboard navigation and
+    # resizing. Only this fixture process is controlled; no desktop input is sent.
+    # WM_PRINTCLIENT remains a separate drawing diagnostic and cannot warm or
+    # exercise the cached presentation buffer used by BeginPaint.
+    Set-OwnQuery 'steam'
+    [void]$context.Api.Send($edit, 0x00B1, 1, 4) # EM_SETSEL: preserve a nonempty range
+    $paintWindowBounds = $context.Api.GetWindowBounds($context.Main)
+    $paintWidth = $paintWindowBounds[2] - $paintWindowBounds[0]
+    $paintHeight = $paintWindowBounds[3] - $paintWindowBounds[1]
+    $paintSizes = @(
+        @{ width = $paintWidth; height = $paintHeight },
+        @{ width = $paintWidth + 40; height = $paintHeight + 24 }
+    )
+    try {
+        # Warm both sizes, including asynchronous icon notifications, before the
+        # resource baseline. A size change replaces the bitmap; it must not retain
+        # the previous frame allocation on every subsequent resize.
+        foreach ($size in $paintSizes) {
+            $context.Api.Resize($context.Main, $size.width, $size.height)
+            [void]$context.Api.Send($context.Main, 0x8008, 0, 0) # ICONS_READY
+            $context.Api.PaintNow($context.Main)
+        }
+        $context.Api.Resize($context.Main, $paintWidth, $paintHeight)
+        $context.Api.PaintNow($context.Main)
+        $paintWarmResources = $context.Api.GuiResources($context.Process.Handle)
+        foreach ($round in 1..24) {
+            [void]$context.Api.Send($edit, 0x0100, 0x28, 0) # owned Down, before refresh
+            $paintBeforeRefresh = Read-TestSnapshot -Context $context
+            $paintSelectedId = $paintBeforeRefresh.items[$paintBeforeRefresh.selected].id
+            [void]$context.Api.Send($context.Main, 0x8002, 0, 0) # INDEX
+            [void]$context.Api.Send($context.Main, 0x8008, 0, 0) # ICONS_READY
+            if ($round % 4 -eq 0) {
+                $size = $paintSizes[([int]($round / 4)) % $paintSizes.Count]
+                $context.Api.Resize($context.Main, $size.width, $size.height)
+            }
+            $context.Api.PaintNow($context.Main)
+            $paintAfterRefresh = Read-TestSnapshot -Context $context
+            $paintEditSelection = $context.Api.Selection($edit)
+            Assert-Test -Context $context -Condition ($paintAfterRefresh.query -ceq 'steam' -and $context.Api.ReadText($edit) -ceq 'steam') -Name ('real paint ' + $round + ': refresh preserves the typed query and native EDIT text')
+            Assert-Test -Context $context -Condition ($paintEditSelection[0] -eq 1 -and $paintEditSelection[1] -eq 4) -Name ('real paint ' + $round + ': refresh preserves the native EDIT selection')
+            Assert-Test -Context $context -Condition ($paintAfterRefresh.items[$paintAfterRefresh.selected].id -ceq $paintSelectedId) -Name ('real paint ' + $round + ': INDEX and redraw preserve the deliberately selected result')
+            $cases.Add([ordered]@{
+                case = 'real paint continuity ' + $round; query = $paintAfterRefresh.query
+                selected = $paintAfterRefresh.selected; expected_id = $paintSelectedId
+                selected_id = $paintAfterRefresh.items[$paintAfterRefresh.selected].id
+                edit_selection = $paintEditSelection
+            })
+        }
+    } finally {
+        $context.Api.Resize($context.Main, $paintWidth, $paintHeight)
+        $context.Api.PaintNow($context.Main)
+    }
+    $paintFinalResources = $context.Api.GuiResources($context.Process.Handle)
+    $paintRestoredBounds = $context.Api.GetWindowBounds($context.Main)
+    Assert-Test -Context $context -Condition ($paintRestoredBounds[2] - $paintRestoredBounds[0] -eq $paintWidth -and $paintRestoredBounds[3] - $paintRestoredBounds[1] -eq $paintHeight) -Name 'real paint stress restores the original physical window dimensions'
+    Assert-Test -Context $context -Condition ($paintFinalResources.Gdi -le $paintWarmResources.Gdi + 4) -Name 'real paint and resize have bounded GDI object growth (at most four)'
+    Assert-Test -Context $context -Condition ($paintFinalResources.User -le $paintWarmResources.User + 4) -Name 'real paint and resize have bounded USER object growth (at most four)'
+    Assert-Test -Context $context -Condition ($paintFinalResources.Gdi -lt 1024 -and $paintFinalResources.User -lt 1024) -Name 'real paint and resize stay below the native GUI resource leak ceiling'
+    $cases.Add([ordered]@{
+        case = 'real paint resource bounds'; rounds = 24; resize_sizes = $paintSizes
+        warm_resources = $paintWarmResources; final_resources = $paintFinalResources
+        permitted_growth = 4; restored_dimensions = @($paintWidth, $paintHeight)
+    })
+
     # Inspect the application's current owner-drawn result list, not a second ranking implementation.
     Set-OwnQuery 'steam'
     $steam = Assert-OwnResults 'default applications' 'steam' @('fixture:steam', 'fixture:steam-support', 'uninstall:id:Valve.Steam') @('Application', 'Uninstall')

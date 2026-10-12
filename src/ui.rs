@@ -1,6 +1,7 @@
 use crate::{
     about, app_icons, brand_icon, catalog, config, core, i18n, installer, language_dialog,
-    launch_feedback, native, packages, timer, timer_alert, timer_runtime,
+    launch_feedback, native, packages, paint_buffer::PaintBuffer, timer, timer_alert,
+    timer_runtime,
 };
 use core::{Item, Kind};
 use std::cell::{Cell, RefCell};
@@ -93,6 +94,7 @@ struct State {
     palette: Palette,
     cached_ui: CachedUi,
     paint_text: RefCell<Vec<u16>>,
+    paint_buffer: PaintBuffer,
     query_text: Vec<u16>,
     index: Arc<Mutex<Vec<Item>>>,
     installed_names: Arc<Mutex<Vec<String>>>,
@@ -692,6 +694,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             palette: Palette::from(&settings),
             cached_ui: CachedUi::default(),
             paint_text: RefCell::new(Vec::with_capacity(256)),
+            paint_buffer: PaintBuffer::default(),
             query_text: Vec::with_capacity(1025),
             settings,
             index: Arc::new(Mutex::new(cache)),
@@ -1022,7 +1025,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
             let dc = BeginPaint(hwnd, &mut ps);
-            paint(s, dc);
+            paint_frame(s, dc);
             EndPaint(hwnd, &ps);
             if s.first_frame_ms == 0. {
                 s.first_frame_ms = s.started.elapsed().as_secs_f64() * 1000.;
@@ -1406,6 +1409,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             0
         }
         WM_DESTROY => {
+            s.paint_buffer.reset();
             s.app_icons.take();
             s.about.take();
             KillTimer(hwnd, 1);
@@ -3052,6 +3056,24 @@ unsafe fn rect(dc: HDC, c: u32, x: i32, y: i32, w: i32, h: i32, radius: i32) {
     SelectObject(dc, pen);
     SetDCBrushColor(dc, previous_color);
 }
+// Compose a complete parent frame before copying it to the visible window.
+// BeginPaint’s destination clip preserves the child EDIT and its caret.
+unsafe fn paint_frame(s: &mut State, dc: HDC) {
+    let mut bounds: RECT = zeroed();
+    if GetClientRect(s.hwnd, &mut bounds) != 0 {
+        if let Some(buffer) = s.paint_buffer.target(dc, bounds.right, bounds.bottom) {
+            paint(s, buffer);
+            if s.paint_buffer.present(dc) {
+                return;
+            }
+            // Recreate a compatible surface next time if the display device changed.
+            s.paint_buffer.reset();
+        }
+    }
+    // Allocation or transfer failure still produces a usable frame.
+    paint(s, dc);
+}
+
 unsafe fn paint(s: &State, dc: HDC) {
     let mut scratch = s.paint_text.borrow_mut();
     let scratch = &mut *scratch;

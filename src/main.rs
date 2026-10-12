@@ -13,6 +13,7 @@ mod language_dialog;
 mod launch_feedback;
 mod native;
 mod packages;
+mod paint_buffer;
 mod process_tree;
 mod setup_control;
 mod system_info;

@@ -6,13 +6,13 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. L'exécutable autonome fait **moins de 1 Mio** (1 014 784 octets pour la version 0.6.14). Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances](PERFORMANCE.md) détaille les réductions de taille des versions 0.6.1 et 0.6.13, la méthode et les compromis.
+Windows 10 et 11, x64. L'exécutable autonome fait **moins de 1 Mio** (1 015 808 octets pour la version 0.6.15). Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances](PERFORMANCE.md) détaille les réductions de taille des versions 0.6.1, 0.6.13 et 0.6.15, la méthode et les compromis.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants.
 
 Les clés de recherche sont préparées pendant l'indexation ; la frappe filtre les candidats et sélectionne les meilleurs résultats sans trier tout le catalogue. Le menu garde ses fournisseurs fixes et ses textes traduits en mémoire, et réutilise sa mémoire de conversion UTF-16 ainsi que les ressources de dessin Windows. La restauration du cache utilise une vue de fichier en lecture seule ; sa sauvegarde écrit les éléments empruntés sans recopier l'index complet. Les mesures reproductibles du moteur, du cache et du menu sont décrites dans le [guide de tests](TESTING.md#mesurer-les-performances).
 
-Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **226 tests Rust**, le benchmark de cache facultatif et les **1 017 assertions Windows** passent, dont 146 assertions sur de vrais tests d'installation, de mise à jour et de désinstallation isolés.
+Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **230 tests Rust**, le benchmark de cache facultatif et les **1 093 assertions Windows** passent, dont 146 assertions sur de vrais tests d'installation, de mise à jour et de désinstallation isolés.
 
 ## Langues
 

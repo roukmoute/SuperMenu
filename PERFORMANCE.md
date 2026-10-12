@@ -1,5 +1,39 @@
 # Performances de Super Menu
 
+## Version 0.6.15
+
+Le menu prépare l’image complète dans un bitmap GDI réutilisable avant une seule copie vers la fenêtre. Le découpage du DC destination protège le contrôle EDIT et son curseur. Le tampon est alloué au premier dessin, réutilisé à dimensions constantes, remplacé au redimensionnement et libéré à la destruction. Un échec d’allocation ou de copie conserve un dessin fonctionnel. Aucun thread, temporisateur, dépendance ou DLL supplémentaire n’est ajouté.
+
+Le binaire local stable fait **1 015 808 octets**, contre **1 014 784 octets** pour la 0.6.14 : **1 024 octets supplémentaires (+0,10 %)**. Les sections PE sont alignées sur 512 octets. La gestion commune de la première allocation et du redimensionnement a été simplifiée ; la taille finale reste identique. Les tests sont exclus du binaire distribué. Une surface de 720 × 680 pixels à 32 bits représente **1 958 400 octets**, environ 1,96 Mo de mémoire graphique gérée par Windows.
+
+### Peinture réelle du menu
+
+Le paramètre facultatif `scripts/measure-performance.ps1 -WindowPaint` utilise le vrai `WM_PAINT` parent via `RedrawWindow`, tampon et copie compris. Le mode historique `WM_PRINTCLIENT` reste disponible par défaut. Les deux modes excluent le dessin du contrôle EDIT enfant et la présentation des pixels par DWM. Les horloges incluent les échanges Win32 entre les processus et le travail de Windows ; les premiers dessins sont chronométrés dans `ui::run` et restent des lancements répétés avec caches non contrôlés.
+
+Même chaîne stable, même profil Release, fixture de huit éléments, thème clair, DPI 96, fenêtre 720 × 680. Trois lancements, trente échauffements et trois cents mesures par opération dans chaque série, ordre **0.6.15 / référence / référence / 0.6.15**. Chaque cellule indique médiane / p95 en millisecondes.
+
+| Mesure | 0.6.15 A | Référence A | Référence B | 0.6.15 B |
+| --- | ---: | ---: | ---: | ---: |
+| Peinture parent | 2,533 / 3,532 | 2,641 / 3,542 | 3,998 / 5,059 | 1,946 / 2,645 |
+| Recherche puis peinture parent | 4,913 / 6,979 | 5,342 / 7,503 | 5,161 / 7,611 | 4,581 / 7,413 |
+| Premier dessin, médiane interne | 107,313 | 93,413 | 92,653 | 85,946 |
+
+Ces séries finales ne montrent pas de ralentissement de la peinture. La variabilité de Windows est importante : une première comparaison exploratoire donnait 6–9 ms pour recherche puis peinture, contre 4,6–5,3 ms dans la série finale. Ces mesures ne prouvent donc pas une accélération systématique ou une latence garantie. Le correctif vise à supprimer les images intermédiaires visibles.
+
+Après échauffement, les compteurs GDI passent de **26 à 28**, USER reste à **26**. La mémoire privée observée est autour de 2,5 Mo ; elle ne comptabilise pas nécessairement les surfaces graphiques allouées par Windows. Les tests de redimensionnement vérifient que les ressources ne s’accumulent pas.
+
+### Vérification
+
+Quatre tests GDI natifs vérifient que le dessin du tampon reste invisible avant présentation, que les pixels copiés sont complets, que le découpage protège une zone de contrôle enfant, que le tampon est réutilisé et que ses handles sont réellement libérés. Le test de libération consulte `GetObjectW`, car `GetObjectType` conserve ici le type encodé d’un handle déjà supprimé. Les paramètres invalides sont refusés sans allocation.
+
+La suite du lanceur impose vingt-quatre vraies peintures avec indexation simulée, notifications d’icônes, navigation et six changements de taille ; elle contrôle le texte, la sélection EDIT, le résultat choisi et les compteurs GDI/USER. Validation : **230 tests Rust**, un benchmark facultatif ignoré et **1 093 assertions Windows** (458 lanceur, 278 À propos, 171 traductions, 40 console, 146 installateur). Le lanceur est également vérifié dans le thème clair du GIF signalé.
+
+SHA-256 du binaire local final mesuré :
+
+```text
+3D1DAC4EB45DF0A8B9B871CEE08A94850CE446E8FB74DB412AED0429646583B1
+```
+
 ## Version 0.6.14
 
 Correctif de navigation : les mises à jour automatiques restaurent l’identité du résultat sélectionné avant de demander les icônes visibles. Si le résultat disparaît, la position précédente est bornée à la nouvelle liste ; une vraie modification de requête sélectionne toujours la première ligne. Le chemin de frappe ne clone aucun identifiant et ne parcourt pas les résultats pour conserver la sélection. Les rafraîchissements utilisent un seul identifiant et un parcours borné par le nombre de résultats. Aucun thread, temporisateur, état persistant, import ou dépendance n’est ajouté.

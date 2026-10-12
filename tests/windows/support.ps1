@@ -56,6 +56,7 @@ namespace SuperMenuTests {
         [DllImport("user32.dll", SetLastError=true)] private static extern bool GetWindowRect(IntPtr hwnd, out Rect bounds);
         [DllImport("user32.dll", SetLastError=true)] private static extern bool ClientToScreen(IntPtr hwnd, ref Point point);
         [DllImport("user32.dll", SetLastError=true)] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
+        [DllImport("user32.dll", SetLastError=true)] private static extern bool RedrawWindow(IntPtr hwnd, IntPtr updateRect, IntPtr updateRegion, uint flags);
         [DllImport("user32.dll", SetLastError=true)] private static extern bool GetScrollInfo(IntPtr hwnd, int bar, ref ScrollInfo info);
         [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
@@ -165,6 +166,12 @@ namespace SuperMenuTests {
             using (var dpi = new PhysicalPixels()) {
                 if (!SetWindowPos(hwnd, IntPtr.Zero, 0, 0, width, height, 0x0016)) throw new Win32Exception(Marshal.GetLastWin32Error()); // NOMOVE | NOZORDER | NOACTIVATE
             }
+        }
+        public void PaintNow(IntPtr hwnd) {
+            AssertWindow(hwnd);
+            // Exercise BeginPaint/WM_PAINT, rather than the unbuffered WM_PRINTCLIENT diagnostic.
+            // INVALIDATE | NOERASE | NOCHILDREN | UPDATENOW: preserve the native EDIT.
+            if (!RedrawWindow(hwnd, IntPtr.Zero, IntPtr.Zero, 0x0161)) throw new Win32Exception(Marshal.GetLastWin32Error());
         }
         public ScrollData Scroll(IntPtr hwnd) {
             AssertWindow(hwnd);

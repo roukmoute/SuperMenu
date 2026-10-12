@@ -7,6 +7,7 @@ param(
     [ValidateRange(20, 5000)][int]$Rounds = 300,
     [ValidateRange(1, 500)][int]$WarmupRounds = 30,
     [ValidateSet('dark', 'light')][string]$Theme = 'dark',
+    [switch]$WindowPaint,
     [ValidateCount(2, 64)][string[]]$Queries = @('@ steam', '@ stream', '@ gamespy', '@ telegram', '@ no-match', '/ steam', '@ ste', '@ ')
 )
 
@@ -27,14 +28,18 @@ namespace SuperMenuPerformance {
     public sealed class OwnedMeasurement : IDisposable {
         private readonly uint processId;
         private readonly IntPtr main, edit;
+        private readonly bool windowPaint;
         private IntPtr dc, bitmap, previousBitmap;
         private bool disposed;
         private const uint TimeoutFlags = 0x0002 | 0x0020;
+        // RDW_INVALIDATE | RDW_NOERASE | RDW_NOCHILDREN | RDW_UPDATENOW.
+        private const uint WindowPaintFlags = 0x0161;
         [StructLayout(LayoutKind.Sequential)] private struct Rect { public int L, T, R, B; }
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
         [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
         [DllImport("user32.dll", SetLastError=true)] private static extern bool GetClientRect(IntPtr hwnd, out Rect bounds);
+        [DllImport("user32.dll", SetLastError=true)] private static extern bool RedrawWindow(IntPtr hwnd, IntPtr bounds, IntPtr region, uint flags);
         [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
         [DllImport("user32.dll")] private static extern IntPtr GetDC(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
@@ -54,8 +59,8 @@ namespace SuperMenuPerformance {
         public int Width { get; private set; }
         public int Height { get; private set; }
 
-        public OwnedMeasurement(uint pid, IntPtr mainWindow, IntPtr editControl) {
-            processId = pid; main = mainWindow; edit = editControl;
+        public OwnedMeasurement(uint pid, IntPtr mainWindow, IntPtr editControl, bool measureWindowPaint) {
+            processId = pid; main = mainWindow; edit = editControl; windowPaint = measureWindowPaint;
             AssertWindow(main); AssertWindow(edit);
             if (!IsChild(main, edit)) throw new InvalidOperationException("The EDIT is not a child of the owned launcher.");
             IntPtr previousDpi = SetThreadDpiAwarenessContext(new IntPtr(-4));
@@ -66,6 +71,7 @@ namespace SuperMenuPerformance {
                 Width = bounds.R - bounds.L; Height = bounds.B - bounds.T;
                 if (Width < 1 || Height < 1 || Width > 4096 || Height > 4096)
                     throw new InvalidOperationException("The owned client dimensions exceed the measurement bound.");
+                if (windowPaint) return;
                 source = GetDC(main);
                 if (source == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
                 dc = CreateCompatibleDC(source);
@@ -93,9 +99,14 @@ namespace SuperMenuPerformance {
 
         private void Paint() {
             AssertWindow(main);
-            IntPtr result;
-            if (SendMessageTimeout(main, 0x0318, dc, new IntPtr(4), TimeoutFlags, 5000, out result) == IntPtr.Zero)
-                throw new InvalidOperationException("The owned WM_PRINTCLIENT did not finish within five seconds.");
+            if (windowPaint) {
+                if (!RedrawWindow(main, IntPtr.Zero, IntPtr.Zero, WindowPaintFlags))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            } else {
+                IntPtr result;
+                if (SendMessageTimeout(main, 0x0318, dc, new IntPtr(4), TimeoutFlags, 5000, out result) == IntPtr.Zero)
+                    throw new InvalidOperationException("The owned WM_PRINTCLIENT did not finish within five seconds.");
+            }
             if (!GdiFlush()) throw new Win32Exception(Marshal.GetLastWin32Error());
         }
 
@@ -199,19 +210,24 @@ try {
     if ($snapshot.query -cne '@ steam' -or @($snapshot.items | Where-Object { $_.kind -ne 'Application' }).Count) {
         throw 'WM_SETTEXT must synchronously update the actual application search before timing.'
     }
-    $measurement = [SuperMenuPerformance.OwnedMeasurement]::new($context.Pid, $context.Main, $edit)
+    $measurement = [SuperMenuPerformance.OwnedMeasurement]::new($context.Pid, $context.Main, $edit, [bool]$WindowPaint)
     $paintSamples = $measurement.PaintOnly($Rounds, $WarmupRounds)
     $searchSamples = $measurement.SearchAndPaint($Rounds, $WarmupRounds, $queries)
     $final = Read-TestSnapshot -Context $context
     $expectedQuery = $queries[($Rounds + $WarmupRounds - 1) % $queries.Length]
     if ($final.query -cne $expectedQuery) { throw 'The timed loop did not update the actual query to its final value.' }
     $resources = $context.Api.GuiResources($context.Process.Handle)
+    $paintLimitation = if ($WindowPaint) {
+        'RedrawWindow synchronously executes the main window WM_PAINT, including its drawing buffer and client copy; it excludes the child EDIT and DWM screen presentation.'
+    } else {
+        'WM_PRINTCLIENT renders the main client to an offscreen bitmap; it excludes the child EDIT and DWM screen presentation.'
+    }
     $result = [ordered]@{
         schema_version = 1; measured_at_utc = [DateTime]::UtcNow.ToString('o')
         executable = [ordered]@{ path = $Executable; bytes = [IO.FileInfo]::new($Executable).Length; sha256 = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash }
         fixture = [ordered]@{ path = $Fixture; items = $fixtureItems.Count; sha256 = (Get-FileHash -LiteralPath $Fixture -Algorithm SHA256).Hash }
         environment = [ordered]@{ os = [Environment]::OSVersion.VersionString; logical_processors = [Environment]::ProcessorCount; process_architecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString(); powershell = $PSVersionTable.PSVersion.ToString(); dpi = $context.Api.GetDpi($context.Main); client_width = $measurement.Width; client_height = $measurement.Height; theme = $Theme; language = $final.language }
-        settings = [ordered]@{ startup_runs = $StartupRuns; rounds = $Rounds; warmup_rounds = $WarmupRounds; queries = $queries; gdi_dc_and_bitmap_reused = $true }
+        settings = [ordered]@{ startup_runs = $StartupRuns; rounds = $Rounds; warmup_rounds = $WarmupRounds; queries = $queries; window_paint = [bool]$WindowPaint; gdi_dc_and_bitmap_reused = -not [bool]$WindowPaint }
         startup = [ordered]@{
             first_frame_ms = Get-MeasurementStatistics -Samples @($startup | ForEach-Object { $_.first_frame_ms }) -Unit 'ms'
             private_bytes = Get-MeasurementStatistics -Samples @($startup | ForEach-Object { $_.private_bytes }) -Unit 'bytes'
@@ -228,7 +244,7 @@ try {
             'First-frame timing starts inside ui::run; it excludes process creation, loader time and time to displayed DWM pixels.',
             'Startup samples are repeated launches on one machine with uncontrolled, usually warm Windows file and DLL caches.',
             'Warm UI timings include owned-window checks, synchronous cross-process Win32 messages and caller GdiFlush; they are not pure in-process Rust timings.',
-            'WM_PRINTCLIENT renders the main client to an offscreen bitmap; it excludes the child EDIT and DWM screen presentation.',
+            $paintLimitation,
             'The small isolated fixture measures UI work; use --benchmark separately for the 20,000-entry search index.',
             'These measurements have no fixed pass/fail performance threshold; compare identical fixtures, DPI, theme and machine conditions.'
         )
