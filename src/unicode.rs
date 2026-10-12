@@ -16,7 +16,19 @@ pub(crate) fn decomposed_without_marks(text: &str) -> Cow<'_, str> {
     if text.is_ascii() {
         return Cow::Borrowed(text);
     }
-    let Some((units, types)) = decompose(text.encode_utf16().collect()) else {
+    let mut source = Vec::with_capacity(text.len());
+    let mut buffer = [0u16; 2];
+    for character in text.chars() {
+        // NormalizeString rejects a whole string holding a noncharacter (U+FFFE, U+FDD0…).
+        // Those are never alphanumeric, so U+FFFD keeps the rest of the text foldable.
+        let character = if is_noncharacter(character) {
+            char::REPLACEMENT_CHARACTER
+        } else {
+            character
+        };
+        source.extend_from_slice(character.encode_utf16(&mut buffer));
+    }
+    let Some((units, types)) = decompose(source) else {
         return Cow::Borrowed(text);
     };
     let kept = units
@@ -24,11 +36,14 @@ pub(crate) fn decomposed_without_marks(text: &str) -> Cow<'_, str> {
         .zip(&types)
         .filter(|(_, flags)| !is_mark(**flags))
         .map(|(unit, _)| *unit);
-    Cow::Owned(
-        char::decode_utf16(kept)
-            .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .collect(),
-    )
+    let mut result = String::with_capacity(text.len());
+    result.extend(char::decode_utf16(kept).map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER)));
+    Cow::Owned(result)
+}
+
+fn is_noncharacter(character: char) -> bool {
+    let code = character as u32;
+    (0xFDD0..=0xFDEF).contains(&code) || code & 0xFFFE == 0xFFFE
 }
 
 /// Nonspacing and vowel marks approximate Unicode category M. Windows also sets those
@@ -66,8 +81,7 @@ fn decompose(mut source: Vec<u16>) -> Option<(Vec<u16>, Vec<u16>)> {
             break;
         }
         // The documented retry: ERROR_INSUFFICIENT_BUFFER carries a larger estimate as
-        // a negative count. Anything else (ERROR_NO_UNICODE_TRANSLATION cannot happen
-        // for text coming from a &str) keeps the original text.
+        // a negative count. Anything else keeps the original text.
         // SAFETY: reads the calling thread's last error code.
         if -written <= capacity || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
             return None;
@@ -188,5 +202,18 @@ mod tests {
         divergent("a\u{1d165}b", "a\u{1d165}b");
         divergent("a\u{e0100}b", "a\u{e0100}b");
         divergent("\u{1d15e}", "\u{1d157}\u{1d165}");
+    }
+
+    #[test]
+    fn noncharacters_do_not_disable_folding_of_the_rest() {
+        // NormalizeString rejects the whole input otherwise; the crate keeps them as is.
+        for text in ["Café\u{fffe}", "\u{fdd0}Été", "Ångström\u{10ffff}"] {
+            let folded = decomposed_without_marks(text);
+            let expected: String = reference(text)
+                .chars()
+                .map(|c| if is_noncharacter(c) { '\u{fffd}' } else { c })
+                .collect();
+            assert_eq!(folded, expected, "{text:?}");
+        }
     }
 }
