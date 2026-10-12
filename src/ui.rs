@@ -2868,6 +2868,39 @@ unsafe fn draw_centered_glyph(dc: HDC, glyph: u16, bounds: &RECT) -> bool {
     drawn != 0
 }
 
+unsafe fn shortcut_text(
+    dc: HDC,
+    scratch: &mut Vec<u16>,
+    s: &State,
+    label: &str,
+    selected: bool,
+    mut bounds: RECT,
+) {
+    let old = SelectObject(dc, s.fonts[2]);
+    SetTextColor(
+        dc,
+        if selected {
+            s.palette.accent
+        } else {
+            s.palette.muted
+        },
+    );
+    SetBkMode(dc, TRANSPARENT as i32);
+    scratch.clear();
+    scratch.extend(label.encode_utf16());
+    scratch.push(0);
+    if scratch.len() != 2 || !draw_centered_glyph(dc, scratch[0], &bounds) {
+        DrawTextW(
+            dc,
+            scratch.as_ptr(),
+            -1,
+            &mut bounds,
+            DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+        );
+    }
+    SelectObject(dc, old);
+}
+
 // Center the visible glyph, rather than its font's line height and side bearings.
 // Keep the original text renderer for multi-character symbols or font fallback.
 unsafe fn result_icon(
@@ -3181,21 +3214,18 @@ unsafe fn paint(s: &State, dc: HDC) {
                 scale(24),
                 scale(5),
             );
-            text(
+            shortcut_text(
                 dc,
                 scratch,
-                s.fonts[2],
-                if row + offset == s.selected {
-                    s.palette.accent
-                } else {
-                    s.palette.muted
-                },
+                s,
                 label,
-                scale(x + 8),
-                scale(y + 12),
-                scale(width - 16),
-                scale(24),
-                false,
+                row + offset == s.selected,
+                RECT {
+                    left: scale(x),
+                    top: scale(y + 12),
+                    right: scale(x) + scale(width),
+                    bottom: scale(y + 12) + scale(24),
+                },
             );
         }
         text(
