@@ -1,13 +1,16 @@
 //! A separate instance of this executable owns WinGet and its visible console.
 //! Package operations and their validation run outside the launcher's UI thread.
 
-use crate::{cleanup::CleanupPlan, config, native::wide, packages, uninstall_inventory};
+use crate::{
+    cleanup::CleanupPlan, config, native::wide, packages, process_tree::ChildProcess,
+    uninstall_inventory,
+};
 use std::io::{self, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::os::windows::process::{CommandExt, ExitStatusExt};
+use std::os::windows::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::ptr::{null, null_mut};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{
@@ -25,9 +28,7 @@ use windows_sys::Win32::System::Console::{
     ENABLE_QUICK_EDIT_MODE, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
     STD_OUTPUT_HANDLE,
 };
-use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, WaitForSingleObject, DETACHED_PROCESS, INFINITE,
-};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
 use windows_sys::Win32::UI::Shell::{
     AssocQueryStringW, ShellExecuteExW, ASSOCF_IS_PROTOCOL, ASSOCSTR_EXECUTABLE,
     SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
@@ -43,7 +44,7 @@ pub const REMOVE_DONE: u32 = WM_APP + 7;
 /// Both launch paths expose the same worker-only wait contract. Only a removal
 /// of an eligible machine-wide registry entry requests administrative consent.
 pub enum RemovalProcess {
-    Child(Child),
+    Child(ChildProcess),
     ElevatedProcess(ElevatedProcess),
 }
 
@@ -343,8 +344,13 @@ fn inspect_cleanup(args: &[String]) -> i32 {
         .map_or(1, |_| 0)
 }
 
-/// Starts the helper; the caller may wait for Child on a worker as a notification fallback.
-pub fn spawn(id: &str, parent: HWND, parent_pid: u32, request: usize) -> Result<Child, String> {
+/// Starts the helper; the caller may wait for it on a worker as a notification fallback.
+pub fn spawn(
+    id: &str,
+    parent: HWND,
+    parent_pid: u32,
+    request: usize,
+) -> Result<ChildProcess, String> {
     let package = whitelisted(id)?;
     spawn_helper(
         helper_args(package.id, parent as usize, parent_pid, request),
@@ -378,23 +384,17 @@ fn spawn_helper(
     parent: HWND,
     parent_pid: u32,
     request: usize,
-) -> Result<Child, String> {
+) -> Result<ChildProcess, String> {
     validate_endpoint(parent, parent_pid, request)?;
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    Command::new(exe)
-        .args(args)
-        // AllocConsole creates a new visible console even when the debug launcher has one.
-        .creation_flags(DETACHED_PROCESS)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| {
-            crate::i18n::fmt(
-                "Impossible d'ouvrir la console de gestion de logiciels : {error}",
-                &[("error", error.to_string())],
-            )
-        })
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Detached: AllocConsole creates a new visible console even when the debug launcher has one.
+    crate::process_tree::spawn_detached(&exe, &args).map_err(|error| {
+        crate::i18n::fmt(
+            "Impossible d'ouvrir la console de gestion de logiciels : {error}",
+            &[("error", error.to_string())],
+        )
+    })
 }
 
 fn validate_endpoint(parent: HWND, parent_pid: u32, request: usize) -> Result<(), String> {
@@ -809,12 +809,7 @@ impl Runner for SystemRunner {
                 self.ignored_browser.as_deref(),
             )
         } else {
-            Command::new(&self.exe)
-                .args(args)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .status()
+            crate::process_tree::status(&self.exe, &args)
         };
         status
             .map_err(|error| {
@@ -1815,8 +1810,10 @@ mod tests {
     #[test]
     fn owned_process_handle_wait_preserves_exit_code_without_elevation() {
         use std::os::windows::io::AsRawHandle;
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
         use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
-        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, DETACHED_PROCESS};
 
         // The owned Windows shell runs only its built-in exit command. Neither
         // this test nor its process invokes runas, WinGet, or any package action.

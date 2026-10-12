@@ -1,6 +1,8 @@
 //! Wait for a package command and the descendants it actually starts.
 //! A bootstrapper can exit while its uninstaller is still showing a window.
 //! The anonymous job observes those processes; it never kills running software.
+//! The same CreateProcessW path also starts the helper and plain WinGet runs,
+//! so the binary carries none of std::process::Command's pipe and environment code.
 
 use std::io;
 use std::mem::size_of;
@@ -15,6 +17,7 @@ use windows_sys::Win32::Foundation::{
     GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
@@ -30,9 +33,10 @@ use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess,
     InitializeProcThreadAttributeList, OpenProcess, QueryFullProcessImageNameW, ResumeThread,
     TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW,
-    CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    CREATE_SUSPENDED, DETACHED_PROCESS, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTUPINFOW,
 };
 
 struct Handle(HANDLE);
@@ -121,34 +125,43 @@ fn last_error(context: &str) -> io::Error {
     io::Error::new(error.kind(), format!("{context}: {error}"))
 }
 
+/// An inheritable NUL stream, opened as std's Stdio::null did for a child.
+fn null_stream(kind: u32) -> io::Result<Handle> {
+    let nul = [b'N' as u16, b'U' as u16, b'L' as u16, 0];
+    let security = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: null_mut(),
+        bInheritHandle: 1,
+    };
+    let handle = unsafe {
+        CreateFileW(
+            nul.as_ptr(),
+            if kind == STD_INPUT_HANDLE {
+                GENERIC_READ
+            } else {
+                GENERIC_WRITE
+            },
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &security,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Handle(handle))
+}
+
 fn duplicate_stream(kind: u32) -> io::Result<Handle> {
     unsafe {
         let source = GetStdHandle(kind);
         // Headless test runners can have no stdin. Preserve that behavior with
         // NUL rather than supplying an invalid startup handle to the child.
-        let fallback = if source.is_null() || source == INVALID_HANDLE_VALUE {
-            let nul = [b'N' as u16, b'U' as u16, b'L' as u16, 0];
-            let handle = CreateFileW(
-                nul.as_ptr(),
-                if kind == STD_INPUT_HANDLE {
-                    GENERIC_READ
-                } else {
-                    GENERIC_WRITE
-                },
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                null(),
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                null_mut(),
-            );
-            if handle == INVALID_HANDLE_VALUE {
-                return Err(last_error("Cannot open the absent standard stream"));
-            }
-            Some(Handle(handle))
-        } else {
-            None
-        };
-        let source = fallback.as_ref().map_or(source, |handle| handle.0);
+        if source.is_null() || source == INVALID_HANDLE_VALUE {
+            return null_stream(kind);
+        }
         let process = GetCurrentProcess();
         let mut duplicate = null_mut();
         if DuplicateHandle(
@@ -165,6 +178,14 @@ fn duplicate_stream(kind: u32) -> io::Result<Handle> {
         }
         Ok(Handle(duplicate))
     }
+}
+
+fn standard_streams(open: fn(u32) -> io::Result<Handle>) -> io::Result<[Handle; 3]> {
+    Ok([
+        open(STD_INPUT_HANDLE)?,
+        open(STD_OUTPUT_HANDLE)?,
+        open(STD_ERROR_HANDLE)?,
+    ])
 }
 
 fn quote_argument(value: &str) -> String {
@@ -199,6 +220,128 @@ fn quote_argument(value: &str) -> String {
     quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
     quoted.push('"');
     quoted
+}
+
+/// The executable and the mutable command line CreateProcessW expects. The
+/// arguments keep std::process::Command's quoting, so a helper decodes the
+/// same argv whichever path started it.
+fn command_line(program: &Path, args: &[&str]) -> io::Result<(Vec<u16>, Vec<u16>)> {
+    let mut executable: Vec<u16> = program.as_os_str().encode_wide().collect();
+    if !program.is_absolute()
+        || executable.contains(&0)
+        || args.iter().any(|arg| arg.contains('\0'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "An absolute executable and arguments without NUL are required",
+        ));
+    }
+    // argv[0] needs only surrounding quotes: a Windows filename cannot contain
+    // a literal quote, and an executable filename cannot end in a backslash.
+    let mut command = vec![b'"' as u16];
+    command.extend_from_slice(&executable);
+    command.push(b'"' as u16);
+    for argument in args {
+        command.push(b' ' as u16);
+        command.extend(quote_argument(argument).encode_utf16());
+    }
+    command.push(0);
+    if command.len() > 32_767 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "The Windows command line exceeds 32767 UTF-16 characters",
+        ));
+    }
+    executable.push(0);
+    Ok((executable, command))
+}
+
+/// A process started without std::process::Command, whose pipe, environment
+/// and PATH-search machinery the launcher never uses: only a handle to wait on.
+pub(crate) struct ChildProcess {
+    // An owned process handle, transferable to the waiting worker without
+    // introducing an unsafe Send impl.
+    handle: usize,
+}
+
+impl ChildProcess {
+    /// Blocks until the process exits and reports its code, like Child::wait.
+    pub(crate) fn wait(&mut self) -> io::Result<ExitStatus> {
+        unsafe {
+            if WaitForSingleObject(self.handle as HANDLE, INFINITE) != WAIT_OBJECT_0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut code = 0;
+            if GetExitCodeProcess(self.handle as HANDLE, &mut code) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(ExitStatus::from_raw(code))
+        }
+    }
+}
+
+impl Drop for ChildProcess {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.handle as HANDLE) };
+    }
+}
+
+/// Starts the program as std::process::Command did: the environment and the
+/// current directory are inherited, the three streams become the standard handles.
+fn spawn(
+    program: &Path,
+    args: &[&str],
+    flags: u32,
+    streams: [Handle; 3],
+) -> io::Result<ChildProcess> {
+    let (executable, mut command) = command_line(program, args)?;
+    unsafe {
+        let startup = STARTUPINFOW {
+            cb: size_of::<STARTUPINFOW>() as u32,
+            dwFlags: STARTF_USESTDHANDLES,
+            hStdInput: streams[0].0,
+            hStdOutput: streams[1].0,
+            hStdError: streams[2].0,
+            ..Default::default()
+        };
+        let mut information = PROCESS_INFORMATION::default();
+        if CreateProcessW(
+            executable.as_ptr(),
+            command.as_mut_ptr(),
+            null(),
+            null(),
+            1,
+            flags,
+            null(),
+            null(),
+            &startup,
+            &mut information,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        CloseHandle(information.hThread);
+        Ok(ChildProcess {
+            handle: information.hProcess as usize,
+        })
+    }
+}
+
+/// Starts the launcher's own helper without a console and with NUL standard
+/// streams; the helper allocates its own visible console.
+pub(crate) fn spawn_detached(program: &Path, args: &[&str]) -> io::Result<ChildProcess> {
+    spawn(
+        program,
+        args,
+        DETACHED_PROCESS,
+        standard_streams(null_stream)?,
+    )
+}
+
+/// Runs the command on the helper's console with its inherited standard
+/// streams and returns the exit status, like Command::status.
+pub(crate) fn status(program: &Path, args: &[&str]) -> io::Result<ExitStatus> {
+    spawn(program, args, 0, standard_streams(duplicate_stream)?)?.wait()
 }
 
 /// Starts the command in a job before its first instruction and waits for its
@@ -326,33 +469,7 @@ fn run_inner(
     args: &[&str],
     ignored_browser: Option<&Path>,
 ) -> io::Result<ExitStatus> {
-    let mut executable: Vec<u16> = program.as_os_str().encode_wide().collect();
-    if !program.is_absolute()
-        || executable.contains(&0)
-        || args.iter().any(|arg| arg.contains('\0'))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "An absolute executable and arguments without NUL are required",
-        ));
-    }
-    // argv[0] needs only surrounding quotes: a Windows filename cannot contain
-    // a literal quote, and an executable filename cannot end in a backslash.
-    let mut command = vec![b'"' as u16];
-    command.extend_from_slice(&executable);
-    command.push(b'"' as u16);
-    for argument in args {
-        command.push(b' ' as u16);
-        command.extend(quote_argument(argument).encode_utf16());
-    }
-    command.push(0);
-    if command.len() > 32_767 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "The Windows command line exceeds 32767 UTF-16 characters",
-        ));
-    }
-    executable.push(0);
+    let (executable, mut command) = command_line(program, args)?;
     // The seed executable itself can never be excluded. A missing or unresolved
     // exclusion stays conservative and uses the strict complete-tree wait.
     let ignored_browser = ignored_browser
@@ -370,11 +487,7 @@ fn run_inner(
             return Err(last_error("Cannot create the package process job"));
         }
         let job = Handle(job);
-        let streams = [
-            duplicate_stream(STD_INPUT_HANDLE)?,
-            duplicate_stream(STD_OUTPUT_HANDLE)?,
-            duplicate_stream(STD_ERROR_HANDLE)?,
-        ];
+        let streams = standard_streams(duplicate_stream)?;
         let stream_handles = streams.each_ref().map(|handle| handle.0);
         let mut attributes = Attributes::new(&stream_handles)?;
         let mut startup = STARTUPINFOEXW::default();
@@ -539,6 +652,98 @@ mod tests {
 
     fn literal(path: &Path) -> String {
         format!("'{}'", path.display().to_string().replace('\'', "''"))
+    }
+
+    fn decoded(command: &str) -> Vec<String> {
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
+        let command: Vec<u16> = command.encode_utf16().chain(Some(0)).collect();
+        let mut count = 0;
+        let arguments = unsafe { CommandLineToArgvW(command.as_ptr(), &mut count) };
+        assert!(!arguments.is_null());
+        let decoded = (0..count as usize)
+            .map(|index| unsafe {
+                let argument = *arguments.add(index);
+                let mut length = 0;
+                while *argument.add(length) != 0 {
+                    length += 1;
+                }
+                String::from_utf16(std::slice::from_raw_parts(argument, length)).unwrap()
+            })
+            .collect();
+        unsafe { LocalFree(arguments.cast()) };
+        decoded
+    }
+
+    #[test]
+    fn arguments_keep_std_quoting_and_decode_to_the_same_argv() {
+        // Bare switches and values stay bare. Emptiness, whitespace or a quote
+        // select quoting, with backslashes doubled before a quote and the end.
+        // std only escapes a whitespace-free quoted value; CommandLineToArgvW
+        // and the CRT decode both spellings to the same argv.
+        let cases = [
+            ("", "\"\""),
+            ("plain", "plain"),
+            ("--id", "--id"),
+            ("with space", "\"with space\""),
+            ("tab\tbed", "\"tab\tbed\""),
+            ("Trailing\\", "Trailing\\"),
+            ("C:\\dir with space\\", "\"C:\\dir with space\\\\\""),
+            (
+                "Éditeur C++ \"Pro\" 2026",
+                "\"Éditeur C++ \\\"Pro\\\" 2026\"",
+            ),
+            ("A\\\"B", "\"A\\\\\\\"B\""),
+            ("Multiple\\\\slashes\\\\", "Multiple\\\\slashes\\\\"),
+            ("💻 Utility", "\"💻 Utility\""),
+        ];
+        for (argument, quoted) in cases {
+            assert_eq!(quote_argument(argument), quoted, "{argument:?}");
+        }
+        let arguments: Vec<&str> = cases.iter().map(|(argument, _)| *argument).collect();
+        let (executable, command) =
+            command_line(Path::new("C:\\Program Files\\app.exe"), &arguments).unwrap();
+        assert_eq!(executable.last(), Some(&0));
+        assert_eq!(command.last(), Some(&0));
+        let decoded = decoded(&String::from_utf16(&command[..command.len() - 1]).unwrap());
+        assert_eq!(decoded[0], "C:\\Program Files\\app.exe");
+        assert_eq!(decoded[1..], arguments[..]);
+    }
+
+    #[test]
+    fn detached_and_console_spawns_report_the_exit_code_without_std_command() {
+        use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+        // The Windows shell runs only its built-in exit command: no console is
+        // allocated for the detached run, and the console run reuses ours. cmd.exe
+        // scans its whole command line for switches, so argv[0] must not contain "/c".
+        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("cmd.exe");
+        let mut child = spawn_detached(&shell, &["/d", "/c", "exit", "23"]).unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(23));
+        // A finished process keeps answering, like std::process::Child.
+        assert_eq!(child.wait().unwrap().code(), Some(23));
+        assert_eq!(
+            status(&shell, &["/d", "/c", "exit", "7"]).unwrap().code(),
+            Some(7)
+        );
+        assert!(status(&shell, &["/d", "/c", "exit", "0"])
+            .unwrap()
+            .success());
+        // Errors stay the raw CreateProcessW errors std reported to the launcher.
+        let missing = spawn_detached(Path::new("C:\\SuperMenu-missing-fixture.exe"), &[]);
+        assert_eq!(
+            missing.err().unwrap().raw_os_error(),
+            Some(ERROR_FILE_NOT_FOUND as i32)
+        );
+        assert_eq!(
+            spawn_detached(Path::new("cmd.exe"), &[])
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidInput,
+            "no PATH search replaces an absolute helper path"
+        );
     }
 
     #[test]
