@@ -8,6 +8,8 @@ Les tests sont versionnés avec le projet. La même commande s'utilise sur un PC
 
 Prérequis : Windows x64, PowerShell 7, Rust MSVC avec `rustfmt` et `clippy`, et les outils C++ de Visual Studio Build Tools. Le script vérifie le formatage et Clippy, exécute les tests Rust, compile le binaire Release, puis teste les vrais contrôles Win32 du programme. Une erreur d'assertion fait échouer la commande.
 
+Les tests des pictogrammes vérifient aussi les pixels rendus hors écran : neuf symboles de l’accueil, centrés à un pixel près, aux échelles Windows 100 %, 125 %, 150 % et 200 %. Ils contrôlent les contours asymétriques, les rectangles invalides et la restauration des paramètres GDI.
+
 ## Couverture
 
 | Suite | Comportements vérifiés |

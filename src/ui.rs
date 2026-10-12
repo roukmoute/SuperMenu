@@ -2803,8 +2803,73 @@ unsafe fn text(
     );
     SelectObject(dc, old);
 }
-// Windows private-use glyphs belong to the system icon font, not the Unicode
-// symbol font. Reuse both cached fonts and center in the exact tile rectangle.
+fn centered_glyph_origin(bounds: &RECT, metrics: &GLYPHMETRICS) -> Option<(i32, i32)> {
+    let width = bounds.right.checked_sub(bounds.left)?;
+    let height = bounds.bottom.checked_sub(bounds.top)?;
+    let ink_width = i32::try_from(metrics.gmBlackBoxX).ok()?;
+    let ink_height = i32::try_from(metrics.gmBlackBoxY).ok()?;
+    if width <= 0 || height <= 0 || ink_width <= 0 || ink_height <= 0 {
+        return None;
+    }
+    let x = bounds
+        .left
+        .checked_add((width - ink_width) / 2)?
+        .checked_sub(metrics.gmptGlyphOrigin.x)?;
+    let y = bounds
+        .top
+        .checked_add((height - ink_height) / 2)?
+        .checked_add(metrics.gmptGlyphOrigin.y)?;
+    Some((x, y))
+}
+
+unsafe fn draw_centered_glyph(dc: HDC, glyph: u16, bounds: &RECT) -> bool {
+    let mut index = 0;
+    if GetGlyphIndicesW(dc, &glyph, 1, &mut index, GGI_MARK_NONEXISTING_GLYPHS) == GDI_ERROR as u32
+        || index == u16::MAX
+    {
+        return false;
+    }
+    let identity = MAT2 {
+        eM11: FIXED { fract: 0, value: 1 },
+        eM22: FIXED { fract: 0, value: 1 },
+        ..zeroed()
+    };
+    let mut metrics: GLYPHMETRICS = zeroed();
+    if GetGlyphOutlineW(
+        dc,
+        u32::from(index),
+        GGO_METRICS | GGO_GLYPH_INDEX,
+        &mut metrics,
+        0,
+        null_mut(),
+        &identity,
+    ) == GDI_ERROR as u32
+    {
+        return false;
+    }
+    let Some((x, y)) = centered_glyph_origin(bounds, &metrics) else {
+        return false;
+    };
+    let previous = SetTextAlign(dc, TA_LEFT | TA_BASELINE | TA_NOUPDATECP);
+    if previous == GDI_ERROR as u32 {
+        return false;
+    }
+    let drawn = ExtTextOutW(
+        dc,
+        x,
+        y,
+        ETO_CLIPPED | ETO_GLYPH_INDEX,
+        bounds,
+        &index,
+        1,
+        null(),
+    );
+    SetTextAlign(dc, previous);
+    drawn != 0
+}
+
+// Center the visible glyph, rather than its font's line height and side bearings.
+// Keep the original text renderer for multi-character symbols or font fallback.
 unsafe fn result_icon(
     dc: HDC,
     scratch: &mut Vec<u16>,
@@ -2846,13 +2911,15 @@ unsafe fn result_icon(
     scratch.clear();
     scratch.extend(glyph.encode_utf16());
     scratch.push(0);
-    DrawTextW(
-        dc,
-        scratch.as_ptr(),
-        -1,
-        &mut bounds,
-        DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX,
-    );
+    if scratch.len() != 2 || !draw_centered_glyph(dc, scratch[0], &bounds) {
+        DrawTextW(
+            dc,
+            scratch.as_ptr(),
+            -1,
+            &mut bounds,
+            DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX,
+        );
+    }
     SelectObject(dc, old);
 }
 unsafe fn rect(dc: HDC, c: u32, x: i32, y: i32, w: i32, h: i32, radius: i32) {
@@ -4023,6 +4090,239 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glyph_origin_centers_visible_contours_instead_of_character_advance() {
+        let bounds = RECT {
+            left: 36,
+            top: 185,
+            right: 67,
+            bottom: 216,
+        };
+        let mut metrics = GLYPHMETRICS {
+            gmBlackBoxX: 13,
+            gmBlackBoxY: 17,
+            gmptGlyphOrigin: POINT { x: -3, y: 19 },
+            gmCellIncX: 50,
+            gmCellIncY: 0,
+        };
+        assert_eq!(centered_glyph_origin(&bounds, &metrics), Some((48, 211)));
+        metrics.gmCellIncX = -100;
+        metrics.gmCellIncY = 90;
+        assert_eq!(centered_glyph_origin(&bounds, &metrics), Some((48, 211)));
+
+        for side in [31, 38, 46, 62] {
+            let tile = RECT {
+                left: 8,
+                top: 11,
+                right: 8 + side,
+                bottom: 11 + side,
+            };
+            for (width, height, origin_x, origin_y) in
+                [(8, 4, 2, 7), (13, 17, -3, 19), (17, 22, 5, 24)]
+            {
+                metrics.gmBlackBoxX = width;
+                metrics.gmBlackBoxY = height;
+                metrics.gmptGlyphOrigin = POINT {
+                    x: origin_x,
+                    y: origin_y,
+                };
+                let (x, baseline) = centered_glyph_origin(&tile, &metrics).unwrap();
+                let ink_left = x + origin_x;
+                let ink_top = baseline - origin_y;
+                assert!((2 * ink_left + width as i32 - tile.left - tile.right).abs() <= 1);
+                assert!((2 * ink_top + height as i32 - tile.top - tile.bottom).abs() <= 1);
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_origin_rejects_empty_contours_and_invalid_tiles() {
+        let mut metrics: GLYPHMETRICS = unsafe { zeroed() };
+        metrics.gmBlackBoxX = 13;
+        metrics.gmBlackBoxY = 17;
+        for (width, height) in [(0, 31), (31, 0), (-1, 31), (31, -1)] {
+            let bounds = RECT {
+                left: 8,
+                top: 8,
+                right: 8 + width,
+                bottom: 8 + height,
+            };
+            assert_eq!(centered_glyph_origin(&bounds, &metrics), None);
+        }
+        let bounds = RECT {
+            left: 8,
+            top: 8,
+            right: 39,
+            bottom: 39,
+        };
+        for (width, height) in [(0, 17), (13, 0), (0, 0)] {
+            metrics.gmBlackBoxX = width;
+            metrics.gmBlackBoxY = height;
+            assert_eq!(centered_glyph_origin(&bounds, &metrics), None);
+        }
+    }
+
+    #[test]
+    fn home_glyph_pixels_are_centered_at_common_windows_dpis() {
+        // This target is entirely offscreen: no desktop input or capture.
+        struct Canvas {
+            dc: HDC,
+            bitmap: HBITMAP,
+            old_bitmap: HGDIOBJ,
+            font: HFONT,
+            old_font: HGDIOBJ,
+            pixels: *mut u32,
+            side: usize,
+        }
+        impl Drop for Canvas {
+            fn drop(&mut self) {
+                unsafe {
+                    if !self.old_font.is_null() {
+                        SelectObject(self.dc, self.old_font);
+                    }
+                    if !self.font.is_null() {
+                        DeleteObject(self.font);
+                    }
+                    if !self.old_bitmap.is_null() {
+                        SelectObject(self.dc, self.old_bitmap);
+                    }
+                    if !self.bitmap.is_null() {
+                        DeleteObject(self.bitmap);
+                    }
+                    if !self.dc.is_null() {
+                        DeleteDC(self.dc);
+                    }
+                }
+            }
+        }
+        impl Canvas {
+            unsafe fn new(side: i32) -> Self {
+                let mut canvas = Self {
+                    dc: CreateCompatibleDC(null_mut()),
+                    bitmap: null_mut(),
+                    old_bitmap: null_mut(),
+                    font: null_mut(),
+                    old_font: null_mut(),
+                    pixels: null_mut(),
+                    side: side as usize,
+                };
+                assert!(!canvas.dc.is_null());
+                let mut info: BITMAPINFO = zeroed();
+                info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                info.bmiHeader.biWidth = side;
+                info.bmiHeader.biHeight = -side;
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = BI_RGB;
+                let mut pixels = null_mut();
+                canvas.bitmap =
+                    CreateDIBSection(canvas.dc, &info, DIB_RGB_COLORS, &mut pixels, null_mut(), 0);
+                assert!(!canvas.bitmap.is_null() && !pixels.is_null());
+                canvas.pixels = pixels.cast();
+                canvas.old_bitmap = SelectObject(canvas.dc, canvas.bitmap);
+                assert!(!canvas.old_bitmap.is_null());
+                SetBkMode(canvas.dc, TRANSPARENT as i32);
+                SetTextColor(canvas.dc, color(255, 255, 255));
+                canvas
+            }
+
+            unsafe fn set_font(&mut self, family: &str, size: i32, dpi: i32) {
+                if !self.font.is_null() {
+                    SelectObject(self.dc, self.old_font);
+                    DeleteObject(self.font);
+                    self.font = null_mut();
+                }
+                self.font = CreateFontW(
+                    -size * dpi / 96,
+                    0,
+                    0,
+                    0,
+                    400,
+                    0,
+                    0,
+                    0,
+                    DEFAULT_CHARSET as u32,
+                    OUT_DEFAULT_PRECIS as u32,
+                    CLIP_DEFAULT_PRECIS as u32,
+                    CLEARTYPE_QUALITY as u32,
+                    DEFAULT_PITCH as u32,
+                    wide(family).as_ptr(),
+                );
+                assert!(!self.font.is_null());
+                self.old_font = SelectObject(self.dc, self.font);
+                assert!(!self.old_font.is_null());
+            }
+        }
+
+        for dpi in [96, 120, 144, 192] {
+            let side = 31 * dpi / 96;
+            let bounds = RECT {
+                left: 8,
+                top: 8,
+                right: 8 + side,
+                bottom: 8 + side,
+            };
+            unsafe {
+                let mut canvas = Canvas::new(side + 16);
+                for (glyph, icon_font) in [
+                    ('▦', false),
+                    ('\u{E896}', true),
+                    ('\u{E74D}', true),
+                    ('▱', false),
+                    ('=', false),
+                    ('\u{E916}', true),
+                    ('⌕', false),
+                    ('›', false),
+                    ('▤', false),
+                ] {
+                    canvas.set_font(
+                        if icon_font {
+                            "Segoe MDL2 Assets"
+                        } else {
+                            "Segoe UI Symbol"
+                        },
+                        if icon_font { 18 } else { 20 },
+                        dpi,
+                    );
+                    let pixels =
+                        std::slice::from_raw_parts_mut(canvas.pixels, canvas.side * canvas.side);
+                    pixels.fill(0);
+                    let alignment = TA_RIGHT | TA_TOP;
+                    SetTextAlign(canvas.dc, alignment);
+                    assert!(
+                        draw_centered_glyph(canvas.dc, glyph as u16, &bounds),
+                        "glyph {glyph:?} at {dpi} DPI"
+                    );
+                    assert_eq!(GetTextAlign(canvas.dc), alignment);
+                    assert_ne!(GdiFlush(), 0);
+                    let mut ink: Option<(i32, i32, i32, i32)> = None;
+                    for (index, &pixel) in pixels.iter().enumerate() {
+                        if pixel & 0x00ff_ffff == 0 {
+                            continue;
+                        }
+                        let x = (index % canvas.side) as i32;
+                        let y = (index / canvas.side) as i32;
+                        ink = Some(match ink {
+                            Some((left, top, right, bottom)) => {
+                                (left.min(x), top.min(y), right.max(x + 1), bottom.max(y + 1))
+                            }
+                            None => (x, y, x + 1, y + 1),
+                        });
+                    }
+                    let (left, top, right, bottom) =
+                        ink.unwrap_or_else(|| panic!("missing glyph {glyph:?} at {dpi} DPI"));
+                    assert!(left >= bounds.left && top >= bounds.top);
+                    assert!(right <= bounds.right && bottom <= bounds.bottom);
+                    assert!(
+                        (left + right - bounds.left - bounds.right).abs() <= 2
+                            && (top + bottom - bounds.top - bounds.bottom).abs() <= 2,
+                        "glyph {glyph:?} at {dpi} DPI has ink {ink:?} in a {side}px tile"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn fixture_restores_search_data_after_deserialization() {
