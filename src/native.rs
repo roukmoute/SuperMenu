@@ -476,7 +476,8 @@ struct HookState {
     space_down: bool,
     suppress_space: bool,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(PartialEq, Eq)]
 enum KeyAction {
     Pass,
     Consume,

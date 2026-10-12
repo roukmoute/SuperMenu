@@ -4,7 +4,8 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     Application,
     Install,
@@ -22,7 +23,8 @@ pub enum Kind {
     Navigation,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Item {
     pub id: String,
     pub title: String,
@@ -445,7 +447,7 @@ fn match_ascii_abbreviation(source: &[u8], token: &[u8]) -> Option<i32> {
     best
 }
 
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 struct Candidate<'a> {
     score: i32,
     item: &'a Item,

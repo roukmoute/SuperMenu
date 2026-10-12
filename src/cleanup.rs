@@ -59,7 +59,8 @@ const MAX_REGISTRY_BYTES: usize = 65_536;
 const APP_PATHS: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths";
 const RUN: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
 
-#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Serialize)]
 pub struct CleanupItem {
     pub kind: String,
     pub location: String,
@@ -68,7 +69,8 @@ pub struct CleanupItem {
     pub backup: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Serialize)]
 pub struct CleanupReport {
     pub target: String,
     pub inspection_only: bool,
@@ -77,14 +79,16 @@ pub struct CleanupReport {
     pub notes: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone)]
 enum FileKind {
     Program,
     Cache,
     Shortcut(PathBuf),
 }
 
-#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone)]
 struct FileCandidate {
     path: PathBuf,
     scope: PathBuf,
@@ -92,7 +96,8 @@ struct FileCandidate {
     fingerprint: Option<FileFingerprint>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 struct FileFingerprint {
     length: u64,
     created: u64,
@@ -116,7 +121,8 @@ fn file_fingerprint(path: &Path) -> Result<FileFingerprint, String> {
     })
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Serialize)]
 struct RegistryCandidate {
     key: RegistryKey,
     value: String,
@@ -125,7 +131,8 @@ struct RegistryCandidate {
     executable: PathBuf,
 }
 
-#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone)]
 struct Roots {
     programs: Vec<PathBuf>,
     local: Option<PathBuf>,

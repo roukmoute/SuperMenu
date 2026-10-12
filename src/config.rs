@@ -8,7 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub hotkey: String,
@@ -26,7 +27,8 @@ pub struct Settings {
     pub web_search_template: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CustomCommand {
     pub name: String,

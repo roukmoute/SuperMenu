@@ -41,13 +41,13 @@ extern "system" {
     fn RtlGetVersion(information: *mut OSVERSIONINFOEXW) -> i32;
 }
 
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 pub struct Row {
     pub label: String,
     pub value: String,
 }
 
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 pub struct Snapshot {
     pub hardware: Vec<Row>,
     pub windows: Vec<Row>,

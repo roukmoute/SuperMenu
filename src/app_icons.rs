@@ -23,7 +23,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 const CACHE_LIMIT: usize = 256;
 const PENDING_LIMIT: usize = 32;
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Eq, Hash, PartialEq)]
 pub(crate) struct Key {
     target: String,
     size: u32,

@@ -15,7 +15,8 @@ const MAX_MESSAGES: usize = 4096;
 const MAX_TEXT_BYTES: usize = 16_384;
 const SCHEMA_VERSION: u32 = 1;
 
-#[derive(Clone, Copy, Debug)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy)]
 pub struct Language {
     pub code: &'static str,
     pub name: &'static str,
@@ -33,7 +34,8 @@ pub const LANGUAGES: &[Language] = &[
     },
 ];
 
-#[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LanguagePack {
     schema_version: u32,

@@ -241,7 +241,8 @@ impl CachedUi {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(PartialEq, Eq)]
 enum LaunchStart {
     Started(usize),
     Duplicate(usize),

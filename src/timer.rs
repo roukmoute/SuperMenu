@@ -7,13 +7,15 @@ pub const MAX_TIMERS: usize = 8;
 pub const MAX_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 pub type TimerId = u64;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TimerSpec {
     pub duration: Duration,
     pub label: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
     Empty,
     InvalidSyntax,
@@ -205,14 +207,16 @@ fn specification(seconds: u64, label: &str) -> Result<TimerSpec, ParseError> {
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TimerStatus {
     Running,
     Paused,
     Finished,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TimerSnapshot {
     pub id: TimerId,
     pub label: String,
@@ -221,13 +225,15 @@ pub struct TimerSnapshot {
     pub total_seconds: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TimerAlert {
     pub id: TimerId,
     pub label: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TimerError {
     Capacity,
     InvalidDuration,
@@ -252,14 +258,14 @@ impl fmt::Display for TimerError {
     }
 }
 
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 enum State {
     Running { deadline: Instant },
     Paused { remaining: Duration },
     Finished { notified: bool },
 }
 
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 struct Timer {
     id: TimerId,
     label: String,
@@ -302,7 +308,7 @@ fn rounded_seconds(duration: Duration) -> u64 {
 
 /// Keeps at most eight countdowns, including completed ones awaiting dismissal.
 /// No thread, polling, file access or notification is performed by this type.
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 pub struct TimerBook {
     timers: Vec<Timer>,
     next_id: TimerId,

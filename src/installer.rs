@@ -110,7 +110,8 @@ struct Request {
     no_wait: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(PartialEq, Eq)]
 enum RemoveTarget {
     Id(&'static str),
     Name(String),
@@ -727,7 +728,8 @@ fn resolve_winget() -> Result<PathBuf, String> {
     Err(crate::i18n::tr("WinGet est introuvable. Installez ou réparez « App Installer » de Microsoft, puis réessayez. https://aka.ms/getwinget"))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Operation {
     List,
     ListName,
@@ -928,7 +930,8 @@ fn browser_is_outside_root(browser: &Path, root: Option<&Path>) -> bool {
     })
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(PartialEq, Eq)]
 enum Outcome {
     Installed,
     AlreadyInstalled,
@@ -936,7 +939,7 @@ enum Outcome {
     RemoveChecked,
 }
 
-#[derive(Debug)]
+#[cfg_attr(test, derive(Debug))]
 struct Failure {
     code: i32,
     message: String,

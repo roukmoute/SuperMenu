@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum Source {
     Winget,
     MicrosoftStore,

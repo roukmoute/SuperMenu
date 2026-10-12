@@ -29,14 +29,16 @@ pub enum RegistryView {
     Registry64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct RegistryKey {
     pub hive: Hive,
     pub view: RegistryView,
     pub path: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstalledEntry {
     pub name: String,
     pub publisher: String,
@@ -46,7 +48,8 @@ pub struct InstalledEntry {
     pub protected: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Inventory {
     pub entries: Vec<InstalledEntry>,
     pub complete: bool,
