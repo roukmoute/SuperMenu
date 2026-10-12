@@ -71,7 +71,7 @@ fn prepared() -> &'static [PreparedPackage] {
                     .chain(package.aliases.iter().copied())
                     .map(normalize)
                     .collect();
-                names.sort();
+                names.sort_unstable();
                 names.dedup();
                 PreparedPackage {
                     package,
