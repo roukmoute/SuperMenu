@@ -100,6 +100,48 @@ try {
     Assert-Test -Context $context -Condition ($changedQuery.selected -eq 0 -and $changedQuery.items[0].id -ceq 'fixture:steam') -Name 'changing the query selects the first result even when the previous item still exists'
     $cases.Add([ordered]@{ case = 'changed query resets selection'; query = $changedQuery.query; selected = $changedQuery.selected; expected_id = 'fixture:steam'; selected_id = $changedQuery.items[$changedQuery.selected].id })
 
+    # Exercise the real REFRESH handler while the owned fixture is hidden. File
+    # changes retain one dirty flag; app/manual changes still refresh immediately.
+    Set-OwnQuery 'steam'
+    [void]$context.Api.Send($edit, 0x0100, 0x28, 0)
+    $beforeHiddenRefresh = Read-TestSnapshot -Context $context
+    [void]$context.Api.Send($context.Main, 0x8001, 0, 0) # SHOW toggles to hidden
+    Assert-Test -Context $context -Condition (-not $context.Api.IsVisible($context.Main)) -Name 'file refresh test hides only its owned fixture window'
+    foreach ($notification in 1..3) { [void]$context.Api.Send($context.Main, 0x8003, 1, 0) }
+    $hiddenFileRefresh = Read-TestSnapshot -Context $context
+    Assert-Test -Context $context -Condition ([bool]$hiddenFileRefresh.pending_file_refresh) -Name 'hidden file notifications coalesce into one pending refresh'
+    Assert-Test -Context $context -Condition ($hiddenFileRefresh.query -ceq 'steam' -and $hiddenFileRefresh.selected -eq 1 -and $hiddenFileRefresh.items[1].id -ceq $beforeHiddenRefresh.items[1].id) -Name 'hidden file notifications preserve the query and deliberately selected application'
+    Assert-Test -Context $context -Condition (-not $context.Api.IsVisible($context.Main) -and $hiddenFileRefresh.fixture_activation_attempts -eq $beforeHiddenRefresh.fixture_activation_attempts) -Name 'hidden file notifications neither show nor activate an application'
+    [void]$context.Api.Send($context.Main, 0x8002, 0, 0) # INDEX publication does not consume a later change
+    $afterHiddenIndex = Read-TestSnapshot -Context $context
+    Assert-Test -Context $context -Condition ([bool]$afterHiddenIndex.pending_file_refresh) -Name 'an INDEX publication preserves file changes received after the scan started'
+    $cases.Add([ordered]@{ case = 'hidden file notifications'; query = $hiddenFileRefresh.query; selected = $hiddenFileRefresh.selected; pending_file_refresh = $hiddenFileRefresh.pending_file_refresh; index_keeps_pending = $afterHiddenIndex.pending_file_refresh })
+
+    [void]$context.Api.Send($context.Main, 0x8003, 2, 0) # app changes refresh even while hidden
+    $hiddenAppRefresh = Read-TestSnapshot -Context $context
+    Assert-Test -Context $context -Condition (-not [bool]$hiddenAppRefresh.pending_file_refresh) -Name 'an application change refreshes and consumes pending file changes while hidden'
+    Assert-Test -Context $context -Condition (-not $context.Api.IsVisible($context.Main) -and $hiddenAppRefresh.query -ceq 'steam') -Name 'an application refresh preserves hidden visibility and typed text'
+    $cases.Add([ordered]@{ case = 'hidden application notification'; query = $hiddenAppRefresh.query; pending_file_refresh = $hiddenAppRefresh.pending_file_refresh })
+
+    [void]$context.Api.Send($context.Main, 0x8003, 1, 0)
+    [void]$context.Api.Send($context.Main, 0x8001, 0, 0) # show cached results, then consume dirty work
+    $shownAfterFiles = Read-TestSnapshot -Context $context
+    Assert-Test -Context $context -Condition ($context.Api.IsVisible($context.Main) -and -not [bool]$shownAfterFiles.pending_file_refresh) -Name 'showing the launcher consumes its deferred file refresh'
+    Assert-Test -Context $context -Condition ($shownAfterFiles.query -ceq '' -and $shownAfterFiles.selected -eq 0 -and @($shownAfterFiles.items).Count -gt 0) -Name 'showing after deferred work keeps the normal initial query and cached home results'
+    [void]$context.Api.Send($context.Main, 0x8003, 1, 0)
+    $visibleFileRefresh = Read-TestSnapshot -Context $context
+    Assert-Test -Context $context -Condition ($context.Api.IsVisible($context.Main) -and -not [bool]$visibleFileRefresh.pending_file_refresh) -Name 'a visible file notification refreshes immediately instead of being deferred'
+    $cases.Add([ordered]@{ case = 'show consumes file refresh'; pending_file_refresh = $shownAfterFiles.pending_file_refresh; query = $shownAfterFiles.query; visible_file_pending = $visibleFileRefresh.pending_file_refresh })
+
+    [void]$context.Api.Send($context.Main, 0x8001, 0, 0)
+    [void]$context.Api.Send($context.Main, 0x8003, 1, 0)
+    [void]$context.Api.Send($context.Main, 0x8003, 0, 0) # explicit refresh retains its immediate behavior
+    $hiddenManualRefresh = Read-TestSnapshot -Context $context
+    Assert-Test -Context $context -Condition (-not $context.Api.IsVisible($context.Main) -and -not [bool]$hiddenManualRefresh.pending_file_refresh) -Name 'an explicit hidden refresh consumes pending work immediately'
+    [void]$context.Api.Send($context.Main, 0x8001, 0, 0)
+    Assert-Test -Context $context -Condition ($context.Api.IsVisible($context.Main)) -Name 'file refresh tests restore the fixture window for subsequent native checks'
+    $cases.Add([ordered]@{ case = 'hidden explicit refresh'; pending_file_refresh = $hiddenManualRefresh.pending_file_refresh })
+
     # Force the real WM_PAINT path after indexing, icons, keyboard navigation and
     # resizing. Only this fixture process is controlled; no desktop input is sent.
     # WM_PRINTCLIENT remains a separate drawing diagnostic and cannot warm or

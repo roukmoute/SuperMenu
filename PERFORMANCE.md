@@ -1,5 +1,65 @@
 # Performances de Super Menu
 
+## Version 0.6.17
+
+### Travail en arrière-plan et allocations
+
+Les changements de noms de fichiers ou dossiers sont regroupés pendant que le menu est masqué. Ils ne reconstruisent plus en boucle un index de 20 000 éléments. À la prochaine ouverture, le menu montre immédiatement son index en mémoire, puis lance la mise à jour sur son worker existant. Les modifications des raccourcis du menu Démarrer, les installations/désinstallations et les demandes explicites de rafraîchissement restent prioritaires. Les demandes reçues pendant une indexation ou un dialogue modal sont conservées.
+
+La surveillance des racines de fichiers ne demande plus les écritures de contenu : ces écritures ne changent pas les noms recherchés. Le menu Démarrer conserve cette surveillance pour les cibles des raccourcis. Les sources de notification sont fusionnées si les racines coïncident. Les dossiers Rust `target` sont exclus du catalogue comme `node_modules`, `.git`, `bin` et `obj`. Windows continue à notifier leurs créations/suppressions ; ces événements peuvent toujours provoquer une reconstruction si le menu reste visible.
+
+Les fichiers sont construits directement dans le prochain index. Le tableau intermédiaire séparé pouvait réserver 32 768 structures de 216 octets, soit **7 077 888 octets** supplémentaires au pic. La réserve du prochain index est estimée à partir du précédent, puis compactée après le parcours pour couvrir aussi un premier lancement ou un catalogue qui grandit. Le cache désérialisé est compacté avant la préparation de ses clés. Les anciennes chaînes sont libérées sur le worker après avoir relâché le verrou de l’index, afin de ne pas retenir une recherche concurrente pendant leur destruction.
+
+Les identifiants persistants, les chaînes de recherche, le classement et le format du cache sont conservés. Aucun thread, temporisateur, dépendance, DLL ou mécanisme de focus supplémentaire n’est ajouté.
+
+### Mémoire : distinguer les compteurs
+
+Le chiffre de RAM du Gestionnaire des tâches représente de la mémoire résidente. `PrivateUsage` mesure la mémoire privée engagée, qui peut être paginée. Ces compteurs ne décrivent donc pas la même chose ([documentation Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex)). Une observation simultanée sur le PC de développement, avant correction, donnait :
+
+| Processus | Ensemble de travail privé | Mémoire privée engagée |
+| --- | ---: | ---: |
+| Super Menu 0.6.16 | 30,55 Mio | 34,09 Mio |
+| UltraEdit | 27,97 Mio | 110,63 Mio |
+
+Ce sont des instantanés, pas une comparaison générale de deux produits. UltraEdit utilise notamment une lecture par portions pour les grands fichiers ([documentation UltraEdit](https://wiki.ultraedit.com/Settings:File_handling:Temporary_files)). Super Menu conserve les chemins et clés de son catalogue en mémoire pour répondre à la frappe sans accès disque. Aucune purge forcée de l’ensemble de travail ou compaction du tas n’est utilisée pour faire baisser artificiellement un compteur.
+
+### Comparaison sur index gelé
+
+Une copie locale de **20 318 éléments**, 8 547 083 octets de JSON, sert aux deux variantes ; son SHA-256 est `E17B5E72977A2E2A73595CD03B9C6612D87BFDF7D893B49EEE9AD3EBB0D36B22`. Les données personnelles ne sont pas versionnées. La sonde Rust facultative charge exactement cette copie, mesure les compteurs avant/après, puis vérifie les éléments matérialisés et les neuf premiers résultats de six recherches. Le hash des éléments et les résultats restent identiques. Trois lancements par variante sont alternés, avec la même chaîne stable et les mêmes options Release.
+
+| Mesure médiane de la charge de l’index | Référence 0.6.16 | Compactage du vecteur, chaînes inchangées |
+| --- | ---: | ---: |
+| Capacité / nombre d’éléments | 32 768 / 20 318 | 20 318 / 20 318 |
+| Mémoire privée engagée supplémentaire | 18 804 736 octets | 16 130 048 octets |
+| Ensemble de travail résident supplémentaire | 16 048 128 octets | 16 027 648 octets |
+
+Le gain de **2 674 688 octets engagés** correspond à la réserve inutilisée du vecteur ; la baisse résidente de cette sonde est seulement **20 480 octets**. Ce n’est pas une réduction de 2,7 Mo de la RAM affichée par le Gestionnaire des tâches.
+
+Les premiers chronométrages entre processus ont subi une forte charge CPU extérieure : leurs écarts ne permettent pas d’attribuer un ralentissement au compactage. Une mesure complémentaire dans un même processus isole le `shrink_to_fit` : deux paires d’échauffement puis huit paires avec/sans compactage, ordre AB/BA alterné. Coût médian **0,0226 ms**, maximum **0,0284 ms** ; restauration complète médiane **90,573 → 89,490 ms**, maxima **109,284 → 112,008 ms**. Cette série n’établit aucun coût significatif sur le chargement complet.
+
+Un essai `Box<str>` pour les clés normalisées économisait environ 0,2 Mo résident supplémentaires, avec des chronométrages trop variables pour conclure. Il a été écarté ; `src/core.rs` est inchangé.
+
+### Réactivité du menu
+
+Même fixture de huit éléments, thème clair, DPI 96, trois lancements par série, trente échauffements et trois cents mesures de vraie peinture parent. Ordre référence / 0.6.17 / 0.6.17 / référence, après arrêt des compilations de cet audit. La machine reste partagée avec d’autres tâches. Médiane / p95 en millisecondes :
+
+| Série | Premier dessin interne, médiane | Peinture parent | Recherche puis peinture |
+| --- | ---: | ---: | ---: |
+| Référence A | 114,766 | 3,273 / 5,153 | 8,699 / 12,634 |
+| 0.6.17 A | 110,886 | 3,699 / 6,081 | 9,696 / 16,201 |
+| 0.6.17 B | 101,321 | 2,840 / 4,311 | 8,973 / 13,314 |
+| Référence B | 124,126 | 3,058 / 4,674 | 8,809 / 12,619 |
+
+Les recherches de la première série nouvelle sont plus lentes ; la seconde se rapproche des références. Ces échantillons ne prouvent ni une accélération ni l’absence de tout écart de latence, et le classement à la frappe n’a pas changé. Les compteurs restent à **28 objets GDI et 24 USER**, et les mémoires privées de cette petite fixture se recouvrent (2,48–2,51 Mo contre 2,43–2,49 Mo). Les premiers dessins sont internes, avec caches Windows non contrôlés ; DWM et le contrôle EDIT enfant restent exclus.
+
+### Taille et vérification
+
+Le binaire local stable fait **1 021 440 octets**, contre **1 019 904 octets** pour la 0.6.16, soit **1 536 octets supplémentaires (+0,15 %)**. La chaîne stable MSVC, le profil Release et les dépendances sont identiques. Le code des sondes et des tests natifs est exclu du binaire distribué.
+
+Formatage et Clippy (`-D warnings`) propres ; **245 tests Rust**, deux mesures facultatives ignorées et **1 105 assertions Windows** passent (470 lanceur, 278 À propos, 171 traductions, 40 console, 146 installateur). Les tests surveillent de vrais dossiers temporaires et des fenêtres appartenant à leurs propres processus. Ils vérifient la priorité des sources, les créations/renommages/suppressions, l’absence de notifications de contenu sur les fichiers et l’ouverture après des changements différés.
+
+SHA-256 du binaire local mesuré : `478A207028CAE8E8509F9311F8EE4CEAF120256895E454EA03B49BBFF85C133E`.
+
 ## Version 0.6.16
 
 Les jeux Steam sont une option désactivée par défaut, accessible dans **Paramètres → Jeux Steam installés**. Le parcours du registre déjà utilisé pour la présence et la désinstallation fournit aussi les entrées de lancement lorsqu’elle est activée. Désactivée, la branche retourne avant l’analyse des identifiants Steam et avant toute allocation de jeu ; les noms nécessaires à la désinstallation restent dans l’inventaire commun. Aucun SDK, fichier de bibliothèque Steam, réseau, thread, temporisateur ou dépendance supplémentaire n’est utilisé.

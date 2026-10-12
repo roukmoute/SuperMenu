@@ -89,6 +89,8 @@ fn read_cache_file(path: &Path, language: &str) -> Vec<Item> {
         return Vec::new();
     }
     cache.items.retain(is_cacheable);
+    // serde grows the vector geometrically; unused Item slots need not remain allocated.
+    cache.items.shrink_to_fit();
     for item in &mut cache.items {
         item.prepare();
     }
@@ -204,13 +206,21 @@ fn is_cacheable(item: &Item) -> bool {
 
 /// Runs on the catalog worker. Explicit roots only, never drive-wide or network crawls.
 /// Time/entry/directory/depth caps make a huge tree yield a useful partial index.
+#[cfg(test)]
 pub fn files(settings: &Settings) -> Vec<Item> {
+    let mut result = Vec::new();
+    append_files(settings, &mut result);
+    result
+}
+
+/// Append directly to the next snapshot instead of allocating a second file vector.
+pub fn append_files(settings: &Settings, result: &mut Vec<Item>) {
     let maximum = settings.max_indexed_files.min(MAX_FILES);
     if maximum == 0 {
-        return Vec::new();
+        return;
     }
+    let first_file = result.len();
     let started = Instant::now();
-    let mut result = Vec::with_capacity(maximum.min(4096));
     let mut pending = VecDeque::new();
     let mut seen_directories = HashSet::new();
     for value in settings.file_roots.iter().take(16) {
@@ -234,10 +244,10 @@ pub fn files(settings: &Settings) -> Vec<Item> {
         for entry in entries.flatten() {
             entry_count += 1;
             if entry_count > MAX_ENTRIES_EXAMINED
-                || result.len() >= maximum
+                || result.len() - first_file >= maximum
                 || started.elapsed() >= Duration::from_secs(5)
             {
-                return result;
+                return;
             }
             let path = entry.path();
             // symlink_metadata avoids following directory junctions and symbolic links.
@@ -287,7 +297,6 @@ pub fn files(settings: &Settings) -> Vec<Item> {
             }
         }
     }
-    result
 }
 
 fn ignored_directory(name: &str) -> bool {
@@ -296,6 +305,7 @@ fn ignored_directory(name: &str) -> bool {
         ".svn",
         ".hg",
         "node_modules",
+        "target",
         "bin",
         "obj",
         "$recycle.bin",
@@ -664,9 +674,12 @@ mod tests {
         fs::create_dir_all(root.join("keep")).unwrap();
         fs::create_dir_all(root.join("node_modules")).unwrap();
         fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join("TARGET")).unwrap();
         fs::write(root.join("keep/document.txt"), "visible").unwrap();
         fs::write(root.join("node_modules/ignored.txt"), "ignored").unwrap();
         fs::write(root.join(".git/config"), "ignored").unwrap();
+        fs::write(root.join("TARGET/compiler.tmp"), "ignored").unwrap();
+        fs::write(root.join("target.json"), "visible").unwrap();
         let settings = Settings {
             file_roots: vec![root.to_string_lossy().into_owned()],
             max_indexed_files: 100,
@@ -676,6 +689,26 @@ mod tests {
         let mut bounded = settings.clone();
         bounded.max_indexed_files = 1;
         let small = files(&bounded);
+        let mut combined = vec![Item::new(
+            "app:prefix",
+            "Existing app",
+            "",
+            "",
+            Kind::Application,
+            "fixture://prefix",
+        )];
+        append_files(&bounded, &mut combined);
+        assert_eq!(
+            combined.len(),
+            2,
+            "The file limit excludes the existing application prefix"
+        );
+        assert_eq!(combined[0].id, "app:prefix");
+        assert_eq!(combined[1].id, small[0].id);
+        let mut empty = bounded.clone();
+        empty.max_indexed_files = 0;
+        append_files(&empty, &mut combined);
+        assert_eq!(combined.len(), 2);
         let mut overlapping = settings.clone();
         overlapping
             .file_roots
@@ -689,11 +722,14 @@ mod tests {
         let verified_temporary = fs::canonicalize(&temporary_root).unwrap();
         assert!(verified_root.starts_with(verified_temporary));
         fs::remove_dir_all(&verified_root).unwrap();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert!(items.iter().any(|item| item.title == "document.txt"));
-        assert!(!items
-            .iter()
-            .any(|item| item.target.contains("node_modules") || item.target.contains(".git")));
+        assert!(items.iter().any(|item| item.title == "target.json"));
+        assert!(
+            !items.iter().any(|item| item.target.contains("node_modules")
+                || item.target.contains(".git")
+                || item.target.contains("TARGET"))
+        );
         assert_eq!(small.len(), 1);
         assert_eq!(
             overlap
@@ -928,6 +964,11 @@ mod tests {
         let fixture = CacheFixture::new(&bytes);
         let restored = read_cache_file(&fixture.0, "fr");
         assert_eq!(
+            restored.capacity(),
+            restored.len(),
+            "The cache retains no unused Item slots"
+        );
+        assert_eq!(
             crate::core::rank(&restored, "resume", 9, &HashMap::new())[0].id,
             "app"
         );
@@ -1112,3 +1153,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/performance/memory.rs"]
+mod frozen_index_memory_probe;

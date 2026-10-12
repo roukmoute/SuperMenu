@@ -147,6 +147,7 @@ struct State {
     feedback_test: bool,
     feedback_test_finished: bool,
     pending_refresh: bool,
+    pending_file_refresh: bool,
     checks: Vec<(String, bool)>,
     started: Instant,
     first_frame_ms: f64,
@@ -472,6 +473,7 @@ struct SmokeReport<'a> {
     items: &'a [Item],
     language: String,
     native_window_created: bool,
+    pending_file_refresh: bool,
     private_bytes: usize,
     query: &'a str,
     section: &'a str,
@@ -534,6 +536,7 @@ unsafe fn write_smoke_report(state: &State) -> Result<(), String> {
         items: &state.items,
         language: i18n::current_language(),
         native_window_created: true,
+        pending_file_refresh: state.pending_file_refresh,
         private_bytes: memory.PrivateUsage,
         query: &state.query,
         section: &state.section,
@@ -753,6 +756,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             feedback_test: smoke && args.iter().any(|arg| arg == "--launch-feedback-test"),
             feedback_test_finished: false,
             pending_refresh: false,
+            pending_file_refresh: false,
             checks: Vec::new(),
             started,
             first_frame_ms: 0.,
@@ -969,7 +973,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
     }
     let Ok(mut borrowed) = cell.try_borrow_mut() else {
         if msg == INDEX || msg == REFRESH {
-            DEFERRED.with(|d| d.set(d.get() | if msg == INDEX { 1 } else { 2 }));
+            let flag = if msg == INDEX {
+                1
+            } else if wp == native::WATCH_FILES {
+                64
+            } else {
+                2
+            };
+            DEFERRED.with(|d| d.set(d.get() | flag));
         } else if msg == installer::INSTALL_DONE {
             DEFERRED_INSTALL.with(|d| d.borrow_mut().push((wp, lp)));
         } else if msg == installer::REMOVE_DONE {
@@ -1232,7 +1243,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             0
         }
         REFRESH => {
-            reindex(s);
+            if defer_file_refresh(wp, IsWindowVisible(hwnd) != 0) {
+                s.pending_file_refresh = true;
+            } else {
+                reindex(s);
+            }
             0
         }
         installer::INSTALL_DONE => {
@@ -2676,7 +2691,14 @@ fn merge_steam_games(apps: &mut Vec<Item>, games: Vec<Item>) {
     }
 }
 
+fn defer_file_refresh(flags: usize, visible: bool) -> bool {
+    flags == native::WATCH_FILES && !visible
+}
+
 unsafe fn reindex(s: &mut State) {
+    // Explicit/app refreshes also reconcile any pending file changes. A refresh
+    // requested during a scan is retained by pending_refresh below.
+    s.pending_file_refresh = false;
     if s.smoke_fixture {
         s.indexing.store(false, Ordering::Release);
         PostMessageW(s.hwnd, INDEX, 0, 0);
@@ -2742,15 +2764,28 @@ unsafe fn reindex(s: &mut State) {
         unsafe {
             PostMessageW(hwnd as HWND, INDEX, 0, 0);
         }
+        let previous_files = index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+            .saturating_sub(apps.len())
+            .min(settings.max_indexed_files);
         let mut items = apps;
-        items.extend(catalog::files(&settings));
+        items.reserve(previous_files);
+        catalog::append_files(&settings, &mut items);
+        // A first scan or growing catalog can exceed the previous reservation.
+        items.shrink_to_fit();
         if i18n::revision() == language_revision {
             let _ = catalog::save_cache(&items, &language);
-            let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
-            if settings.steam_enabled {
-                retain_enabled_steam(&mut items, steam_enabled.load(Ordering::Acquire));
-            }
-            *index = items;
+            let previous = {
+                let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
+                if settings.steam_enabled {
+                    retain_enabled_steam(&mut items, steam_enabled.load(Ordering::Acquire));
+                }
+                std::mem::replace(&mut *index, items)
+            };
+            // Releasing thousands of strings must not hold up a concurrent search.
+            drop(previous);
         }
         busy.store(false, Ordering::Release);
         unsafe {
@@ -2776,6 +2811,10 @@ unsafe fn show(s: &mut State) {
         SetFocus(s.edit);
     }
     set_query(s, "");
+    // Show the cached results immediately; deferred disk work stays off the UI.
+    if s.pending_file_refresh {
+        reindex(s);
+    }
 }
 unsafe fn hide(s: &mut State) {
     ShowWindow(s.hwnd, SW_HIDE);
@@ -3800,8 +3839,13 @@ unsafe fn replay_deferred(hwnd: HWND) {
     if deferred & 1 != 0 {
         PostMessageW(hwnd, INDEX, 0, 0);
     }
-    if deferred & 2 != 0 {
-        PostMessageW(hwnd, REFRESH, 0, 0);
+    if deferred & (2 | 64) != 0 {
+        let flags = if deferred & 2 != 0 {
+            0
+        } else {
+            native::WATCH_FILES
+        };
+        PostMessageW(hwnd, REFRESH, flags, 0);
     }
     if deferred & 4 != 0 {
         PostMessageW(hwnd, LAUNCH_DONE, 0, 0);
@@ -4301,6 +4345,20 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_hidden_file_changes_are_deferred() {
+        for flags in [
+            0,
+            native::WATCH_APPLICATIONS,
+            native::WATCH_FILES | native::WATCH_APPLICATIONS,
+        ] {
+            assert!(!defer_file_refresh(flags, false));
+            assert!(!defer_file_refresh(flags, true));
+        }
+        assert!(defer_file_refresh(native::WATCH_FILES, false));
+        assert!(!defer_file_refresh(native::WATCH_FILES, true));
+    }
 
     fn steam_game(id: u32, title: &str) -> Item {
         Item::new(

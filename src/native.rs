@@ -896,22 +896,53 @@ impl Drop for Watcher {
     }
 }
 
+pub const WATCH_FILES: usize = 1;
+pub const WATCH_APPLICATIONS: usize = 2;
+
+fn merge_watch_path(paths: &mut Vec<(PathBuf, usize)>, path: PathBuf, source: usize) {
+    let text = path.to_string_lossy();
+    if let Some((_, existing)) = paths
+        .iter_mut()
+        .find(|(existing, _)| existing.to_string_lossy().eq_ignore_ascii_case(&text))
+    {
+        *existing |= source;
+    } else {
+        paths.push((path, source));
+    }
+}
+
+fn watch_filter(source: usize) -> u32 {
+    FILE_NOTIFY_CHANGE_FILE_NAME
+        | FILE_NOTIFY_CHANGE_DIR_NAME
+        | if source & WATCH_APPLICATIONS != 0 {
+            FILE_NOTIFY_CHANGE_LAST_WRITE
+        } else {
+            0
+        }
+}
+
 pub fn watch(hwnd: HWND, roots: &[String]) -> Option<Watcher> {
-    let mut paths: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
+    let mut paths = Vec::new();
+    for root in roots {
+        merge_watch_path(&mut paths, PathBuf::from(root), WATCH_FILES);
+    }
     for variable in ["APPDATA", "PROGRAMDATA"] {
         if let Some(base) = std::env::var_os(variable) {
-            paths.push(PathBuf::from(base).join("Microsoft/Windows/Start Menu"));
+            merge_watch_path(
+                &mut paths,
+                PathBuf::from(base).join("Microsoft/Windows/Start Menu"),
+                WATCH_APPLICATIONS,
+            );
         }
     }
-    let mut seen = HashSet::new();
+    watch_paths(hwnd, paths)
+}
+
+fn watch_paths(hwnd: HWND, paths: Vec<(PathBuf, usize)>) -> Option<Watcher> {
     let mut notifications = Vec::new();
-    for path in paths {
+    for (path, source) in paths {
         let text = path.to_string_lossy();
-        if !path.is_dir()
-            || path.parent().is_none()
-            || text.starts_with("\\\\")
-            || !seen.insert(text.to_lowercase())
-        {
+        if !path.is_dir() || path.parent().is_none() || text.starts_with("\\\\") {
             continue;
         }
         if let Some(drive) = text.get(..3).filter(|value| value.as_bytes()[1] == b':') {
@@ -924,17 +955,10 @@ pub fn watch(hwnd: HWND, roots: &[String]) -> Option<Watcher> {
             break;
         }
         let name = wide(&text);
-        let handle = unsafe {
-            FindFirstChangeNotificationW(
-                name.as_ptr(),
-                1,
-                FILE_NOTIFY_CHANGE_FILE_NAME
-                    | FILE_NOTIFY_CHANGE_DIR_NAME
-                    | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            )
-        };
+        let handle =
+            unsafe { FindFirstChangeNotificationW(name.as_ptr(), 1, watch_filter(source)) };
         if handle != INVALID_HANDLE_VALUE && !handle.is_null() {
-            notifications.push(handle as usize);
+            notifications.push((handle as usize, source));
         }
     }
     if notifications.is_empty() {
@@ -942,7 +966,7 @@ pub fn watch(hwnd: HWND, roots: &[String]) -> Option<Watcher> {
     }
     let stop = unsafe { CreateEventW(null(), 1, 0, null()) };
     if stop.is_null() {
-        for handle in notifications {
+        for (handle, _) in notifications {
             unsafe {
                 FindCloseChangeNotification(handle as HANDLE);
             }
@@ -956,15 +980,19 @@ pub fn watch(hwnd: HWND, roots: &[String]) -> Option<Watcher> {
         .name("Super Menu catalog watcher".into())
         .spawn(move || {
             let mut handles: Vec<HANDLE> = std::iter::once(stop_value as HANDLE)
-                .chain(notifications.iter().map(|value| *value as HANDLE))
+                .chain(notifications.iter().map(|(handle, _)| *handle as HANDLE))
                 .collect();
+            let mut sources: Vec<usize> = notifications.iter().map(|(_, source)| *source).collect();
+            let mut dirty_sources = 0;
             let mut dirty_since: Option<Instant> = None;
             let mut last_change = Instant::now();
             loop {
                 if dirty_since.is_some_and(|first| first.elapsed() >= Duration::from_secs(1)) {
                     dirty_since = None;
+                    let sources = dirty_sources;
+                    dirty_sources = 0;
                     unsafe {
-                        PostMessageW(hwnd_value as HWND, WM_APP + 3, 0, 0);
+                        PostMessageW(hwnd_value as HWND, WM_APP + 3, sources, 0);
                     }
                 }
                 let timeout = match dirty_since {
@@ -984,8 +1012,10 @@ pub fn watch(hwnd: HWND, roots: &[String]) -> Option<Watcher> {
                 }
                 if result == WAIT_TIMEOUT {
                     if dirty_since.take().is_some() {
+                        let sources = dirty_sources;
+                        dirty_sources = 0;
                         unsafe {
-                            PostMessageW(hwnd_value as HWND, WM_APP + 3, 0, 0);
+                            PostMessageW(hwnd_value as HWND, WM_APP + 3, sources, 0);
                         }
                     }
                     continue;
@@ -994,12 +1024,14 @@ pub fn watch(hwnd: HWND, roots: &[String]) -> Option<Watcher> {
                 if index > 0 && index < handles.len() {
                     let now = Instant::now();
                     dirty_since.get_or_insert(now);
+                    dirty_sources |= sources[index - 1];
                     last_change = now;
                     if unsafe { FindNextChangeNotification(handles[index]) } == 0 {
                         unsafe {
                             FindCloseChangeNotification(handles[index]);
                         }
                         handles.remove(index);
+                        sources.remove(index - 1);
                     }
                 } else {
                     break;
@@ -1017,7 +1049,7 @@ pub fn watch(hwnd: HWND, roots: &[String]) -> Option<Watcher> {
             worker: Some(worker),
         }),
         Err(_) => {
-            for handle in cleanup {
+            for (handle, _) in cleanup {
                 unsafe {
                     FindCloseChangeNotification(handle as HANDLE);
                 }
@@ -1184,6 +1216,105 @@ mod tests {
         assert_eq!(keys.key(VK_SPACE, true), KeyAction::Pass);
         keys.key(VK_LWIN, true);
         assert_eq!(keys.key(VK_SPACE, true), KeyAction::Pass);
+    }
+
+    #[test]
+    fn watch_sources_merge_and_preserve_application_content_changes() {
+        let mut paths = Vec::new();
+        merge_watch_path(&mut paths, PathBuf::from("C:/Example"), WATCH_FILES);
+        merge_watch_path(&mut paths, PathBuf::from("c:/example"), WATCH_APPLICATIONS);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].1, WATCH_FILES | WATCH_APPLICATIONS);
+        assert_eq!(
+            watch_filter(WATCH_FILES),
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME
+        );
+        assert_ne!(
+            watch_filter(WATCH_APPLICATIONS) & FILE_NOTIFY_CHANGE_LAST_WRITE,
+            0
+        );
+        assert_ne!(watch_filter(paths[0].1) & FILE_NOTIFY_CHANGE_LAST_WRITE, 0);
+    }
+
+    fn test_watch_window() -> HWND {
+        unsafe {
+            CreateWindowExW(
+                0,
+                wide("STATIC").as_ptr(),
+                null(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                -3isize as HWND,
+                null_mut(),
+                null_mut(),
+                null(),
+            )
+        }
+    }
+
+    fn wait_watch_message(hwnd: HWND, duration: Duration) -> Option<usize> {
+        let deadline = Instant::now() + duration;
+        let mut message: MSG = unsafe { zeroed() };
+        while Instant::now() < deadline {
+            if unsafe { PeekMessageW(&mut message, hwnd, WM_APP + 3, WM_APP + 3, PM_REMOVE) } != 0 {
+                return Some(message.wParam);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    #[test]
+    fn file_watcher_ignores_content_but_tracks_create_rename_and_delete() {
+        let folder =
+            std::env::temp_dir().join(format!("supermenu-watch-names-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let existing = folder.join("existing.txt");
+        std::fs::write(&existing, "original").unwrap();
+        let hwnd = test_watch_window();
+        assert!(!hwnd.is_null());
+        let watcher = watch_paths(hwnd, vec![(folder.clone(), WATCH_FILES)]).expect("watcher");
+        std::fs::write(&existing, "changed contents").unwrap();
+        let content = wait_watch_message(hwnd, Duration::from_millis(450));
+        let created = folder.join("created.txt");
+        std::fs::write(&created, "created").unwrap();
+        let create = wait_watch_message(hwnd, Duration::from_secs(3));
+        let renamed = folder.join("renamed.txt");
+        std::fs::rename(&created, &renamed).unwrap();
+        let rename = wait_watch_message(hwnd, Duration::from_secs(3));
+        std::fs::remove_file(&renamed).unwrap();
+        let delete = wait_watch_message(hwnd, Duration::from_secs(3));
+        drop(watcher);
+        unsafe { DestroyWindow(hwnd) };
+        std::fs::remove_file(existing).unwrap();
+        std::fs::remove_dir(folder).unwrap();
+        assert_eq!(content, None, "content does not change searchable names");
+        assert_eq!(create, Some(WATCH_FILES));
+        assert_eq!(rename, Some(WATCH_FILES));
+        assert_eq!(delete, Some(WATCH_FILES));
+    }
+
+    #[test]
+    fn application_watcher_observes_shortcut_content_changes() {
+        let folder =
+            std::env::temp_dir().join(format!("supermenu-watch-app-test-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let shortcut = folder.join("example.lnk");
+        std::fs::write(&shortcut, "old target").unwrap();
+        let hwnd = test_watch_window();
+        assert!(!hwnd.is_null());
+        let watcher =
+            watch_paths(hwnd, vec![(folder.clone(), WATCH_APPLICATIONS)]).expect("watcher");
+        std::fs::write(&shortcut, "new target").unwrap();
+        let change = wait_watch_message(hwnd, Duration::from_secs(3));
+        drop(watcher);
+        unsafe { DestroyWindow(hwnd) };
+        std::fs::remove_file(shortcut).unwrap();
+        std::fs::remove_dir(folder).unwrap();
+        assert_eq!(change, Some(WATCH_APPLICATIONS));
     }
 
     #[test]

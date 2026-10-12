@@ -14,9 +14,9 @@ Les tests des pictogrammes vérifient aussi les pixels rendus hors écran : neuf
 
 | Suite | Comportements vérifiés |
 | --- | --- |
-| `cargo test --locked` | Classement et normalisation de recherche, indexation et cache, configuration Steam facultative, déduplication des jeux et exclusion du cache, couverture des 236 entrées WinUtil, éditions et architectures distinctes, commandes Microsoft Store simulées, preuve d'absence de Chrome malgré une inscription restante, réinstallation ciblée et confirmation de l'exécutable, plans de nettoyage et préservation des données, minuteurs, état des lancements, icônes, collecte système et contrôles natifs isolés. |
+| `cargo test --locked` | Classement et normalisation de recherche, indexation et cache, surveillance réelle des créations/renommages/suppressions et des cibles de raccourcis, configuration Steam facultative, déduplication des jeux et exclusion du cache, couverture des 236 entrées WinUtil, éditions et architectures distinctes, commandes Microsoft Store simulées, preuve d'absence de Chrome malgré une inscription restante, réinstallation ciblée et confirmation de l'exécutable, plans de nettoyage et préservation des données, minuteurs, état des lancements, icônes, collecte système et contrôles natifs isolés. |
 | `pwsh scripts/update-package-catalog.ps1 -Check` | Hash et taille du catalogue importé, régénération déterministe des identifiants et des sources, sans téléchargement ni installation. Également exécuté par les scripts de test et de distribution. |
-| `tests/windows/launcher.ps1` | Recherche sur un index fixe, applications par défaut et fichiers explicites, installation de Chrome absent avec ou sans préfixe, absence de résultats Telegram lors d'une recherche Steam, maintien de la sélection après plusieurs notifications d’index (accueil défilé et recherche), vraies peintures WM_PAINT et redimensionnements avec texte/sélection EDIT préservés et ressources GDI/USER bornées, réinitialisation lors d’une nouvelle requête, clavier du menu, préfixe et curseur, suppression de mots/sélection avec Ctrl+Retour arrière et annulation. |
+| `tests/windows/launcher.ps1` | Rafraîchissements de fichiers différés quand le menu est masqué, ouverture avec résultats immédiatement disponibles, priorité des notifications d’applications et demandes manuelles, recherche sur un index fixe, applications par défaut et fichiers explicites, installation de Chrome absent avec ou sans préfixe, absence de résultats Telegram lors d'une recherche Steam, maintien de la sélection après plusieurs notifications d’index (accueil défilé et recherche), vraies peintures WM_PAINT et redimensionnements avec texte/sélection EDIT préservés et ressources GDI/USER bornées, réinitialisation lors d’une nouvelle requête, clavier du menu, préfixe et curseur, suppression de mots/sélection avec Ctrl+Retour arrière et annulation. |
 | `tests/windows/translations.ps1` | Menus et fenêtre À propos en anglais, identité inchangée des applications et paquets, vrai sélecteur français/anglais, réutilisation du cache sans réécriture. |
 | `tests/windows/about.ps1` | Ouverture et contenu de la fenêtre À propos dans les deux thèmes, version et compteurs, fermetures par Échap/croix/bouton, réouverture de la même fenêtre, redimensionnement, défilement, boutons restant accessibles et ressources GDI/USER bornées. |
 | `tests/windows/helper-console.ps1` | Fermeture automatique après une erreur d'installation ou de désinstallation, code de sortie conservé, rapport local, diagnostic sans attente et absence de sélection rapide bloquante. Les requêtes de test échouent avant tout appel à WinGet. |
@@ -102,6 +102,17 @@ cargo test --release --locked cache_performance_comparison -- --ignored --nocapt
 ```
 
 Ce test marqué `#[ignore]` utilise un fichier temporaire, deux échauffements et seize échantillons par opération. Il est absent des exécutions ordinaires de `cargo test`, et son code n'est pas inclus dans l'exécutable distribué. Ses chiffres restent sensibles au compilateur, au profil de compilation, à la machine et aux caches Windows. Il ne remplace pas les tests fonctionnels du format, de la compatibilité et de la libération du cache.
+
+
+Une sonde facultative mesure la mémoire d’un cache gelé. Copier le même `index.json` français hors du dossier des données actives, puis fournir des chemins absolus :
+
+```powershell
+$env:SUPER_MENU_MEMORY_FIXTURE = 'C:\mesures\index.json'
+$env:SUPER_MENU_MEMORY_REPORT = 'C:\mesures\memoire.json'
+cargo test --release --locked frozen_index_memory_measurement -- --ignored --test-threads=1
+```
+
+`tests/performance/memory.rs` relève `PrivateUsage`, l’ensemble de travail total résident, la capacité du vecteur, les tailles des chaînes, le temps de restauration, le hash des éléments et les résultats de six recherches. La langue de cette sonde est `fr` ; un cache d’une autre langue serait rejeté. Elle ne démarre aucun menu ni watcher, ne réindexe pas le PC et ne modifie pas le fichier fourni. Comparer les mêmes octets entre versions et alterner les lancements. Le rapport contient les identifiants du cache fourni : garder ces données locales lorsqu’elles décrivent des fichiers personnels. Le test est ignoré par défaut et son code reste exclu de l’exécutable distribué. Les compteurs engagés et résidents doivent être interprétés séparément ; la mémoire temporaire de Windows et les autres tâches du PC peuvent perturber les temps.
 
 ## Ajouter une régression
 
