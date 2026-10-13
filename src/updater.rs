@@ -121,7 +121,7 @@ fn digest(text: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut hash = [0; 32];
-    for (value, pair) in hash.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+    for (value, pair) in hash.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
         let digit = |byte: u8| (byte as char).to_digit(16).map(|value| value as u8);
         *value = digit(pair[0])? * 16 + digit(pair[1])?;
     }
