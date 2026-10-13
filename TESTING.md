@@ -20,6 +20,7 @@ Les tests des pictogrammes vérifient aussi les pixels rendus hors écran : neuf
 | `tests/windows/translations.ps1` | Menus et fenêtre À propos en anglais, identité inchangée des applications et paquets, vrai sélecteur français/anglais, réutilisation du cache sans réécriture. |
 | `tests/windows/about.ps1` | Ouverture et contenu de la fenêtre À propos dans les deux thèmes, version et compteurs, fermetures par Échap/croix/bouton, réouverture de la même fenêtre, redimensionnement, défilement, boutons restant accessibles et ressources GDI/USER bornées. |
 | `tests/windows/helper-console.ps1` | Fermeture automatique après une erreur d'installation ou de désinstallation, code de sortie conservé, rapport local, diagnostic sans attente et absence de sélection rapide bloquante. Les requêtes de test échouent avant tout appel à WinGet. |
+| `tests/windows/updater.ps1` | Vrai helper de mise à jour, validation des empreintes SHA-256, taille, image Windows x64, identité du processus parent et propriétaire de sa fenêtre, rejet des jobs étrangers et arguments ambigus, attente de la sortie complète du parent avant remplacement atomique, report borné si le parent refuse, redémarrage en arrière-plan et conservation des données. Une cible verrouillée conserve puis relance l'ancien binaire. Aucun téléchargement ni logiciel utilisateur n'est utilisé. |
 | `tests/windows/setup.ps1` | Vraie installation NSIS, raccourcis et inscription Windows, options facultatives, mise à jour pendant que l'instance de test tourne, refus des processus inconnus, désinstallation et conservation des données. Chaque installateur utilise un nom et un dossier de test isolés. |
 
 Les suites Windows conduisent l'exécutable construit, observent ses fenêtres et ses résultats réels, et échouent sur une régression. Elles ne recalculent pas le classement dans le script. Elles vérifient aussi les noms et résultats de tous les contrôles `--smoke-test` ; un simple code de sortie nul ne suffit pas.
@@ -35,6 +36,8 @@ Les tests du suivi de désinstallation utilisent des processus PowerShell fictif
 `tests/fixtures/launcher.json` contient des applications et fichiers fictifs. `--smoke-test --smoke-fixture <fichier>` restaure leurs données de recherche et remplace l'indexation du PC. Le mode utilise les réglages par défaut et un historique de lancement vide. Il ne lit ni n'écrit l'index ou la configuration personnelle, n'installe pas de raccourci global et ne lance pas de surveillance de dossiers. Les activations de logiciels, fichiers, liens web, presse-papiers et actions système externes sont bloquées dans ce mode ; les tests utilisent les actions internes du menu.
 
 Chaque processus et dossier temporaire appartient à son test. Le support vérifie le PID de chaque fenêtre avant de la contrôler et borne les délais des messages Windows. Il ne ferme pas une instance de Super Menu déjà ouverte. Aucun logiciel utilisateur n'est installé ou désinstallé. Certains tests Rust créent des fichiers ou clés de registre jetables, et vérifient la Corbeille avec leurs propres fichiers ; ils nettoient uniquement ces ressources.
+
+La suite de mise à jour compile deux petits exécutables Windows x64 jetables avec le compilateur .NET Framework de Windows. Ils remplacent uniquement l'ancienne et la nouvelle application de la fixture ; le helper exécuté est celui du vrai binaire Super Menu. Une fenêtre masquée reçoit le message de validation, puis le test vérifie que le fichier reste inchangé tant que son processus reste actif. Le redémarrage écrit un marqueur distinct selon la version réellement exécutée. Chaque processus reçoit son propre `LOCALAPPDATA` temporaire ; aucun mutex global, raccourci clavier, index utilisateur ou connexion Internet n'est sollicité. Les exécutables de fixture ne sont ni distribués ni inclus dans Super Menu.
 
 Les tests natifs ne requièrent pas de clavier physique, de focus du bureau, de carte graphique particulière ou de nombre précis d'applications installées. Les informations système disponibles varient sur une machine virtuelle : une valeur `Indisponible` est acceptée. La mémoire totale et les résolutions ne sont pas figées dans les assertions.
 
@@ -63,6 +66,7 @@ On peut aussi exécuter séparément une suite :
 .\tests\windows\about.ps1 -Executable .\target\release\supermenu.exe
 .\tests\windows\translations.ps1 -Executable .\target\release\supermenu.exe
 .\tests\windows\helper-console.ps1 -Executable .\target\release\supermenu.exe
+.\tests\windows\updater.ps1 -Executable .\target\release\supermenu.exe
 .\tests\windows\setup.ps1 -Executable .\target\release\supermenu.exe
 ```
 

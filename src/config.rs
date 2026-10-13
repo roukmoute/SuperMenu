@@ -22,6 +22,10 @@ pub struct Settings {
     pub clipboard_enabled: bool,
     /// Steam launch entries are opt-in; ordinary shortcuts and removals stay available.
     pub steam_enabled: bool,
+    /// Check and apply official releases in the background while the menu is idle.
+    pub auto_update: bool,
+    /// Preview builds follow previews by default; v1 and later default to stable releases.
+    pub update_prereleases: bool,
     pub max_clipboard_entries: usize,
     pub max_indexed_files: usize,
     pub file_roots: Vec<String>,
@@ -49,6 +53,8 @@ impl Default for Settings {
             window_width: 720,
             clipboard_enabled: false,
             steam_enabled: false,
+            auto_update: true,
+            update_prereleases: env!("CARGO_PKG_VERSION").starts_with("0."),
             max_clipboard_entries: 30,
             max_indexed_files: 20_000,
             file_roots: default_file_roots(),
@@ -377,6 +383,8 @@ mod tests {
             max_indexed_files: usize::MAX,
             clipboard_enabled: true,
             steam_enabled: true,
+            auto_update: false,
+            update_prereleases: false,
             web_search_template: "javascript:{query}".into(),
             file_roots: vec![
                 root.clone(),
@@ -520,6 +528,32 @@ mod tests {
             save_to(&settings, &path).unwrap();
             assert_eq!(load_from(&path).steam_enabled, enabled);
         }
+    }
+
+    #[test]
+    fn updates_are_compatible_with_old_settings_and_disabled_choices_persist() {
+        let old: Settings =
+            serde_json::from_str(r#"{"hotkey":"Alt+Space","steam_enabled":true}"#).unwrap();
+        assert!(old.auto_update);
+        assert_eq!(
+            old.update_prereleases,
+            env!("CARGO_PKG_VERSION").starts_with("0.")
+        );
+        assert_eq!(old.hotkey, "Alt+Space");
+        assert!(old.steam_enabled);
+        let temporary = Temporary::new();
+        let path = temporary.0.join("settings.json");
+        let disabled = Settings {
+            auto_update: false,
+            update_prereleases: false,
+            ..old
+        };
+        save_to(&disabled, &path).unwrap();
+        let saved = load_from(&path);
+        assert!(!saved.auto_update);
+        assert!(!saved.update_prereleases);
+        assert_eq!(saved.hotkey, "Alt+Space");
+        assert!(saved.steam_enabled);
     }
 
     #[test]

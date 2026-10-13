@@ -1,5 +1,32 @@
 # Performances de Super Menu
 
+## Version 0.6.18
+
+La mise à jour automatique partage le transport WinHTTP déjà utilisé par les traductions. Aucune dépendance d’exécution n’est ajoutée. Le binaire local stable passe de **1 021 440 à 1 079 808 octets**, soit **58 368 octets supplémentaires (+5,71 %, 57 Kio)**. Il fait environ **1,03 Mio** ; la mention « moins de 1 Mio » des versions précédentes ne s’applique donc plus à cette construction. La chaîne MSVC stable, le profil Release et les options CRT statique sont identiques.
+
+Les contrôles réseau, la sélection de version, le téléchargement, le hachage et l’actualisation de la langue s’exécutent hors du thread UI. Le premier contrôle est différé de trente secondes, puis limité à une fois par jour par canal et version. Le temporisateur de tentative d’application n’existe que lorsqu’une mise à jour est prête. Une utilisation commencée entre sa préparation et l’arrêt reporte le remplacement ; les échecs définitifs arrêtent les tentatives répétées. Aucun minuteur ni opération en cours n’est interrompu par le mécanisme automatique.
+
+### Mesures comparatives
+
+Fixture de huit éléments, thème clair, DPI 96, vraie peinture parent, trois lancements par série, trente échauffements et trois cents mesures. Ordre référence / 0.6.18 / 0.6.18 / référence ; machine partagée. Médiane / p95 en millisecondes :
+
+| Série | Premier dessin interne, médiane | Peinture parent | Recherche puis peinture |
+| --- | ---: | ---: | ---: |
+| Référence A | 89,688 | 2,276 / 3,090 | 4,888 / 7,026 |
+| 0.6.18 A | 167,165 | 3,357 / 4,558 | 4,989 / 7,120 |
+| 0.6.18 B | 106,390 | 2,553 / 3,442 | 5,237 / 7,745 |
+| Référence B | 110,751 | 2,368 / 3,269 | 5,110 / 7,703 |
+
+Les recherches puis peintures restent proches dans ces séries. La première série nouvelle a un premier dessin et une peinture plus lents ; la seconde ne retrouve pas cet écart de démarrage. Ces mesures ne prouvent ni une accélération ni l’absence de tout écart. Le classement et le rendu sont inchangés ; cette fixture interdit le réseau et les mises à jour, donc elle compare le menu, pas une connexion concurrente. Les mémoires privées se recouvrent (**2,54–2,61 Mio**) et les compteurs sont identiques : **28 GDI, 26 USER**. Le chronomètre de premier dessin est interne, avec caches Windows non contrôlés, sans chargement initial du processus, contrôle EDIT ni présentation DWM.
+
+### Vérification
+
+Formatage et Clippy (`-D warnings`) propres ; **267 tests Rust**, deux sondes facultatives ignorées, et **1 275 assertions Windows** passent : 470 lanceur, 278 À propos, 171 traductions, 40 console, 170 updater et 146 installateur. Le helper réel remplace deux exécutables x64 de fixture distincts, attend un processus qui retarde volontairement sa fermeture, relance réellement le nouveau programme, refuse les empreintes et identités invalides, et conserve/relance l’ancien programme lorsque sa cible est verrouillée. Les tests NSIS vérifient séparément la vraie installation silencieuse et la conservation des réglages/raccourcis. Ils utilisent uniquement des programmes, dossiers et inscriptions de test.
+
+La suite NSIS a été rejouée après une erreur transitoire lors de l’enregistrement d’un raccourci de fixture ; les 146 assertions ont ensuite réussi sans modifier l’installateur.
+
+SHA-256 du binaire local mesuré : `B697755B8797D92AA23F5AA523BFB85C69C4AA680426282E7FF90354E08CAAB7`.
+
 ## Version 0.6.17
 
 ### Travail en arrière-plan et allocations

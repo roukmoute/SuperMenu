@@ -34,6 +34,7 @@ jobs:
           path: |
             artifacts/SuperMenu-windows-x64.zip
             artifacts/SuperMenu-Setup-x64.exe
+            artifacts/SuperMenu/supermenu.exe
           if-no-files-found: error
 
   release:
@@ -72,8 +73,8 @@ jobs:
               exit 0
           }
           if ($isTag) {
-              gh release create "$releaseTag" artifacts/SuperMenu-Setup-x64.exe artifacts/SuperMenu-windows-x64.zip --verify-tag --generate-notes --title "Super Menu $version"
+              gh release create "$releaseTag" artifacts/SuperMenu-Setup-x64.exe artifacts/SuperMenu-windows-x64.zip artifacts/SuperMenu/supermenu.exe --verify-tag --generate-notes --title "Super Menu $version"
           } else {
-              gh release create "$releaseTag" artifacts/SuperMenu-Setup-x64.exe artifacts/SuperMenu-windows-x64.zip --target "$env:GITHUB_SHA" --prerelease --generate-notes --title "Super Menu $version"
+              gh release create "$releaseTag" artifacts/SuperMenu-Setup-x64.exe artifacts/SuperMenu-windows-x64.zip artifacts/SuperMenu/supermenu.exe --target "$env:GITHUB_SHA" --prerelease --generate-notes --title "Super Menu $version"
           }
           if ($LASTEXITCODE -ne 0) { throw 'La publication de la release a échoué.' }

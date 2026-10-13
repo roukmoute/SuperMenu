@@ -6,21 +6,35 @@ Un lanceur et moteur de recherche **natif Windows**, écrit en Rust et Win32. Un
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 et 11, x64. L'exécutable autonome fait **moins de 1 Mio** (1 021 440 octets pour la version 0.6.17). Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances](PERFORMANCE.md) détaille les réductions de taille des versions 0.6.1, 0.6.13, 0.6.15, 0.6.16 et 0.6.17, la méthode et les compromis.
+Windows 10 et 11, x64. L'exécutable autonome fait **environ 1 Mio** (1 079 808 octets pour la version 0.6.18). Sa taille exacte peut varier selon la chaîne de compilation ; le [rapport de performances](PERFORMANCE.md) détaille les réductions de taille des versions 0.6.1, 0.6.13, 0.6.15, 0.6.16, 0.6.17 et 0.6.18, la méthode et les compromis.
 
 Le programme utilise les contrôles et API de Windows : aucun navigateur embarqué, aucune installation de .NET, aucun service distant nécessaire pour rechercher les applications ou fichiers. La recherche travaille sur un index en mémoire ; sa reconstruction s'effectue en arrière-plan. Un cache local accélère les démarrages suivants. Les changements de fichiers reçus lorsque le menu est masqué sont regroupés jusqu’à son ouverture ; les résultats déjà en mémoire s’affichent avant la mise à jour. Les raccourcis d’applications et les demandes explicites restent actualisés en arrière-plan.
 
 Les clés de recherche sont préparées pendant l'indexation ; la frappe filtre les candidats et sélectionne les meilleurs résultats sans trier tout le catalogue. Le menu garde ses fournisseurs fixes et ses textes traduits en mémoire, et réutilise sa mémoire de conversion UTF-16 ainsi que les ressources de dessin Windows. La restauration du cache utilise une vue de fichier en lecture seule ; sa sauvegarde écrit les éléments empruntés sans recopier l'index complet. Les mesures reproductibles du moteur, du cache et du menu sont décrites dans le [guide de tests](TESTING.md#mesurer-les-performances).
 
-Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **245 tests Rust**, les deux mesures de cache/mémoire facultatives et les **1 105 assertions Windows** passent, dont 146 assertions sur de vrais tests d'installation, de mise à jour et de désinstallation isolés.
+Les mesures comparent séparément la recherche sur 20 000 éléments, la restauration du cache et le dessin du menu. La recherche par défaut des applications et les opérations de cache progressent sur la machine testée ; les scénarios génériques et les latences d'affichage restent sensibles au profil de compilation et aux conditions du PC. Le [rapport détaillé](PERFORMANCE.md) publie aussi ces limites. Les **267 tests Rust**, les deux mesures de cache/mémoire facultatives et les **1 275 assertions Windows** passent, dont 146 assertions sur de vrais tests d'installation, de mise à jour et de désinstallation isolés.
 
 ## Langues
 
-Au premier lancement, une petite fenêtre propose **Français** ou **English**. Le français est intégré. L’anglais est un fichier JSON d’environ **41 Ko**, téléchargé uniquement lors de sa première sélection et conservé dans `%LOCALAPPDATA%\SuperMenu\languages\en.json`. Les démarrages suivants utilisent ce cache, sans connexion. Si le téléchargement échoue, il reste possible de choisir le français.
+Au premier lancement, une petite fenêtre propose **Français** ou **English**. Le français est intégré. L’anglais est un fichier JSON d’environ **45 Ko**, téléchargé uniquement lors de sa première sélection et conservé dans `%LOCALAPPDATA%\SuperMenu\languages\en.json`. Les démarrages suivants utilisent ce cache, sans connexion. Si le téléchargement échoue, il reste possible de choisir le français.
 
-Pour changer : **Paramètres → Langue → Changer…**, puis **Enregistrer**. Le fichier demandé est récupéré en arrière-plan s’il n’est pas déjà disponible. La traduction est appliquée sans redémarrage ; les noms des logiciels et les commandes ne sont pas modifiés. Aucune bibliothèque HTTP ou interface web supplémentaire n’est embarquée : le téléchargement utilise WinHTTP de Windows.
+Pour changer : **Paramètres → Langue → Changer…**, puis **Enregistrer**. Le fichier demandé est récupéré en arrière-plan s’il n’est pas déjà disponible. Avec les mises à jour, seule la langue téléchargée sélectionnée est actualisée une fois par version pour traduire les nouveaux textes. La traduction est appliquée sans redémarrage ; les noms des logiciels et les commandes ne sont pas modifiés. Aucune bibliothèque HTTP ou interface web supplémentaire n’est embarquée : le téléchargement utilise WinHTTP de Windows.
 
 Les traductions sont modifiables et versionnées dans [`locales/`](locales/README.md).
+
+## Mises à jour automatiques
+
+Elles sont activées par défaut et peuvent être désactivées dans **Paramètres → Mises à jour automatiques**. Une première vérification est prévue trente secondes après le lancement, puis au maximum une fois par jour, sur un worker séparé. L’ouverture du menu et la frappe n’attendent aucune connexion. **Rechercher une mise à jour**, dans le menu de l’icône près de l’horloge, permet aussi une vérification manuelle.
+
+Le téléchargement vient uniquement des releases officielles de ce dépôt, via HTTPS. Sa taille, son empreinte SHA-256 publiée par GitHub et son format Windows sont vérifiés avant toute exécution. Les redirections restent limitées aux hôtes GitHub prévus. Aucun compte, jeton GitHub ou nouveau service n’est requis.
+
+La mise à jour attend que le menu, les paramètres et À propos soient fermés, qu’aucun lancement ou opération de logiciel ne soit en cours, et qu’aucun minuteur ne reste présent, même en pause ou terminé sans acquittement. Une seconde validation juste avant l’arrêt protège contre une réouverture ou un nouveau minuteur. Le helper attend la fin complète de l’ancien processus, remplace le programme puis le relance en arrière-plan. Les réglages, données, historique d’usage et choix de raccourcis sont conservés.
+
+Une installation utilise le Setup silencieux existant ; une version portable remplace uniquement son `supermenu.exe` dans le même dossier. Un échec de remplacement conserve et relance la version précédente lorsqu’elle est encore disponible. Le dernier résultat est enregistré dans `%LOCALAPPDATA%\SuperMenu\updates\result.txt`. La mise à jour ne supprime aucun fichier personnel. L’historique du presse-papiers reste uniquement en mémoire : il se vide au redémarrage, comme lors d’une fermeture normale.
+
+**Inclure les préversions** est activé par défaut pour les versions 0.x ; une nouvelle installation 1.x vise les versions stables. Les brouillons, versions égales ou plus anciennes sont ignorés. La langue téléchargée déjà sélectionnée est actualisée une fois par version de l’application pour traduire ses nouveaux textes ; le français reste intégré. Désactiver les mises à jour automatiques empêche les nouvelles vérifications et leur application automatique.
+
+Une première installation de la 0.6.18 est nécessaire pour bénéficier de ce mécanisme : les versions antérieures ne le contiennent pas.
 
 ## Utiliser
 

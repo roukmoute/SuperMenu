@@ -158,6 +158,58 @@ pub fn ensure_cached(language: &str, cache_root: &Path) -> Result<(), String> {
     fetch_pack(language, cache_root, download).map(|_| ())
 }
 
+/// Refresh only the selected downloadable language once per application version.
+/// The caller reloads the cached pack on the UI thread after a successful update.
+pub fn refresh_cached_for_version(language: &str, cache_root: &Path) -> Result<bool, String> {
+    refresh_pack(
+        language,
+        cache_root,
+        env!("CARGO_PKG_VERSION"),
+        |language| download_from(language, concat!("v", env!("CARGO_PKG_VERSION"))),
+    )
+}
+
+fn refresh_pack<F>(
+    language: &str,
+    cache_root: &Path,
+    version: &str,
+    downloader: F,
+) -> Result<bool, String>
+where
+    F: FnOnce(&str) -> Result<Vec<u8>, String>,
+{
+    if language.is_empty() || language == "fr" {
+        return Ok(false);
+    }
+    let path = cache_path(language, cache_root)?;
+    let marker = path.with_extension("version");
+    let _guard = DOWNLOAD_LOCK
+        .lock()
+        .map_err(|_| "Le chargement de la traduction est indisponible.".to_string())?;
+    let mut recorded_version = String::new();
+    if fs::File::open(&marker)
+        .and_then(|file| {
+            file.take(version.len() as u64 + 1)
+                .read_to_string(&mut recorded_version)
+        })
+        .is_ok()
+        && recorded_version == version
+        && path.is_file()
+    {
+        return Ok(false);
+    }
+    let bytes = downloader(language)?;
+    parse_pack(&bytes, language)?;
+    save_pack(&bytes, &path).map_err(|_| {
+        "Impossible d’enregistrer la traduction pour une utilisation hors ligne.".to_string()
+    })?;
+    // Never mark a failed/invalid download as current. Both files are replaced
+    // atomically; a failed marker write permits a later retry of this version.
+    save_pack(version.as_bytes(), &marker)
+        .map_err(|_| "Impossible d’enregistrer la version de la traduction.".to_string())?;
+    Ok(true)
+}
+
 fn activate(pack: LanguagePack) -> Result<(), String> {
     let mut active = active_pack()
         .write()
@@ -357,137 +409,18 @@ fn replace_file(source: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(source, destination)
 }
 
-#[cfg(windows)]
 fn download(language: &str) -> Result<Vec<u8>, String> {
-    use std::ffi::c_void;
-    use std::ptr::{null, null_mut};
-    use std::time::{Duration, Instant};
-    use windows_sys::Win32::Networking::WinHttp::*;
+    download_from(language, "main")
+}
 
-    struct InternetHandle(*mut c_void);
-    impl InternetHandle {
-        fn new(pointer: *mut c_void) -> Result<Self, String> {
-            if pointer.is_null() {
-                Err(network_error())
-            } else {
-                Ok(Self(pointer))
-            }
-        }
-    }
-    impl Drop for InternetHandle {
-        fn drop(&mut self) {
-            unsafe {
-                WinHttpCloseHandle(self.0);
-            }
-        }
-    }
-    fn wide(value: &str) -> Vec<u16> {
-        value.encode_utf16().chain(Some(0)).collect()
-    }
-    fn check(result: i32) -> Result<(), String> {
-        if result == 0 {
-            Err(network_error())
-        } else {
-            Ok(())
-        }
-    }
-    fn network_error() -> String {
-        format!(
-            "Impossible de télécharger la traduction : {}",
-            io::Error::last_os_error()
-        )
-    }
-
+fn download_from(language: &str, revision: &str) -> Result<Vec<u8>, String> {
     if !is_supported(language) || language == "fr" {
         return Err("Cette langue n’utilise pas de fichier de traduction.".into());
     }
-    let started = Instant::now();
-    let user_agent = wide("SuperMenu language pack");
-    let host = wide("raw.githubusercontent.com");
-    let path = wide(&format!(
-        "/roukmoute/SuperMenu/main/locales/{language}.json"
-    ));
-    let verb = wide("GET");
-    unsafe {
-        let session = InternetHandle::new(WinHttpOpen(
-            user_agent.as_ptr(),
-            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-            null(),
-            null(),
-            0,
-        ))?;
-        check(WinHttpSetTimeouts(session.0, 3000, 5000, 5000, 5000))?;
-        let protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-        check(WinHttpSetOption(
-            session.0,
-            WINHTTP_OPTION_SECURE_PROTOCOLS,
-            (&protocols as *const u32).cast(),
-            std::mem::size_of::<u32>() as u32,
-        ))?;
-        let connection = InternetHandle::new(WinHttpConnect(session.0, host.as_ptr(), 443, 0))?;
-        let request = InternetHandle::new(WinHttpOpenRequest(
-            connection.0,
-            verb.as_ptr(),
-            path.as_ptr(),
-            null(),
-            null(),
-            null(),
-            WINHTTP_FLAG_SECURE,
-        ))?;
-        // Keep the download on the fixed HTTPS host; an unexpected redirect is an error.
-        let redirects = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-        check(WinHttpSetOption(
-            request.0,
-            WINHTTP_OPTION_REDIRECT_POLICY,
-            (&redirects as *const u32).cast(),
-            std::mem::size_of::<u32>() as u32,
-        ))?;
-        check(WinHttpSendRequest(request.0, null(), 0, null(), 0, 0, 0))?;
-        check(WinHttpReceiveResponse(request.0, null_mut()))?;
-        let mut status = 0_u32;
-        let mut status_bytes = std::mem::size_of::<u32>() as u32;
-        check(WinHttpQueryHeaders(
-            request.0,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            null(),
-            (&mut status as *mut u32).cast(),
-            &mut status_bytes,
-            null_mut(),
-        ))?;
-        if status != 200 {
-            return Err(format!(
-                "Le téléchargement de la traduction a échoué (HTTP {status})."
-            ));
-        }
-        let mut bytes = Vec::new();
-        let mut buffer = [0_u8; 8192];
-        loop {
-            if started.elapsed() > Duration::from_secs(20) {
-                return Err(
-                    "Le téléchargement de la traduction a dépassé le délai autorisé.".into(),
-                );
-            }
-            let mut received = 0_u32;
-            check(WinHttpReadData(
-                request.0,
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                &mut received,
-            ))?;
-            if received == 0 {
-                return Ok(bytes);
-            }
-            if bytes.len() + received as usize > MAX_PACK_BYTES {
-                return Err("Le fichier de traduction est trop volumineux.".into());
-            }
-            bytes.extend_from_slice(&buffer[..received as usize]);
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn download(_language: &str) -> Result<Vec<u8>, String> {
-    Err("Le téléchargement de traductions nécessite Windows.".into())
+    let url = format!(
+        "https://raw.githubusercontent.com/roukmoute/SuperMenu/{revision}/locales/{language}.json"
+    );
+    crate::http::get(&url, MAX_PACK_BYTES)
 }
 
 #[cfg(test)]
@@ -692,5 +625,77 @@ mod tests {
             .is_err());
         }
         assert_eq!(fs::read_dir(&temporary.0).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn version_refresh_skips_builtin_languages_and_rejects_unsupported_paths() {
+        let temporary = Temporary::new();
+        let directory = temporary.0.join("absent");
+        for language in ["", "fr"] {
+            assert!(!refresh_pack(language, &directory, "0.6.18", |_| {
+                panic!("The built-in language must not download")
+            })
+            .unwrap());
+        }
+        for language in ["../en", "en.json", "EN", "de", "en\0"] {
+            assert!(refresh_pack(language, &directory, "0.6.18", |_| {
+                panic!("Invalid language reached the downloader")
+            })
+            .is_err());
+        }
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn version_refresh_replaces_only_selected_cache_then_skips_the_same_version() {
+        let temporary = Temporary::new();
+        let path = temporary.0.join("en.json");
+        let marker = temporary.0.join("en.version");
+        fs::write(&path, b"old cache").unwrap();
+        fs::write(&marker, b"0.6.17").unwrap();
+        fs::write(temporary.0.join("other.json"), b"unselected pack").unwrap();
+        assert!(refresh_pack("en", &temporary.0, "0.6.18", |language| {
+            assert_eq!(language, "en");
+            Ok(english())
+        })
+        .unwrap());
+        assert_eq!(fs::read(&path).unwrap(), english());
+        assert_eq!(fs::read(&marker).unwrap(), b"0.6.18");
+        assert_eq!(
+            fs::read(temporary.0.join("other.json")).unwrap(),
+            b"unselected pack"
+        );
+        assert!(!refresh_pack("en", &temporary.0, "0.6.18", |_| {
+            panic!("An up-to-date pack must not download twice")
+        })
+        .unwrap());
+        // Losing the pack must not let a surviving marker suppress recovery.
+        fs::remove_file(&path).unwrap();
+        assert!(refresh_pack("en", &temporary.0, "0.6.18", |_| Ok(english())).unwrap());
+        assert_eq!(fs::read_dir(&temporary.0).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn invalid_or_failed_version_refresh_preserves_pack_and_version_marker() {
+        let temporary = Temporary::new();
+        let path = temporary.0.join("en.json");
+        let marker = temporary.0.join("en.version");
+        fs::write(&path, english()).unwrap();
+        fs::write(&marker, b"0.6.17").unwrap();
+        for response in [Err("offline".into()), Ok(b"invalid pack".to_vec())] {
+            assert!(refresh_pack("en", &temporary.0, "0.6.18", |_| response).is_err());
+            assert_eq!(fs::read(&path).unwrap(), english());
+            assert_eq!(fs::read(&marker).unwrap(), b"0.6.17");
+            assert_eq!(fs::read_dir(&temporary.0).unwrap().count(), 2);
+        }
+    }
+
+    #[test]
+    fn version_refresh_records_no_marker_when_pack_write_fails() {
+        let temporary = Temporary::new();
+        fs::create_dir(temporary.0.join("en.json")).unwrap();
+        assert!(refresh_pack("en", &temporary.0, "0.6.18", |_| Ok(english())).is_err());
+        assert!(!temporary.0.join("en.version").exists());
+        assert_eq!(fs::read_dir(&temporary.0).unwrap().count(), 1);
     }
 }

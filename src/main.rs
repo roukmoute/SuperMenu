@@ -7,6 +7,7 @@ mod cleanup;
 mod com;
 mod config;
 mod core;
+mod http;
 mod i18n;
 mod installer;
 mod language_dialog;
@@ -24,6 +25,7 @@ mod timer_runtime;
 mod ui;
 mod unicode;
 mod uninstall_inventory;
+mod updater;
 
 /// Written to the `--report` path when a smoke test fails before its own report.
 #[derive(serde::Serialize)]
@@ -33,6 +35,9 @@ struct SmokeFailure<'a> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = updater::run_from_args(&args) {
+        std::process::exit(code);
+    }
     if let Some(code) = setup_control::run_from_args(&args) {
         std::process::exit(code);
     }

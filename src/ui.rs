@@ -1,7 +1,7 @@
 use crate::{
     about, app_icons, brand_icon, catalog, config, core, i18n, installer, language_dialog,
     launch_feedback, native, packages, paint_buffer::PaintBuffer, steam, timer, timer_alert,
-    timer_runtime,
+    timer_runtime, updater,
 };
 use core::{Item, Kind};
 use std::cell::{Cell, RefCell};
@@ -41,6 +41,7 @@ thread_local! { static DEFERRED:Cell<u8>=const {Cell::new(0)}; }
 thread_local! { static DEFERRED_INSTALL:RefCell<Vec<(usize,isize)>>=const {RefCell::new(Vec::new())}; }
 thread_local! { static DEFERRED_REMOVE:RefCell<Vec<(usize,isize)>>=const {RefCell::new(Vec::new())}; }
 thread_local! { static DEFERRED_TIMER_ACK:RefCell<Vec<usize>>=const {RefCell::new(Vec::new())}; }
+thread_local! { static DEFERRED_UPDATE:RefCell<Vec<(u32,usize,isize)>>=const {RefCell::new(Vec::new())}; }
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -139,6 +140,12 @@ struct State {
     visible_rows: usize,
     previous: HWND,
     settings_open: bool,
+    updater: Option<updater::Updater>,
+    pending_update: Option<updater::Pending>,
+    manual_update_check: bool,
+    pending_update_manual: bool,
+    update_check_previews: bool,
+    update_installing: bool,
     smoke: bool,
     smoke_fixture: bool,
     smoke_report: Option<String>,
@@ -744,6 +751,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
             visible_rows: 9,
             previous: null_mut(),
             settings_open: false,
+            updater: (!smoke && !fixture_mode).then(updater::Updater::new),
+            pending_update: None,
+            manual_update_check: false,
+            pending_update_manual: false,
+            update_check_previews: false,
+            update_installing: false,
             smoke,
             smoke_fixture: fixture_mode,
             smoke_report: args
@@ -861,6 +874,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
             AddClipboardFormatListener(hwnd);
             tray(&state, NIM_ADD);
             state.watcher = native::watch(hwnd, &state.settings.file_roots);
+            if state.settings.auto_update {
+                SetTimer(hwnd, updater::CHECK_TIMER, 30_000, None);
+            }
         }
         if !args.iter().any(|a| a == "--background") || smoke {
             show(&mut state);
@@ -911,6 +927,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
         state.timers.borrow_mut().shutdown();
         timer_runtime::unbind();
         KillTimer(hwnd, TIMER_TICK);
+        KillTimer(hwnd, updater::CHECK_TIMER);
+        KillTimer(hwnd, updater::APPLY_TIMER);
         tray(&state, NIM_DELETE);
         DestroyWindow(hwnd);
         for font in state.fonts {
@@ -991,6 +1009,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             DEFERRED.with(|d| d.set(d.get() | 16));
         } else if msg == ABOUT {
             DEFERRED.with(|d| d.set(d.get() | 32));
+        } else if msg == updater::UPDATE_READY {
+            DEFERRED.with(|d| d.set(d.get() | 128));
+        } else if msg == updater::UPDATE_COMMIT || msg == updater::UPDATE_ABORTED {
+            DEFERRED_UPDATE.with(|d| d.borrow_mut().push((msg, wp, lp)));
         } else if msg == WM_TIMER && wp == TIMER_TICK {
             DEFERRED.with(|d| d.set(d.get() | 8));
         } else if msg == timer_alert::WM_TIMER_ALERT_DISMISSED {
@@ -1024,6 +1046,40 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
         }
         ABOUT => {
             show_about(s);
+            0
+        }
+        updater::UPDATE_READY => {
+            process_update_result(s);
+            0
+        }
+        updater::UPDATE_COMMIT => {
+            if !s.smoke
+                && s.update_installing
+                && s.pending_update.is_some()
+                && (s.settings.auto_update || s.pending_update_manual)
+                && update_safe_to_apply(s)
+                && s.updater
+                    .as_mut()
+                    .is_some_and(|updater| updater.accept_commit(wp))
+            {
+                PostQuitMessage(0);
+            }
+            0
+        }
+        updater::UPDATE_ABORTED => {
+            if !s.smoke && s.updater.as_mut().is_some_and(|updater| updater.abort(wp)) {
+                s.update_installing = false;
+                if lp == 3 && s.pending_update.is_some() {
+                    SetTimer(hwnd, updater::APPLY_TIMER, 5 * 60 * 1_000, None);
+                } else {
+                    s.pending_update = None;
+                    s.pending_update_manual = false;
+                    KillTimer(hwnd, updater::APPLY_TIMER);
+                }
+                if s.settings.auto_update && s.pending_update.is_none() {
+                    SetTimer(hwnd, updater::CHECK_TIMER, 30_000, None);
+                }
+            }
             0
         }
         ICONS_READY => {
@@ -1325,6 +1381,25 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                     wide(&i18n::tr("Actualiser l'index")).as_ptr(),
                 );
                 AppendMenuW(menu, MF_STRING, 5, wide(&i18n::tr("Minuteurs")).as_ptr());
+                let checking = s.updater.as_ref().is_some_and(updater::Updater::is_busy);
+                let update_label = if checking {
+                    "Recherche de mise à jour en cours…"
+                } else if s.pending_update.is_some() || s.update_installing {
+                    "Mise à jour prête"
+                } else {
+                    "Rechercher une mise à jour"
+                };
+                AppendMenuW(
+                    menu,
+                    MF_STRING
+                        | if checking || s.update_installing {
+                            MF_GRAYED
+                        } else {
+                            0
+                        },
+                    9,
+                    wide(&i18n::tr(update_label)).as_ptr(),
+                );
                 AppendMenuW(
                     menu,
                     MF_STRING,
@@ -1367,6 +1442,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
                         settings(s);
                     }
                     3 => refresh_index_and_icons(s),
+                    9 => check_for_updates(s, true),
                     7 => show_about(s),
                     5 => {
                         show(s);
@@ -1391,7 +1467,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             0
         }
         WM_TIMER => {
-            if wp == TIMER_TICK {
+            if wp == updater::CHECK_TIMER {
+                KillTimer(hwnd, updater::CHECK_TIMER);
+                if s.settings.auto_update && s.updater.is_some() {
+                    SetTimer(hwnd, updater::CHECK_TIMER, 12 * 60 * 60 * 1_000, None);
+                    check_for_updates(s, false);
+                }
+            } else if wp == updater::APPLY_TIMER {
+                apply_pending_update(s);
+            } else if wp == TIMER_TICK {
                 tick_timers(s);
             } else if wp == 98 && s.feedback_test {
                 KillTimer(hwnd, 98);
@@ -1432,6 +1516,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             KillTimer(hwnd, 1);
             KillTimer(hwnd, 99);
             KillTimer(hwnd, TIMER_TICK);
+            KillTimer(hwnd, updater::CHECK_TIMER);
+            KillTimer(hwnd, updater::APPLY_TIMER);
             PostQuitMessage(0);
             0
         }
@@ -3609,6 +3695,179 @@ fn about_context(s: &State) -> about::Context {
     }
 }
 
+fn can_apply_update(
+    menu_visible: bool,
+    settings_open: bool,
+    about_visible: bool,
+    launches_pending: bool,
+    software_pending: bool,
+    timer_count: usize,
+) -> bool {
+    !menu_visible
+        && !settings_open
+        && !about_visible
+        && !launches_pending
+        && !software_pending
+        && timer_count == 0
+}
+
+unsafe fn update_safe_to_apply(s: &State) -> bool {
+    can_apply_update(
+        IsWindowVisible(s.hwnd) != 0,
+        s.settings_open,
+        s.about
+            .as_ref()
+            .is_some_and(|window| IsWindowVisible(window.hwnd()) != 0),
+        !s.launches.pending.is_empty(),
+        !s.installations.pending.is_empty() || !s.removals.pending.is_empty(),
+        s.timers.try_borrow().map_or(usize::MAX, |runtime| {
+            runtime.book.snapshots(Instant::now()).len()
+        }),
+    )
+}
+
+unsafe fn update_message(s: &mut State, message: &str, error: bool) {
+    s.settings_open = true;
+    MessageBoxW(
+        s.hwnd,
+        wide(message).as_ptr(),
+        wide(&i18n::tr("Super Menu · Mise à jour")).as_ptr(),
+        MB_OK
+            | if error {
+                MB_ICONWARNING
+            } else {
+                MB_ICONINFORMATION
+            },
+    );
+    s.settings_open = false;
+    finish_modal(s);
+}
+
+unsafe fn pending_update_message(s: &mut State) {
+    if let Some(pending) = &s.pending_update {
+        let message = i18n::fmt(
+            "Super Menu {version} est prêt. La mise à jour sera appliquée lorsque le menu sera fermé et les opérations terminées. Les réglages seront conservés.",
+            &[("version", pending.version.clone())],
+        );
+        update_message(s, &message, false);
+    }
+}
+
+unsafe fn check_for_updates(s: &mut State, manual: bool) {
+    if s.smoke || s.update_installing || (!manual && !s.settings.auto_update) {
+        return;
+    }
+    if s.pending_update.is_some() {
+        if manual {
+            s.pending_update_manual = true;
+            SetTimer(s.hwnd, updater::APPLY_TIMER, 30_000, None);
+            pending_update_message(s);
+        }
+        return;
+    }
+    let Some(updater) = s.updater.as_mut() else {
+        return;
+    };
+    if manual {
+        s.manual_update_check = true;
+    }
+    if updater.check(s.hwnd, s.settings.update_prereleases, manual) {
+        s.update_check_previews = s.settings.update_prereleases;
+    } else if !updater.is_busy() {
+        s.manual_update_check = false;
+        if manual {
+            update_message(
+                s,
+                &i18n::tr("La recherche de mise à jour ne peut pas démarrer."),
+                true,
+            );
+        }
+    }
+}
+
+unsafe fn process_update_result(s: &mut State) {
+    let Some(result) = s.updater.as_mut().and_then(updater::Updater::take_result) else {
+        return;
+    };
+    if s.updater
+        .as_ref()
+        .is_some_and(updater::Updater::take_language_refresh)
+    {
+        let cache = config::data_dir().join("languages");
+        if i18n::load_cached(&s.settings.language, &cache).is_ok() {
+            refresh_language(s);
+            refresh_results(s);
+        }
+    }
+    let manual = std::mem::take(&mut s.manual_update_check);
+    if s.smoke || (!manual && !s.settings.auto_update) {
+        return;
+    }
+    if s.update_check_previews != s.settings.update_prereleases {
+        check_for_updates(s, manual);
+        return;
+    }
+    match result {
+        Ok(Some(pending)) => {
+            s.pending_update = Some(pending);
+            s.pending_update_manual = manual;
+            SetTimer(s.hwnd, updater::APPLY_TIMER, 30_000, None);
+            if manual {
+                pending_update_message(s);
+            }
+        }
+        Ok(None) if manual => update_message(s, &i18n::tr("Super Menu est à jour."), false),
+        Err(error) if manual => update_message(
+            s,
+            &i18n::fmt(
+                "Recherche de mise à jour impossible : {error}",
+                &[("error", i18n::tr(&error))],
+            ),
+            true,
+        ),
+        _ => {}
+    }
+}
+
+unsafe fn apply_pending_update(s: &mut State) {
+    if s.smoke || s.update_installing {
+        return;
+    }
+    if !s.settings.auto_update && !s.pending_update_manual {
+        s.pending_update = None;
+    }
+    let Some(pending) = s.pending_update.as_ref() else {
+        KillTimer(s.hwnd, updater::APPLY_TIMER);
+        return;
+    };
+    if !update_safe_to_apply(s) {
+        return;
+    }
+    if let Some(updater) = s.updater.as_mut() {
+        match updater.install(pending.clone()) {
+            Ok(()) => s.update_installing = true,
+            Err(error) => {
+                let manual = std::mem::take(&mut s.pending_update_manual);
+                s.pending_update = None;
+                KillTimer(s.hwnd, updater::APPLY_TIMER);
+                if s.settings.auto_update {
+                    SetTimer(s.hwnd, updater::CHECK_TIMER, 30_000, None);
+                }
+                if manual {
+                    update_message(
+                        s,
+                        &i18n::fmt(
+                            "Mise à jour impossible : {error}",
+                            &[("error", i18n::tr(&error))],
+                        ),
+                        true,
+                    );
+                }
+            }
+        }
+    }
+}
+
 unsafe fn show_about(s: &mut State) {
     let context = about_context(s);
     // Opening the information window should keep focus there instead of
@@ -3676,7 +3935,20 @@ unsafe fn settings(s: &mut State) {
                 icons.clear();
             }
         }
+        if s.settings.update_prereleases != settings.update_prereleases {
+            s.pending_update = None;
+            s.pending_update_manual = false;
+            KillTimer(s.hwnd, updater::APPLY_TIMER);
+        }
         s.settings = settings;
+        if !s.settings.auto_update && !s.pending_update_manual {
+            s.pending_update = None;
+            KillTimer(s.hwnd, updater::APPLY_TIMER);
+        }
+        KillTimer(s.hwnd, updater::CHECK_TIMER);
+        if s.settings.auto_update && s.updater.is_some() {
+            SetTimer(s.hwnd, updater::CHECK_TIMER, 30_000, None);
+        }
         s.timers.borrow_mut().settings = s.settings.clone();
         s.palette = Palette::from(&s.settings);
         s.clipboard.clear();
@@ -3859,6 +4131,9 @@ unsafe fn replay_deferred(hwnd: HWND) {
     if deferred & 32 != 0 {
         PostMessageW(hwnd, ABOUT, 0, 0);
     }
+    if deferred & 128 != 0 {
+        PostMessageW(hwnd, updater::UPDATE_READY, 0, 0);
+    }
     DEFERRED_TIMER_ACK.with(|d| {
         for generation in d.borrow_mut().drain(..) {
             PostMessageW(hwnd, timer_alert::WM_TIMER_ALERT_DISMISSED, generation, 0);
@@ -3872,6 +4147,11 @@ unsafe fn replay_deferred(hwnd: HWND) {
     DEFERRED_REMOVE.with(|d| {
         for (wp, lp) in d.borrow_mut().drain(..) {
             PostMessageW(hwnd, installer::REMOVE_DONE, wp, lp);
+        }
+    });
+    DEFERRED_UPDATE.with(|d| {
+        for (msg, token, parameter) in d.borrow_mut().drain(..) {
+            PostMessageW(hwnd, msg, token, parameter);
         }
     });
 }
@@ -3935,7 +4215,7 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
                 WS_CHILD | WS_VISIBLE | style,
                 scale(x),
                 scale(if y >= 253 {
-                    y + 78
+                    y + 108
                 } else if y >= 54 {
                     y + 42
                 } else {
@@ -4130,6 +4410,37 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         },
         0,
     );
+    let mut update_controls = [null_mut(); 2];
+    for (index, (x, label, id, enabled)) in [
+        (22, "Mises à jour automatiques", 213, s.settings.auto_update),
+        (
+            317,
+            "Inclure les versions d’essai",
+            214,
+            s.settings.update_prereleases,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let checkbox = CreateWindowExW(
+            0,
+            wide("BUTTON").as_ptr(),
+            wide(&i18n::tr(label)).as_ptr(),
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            scale(x),
+            scale(325),
+            scale(285),
+            scale(26),
+            hwnd,
+            id as _,
+            instance,
+            null(),
+        );
+        SendMessageW(checkbox, WM_SETFONT, s.fonts[1] as usize, 1);
+        SendMessageW(checkbox, BM_SETCHECK, usize::from(enabled), 0);
+        update_controls[index] = checkbox;
+    }
     control(
         "STATIC",
         "Dossiers indexés (un dossier par ligne)",
@@ -4147,7 +4458,7 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         22,
         283,
         580,
-        98,
+        68,
         206,
     );
     control(
@@ -4155,7 +4466,7 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         "Recherche web · {query} sera remplacé",
         0,
         22,
-        398,
+        368,
         580,
         24,
         0,
@@ -4165,7 +4476,7 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         &s.settings.web_search_template,
         ES_AUTOHSCROLL as u32 | WS_TABSTOP,
         22,
-        427,
+        397,
         580,
         28,
         207,
@@ -4175,7 +4486,7 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         "Éditer le JSON",
         BS_PUSHBUTTON as u32 | WS_TABSTOP,
         22,
-        490,
+        460,
         155,
         34,
         208,
@@ -4185,7 +4496,7 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         "Annuler",
         BS_PUSHBUTTON as u32 | WS_TABSTOP,
         367,
-        490,
+        460,
         105,
         34,
         209,
@@ -4195,12 +4506,13 @@ unsafe fn settings_dialog(s: &State) -> Option<config::Settings> {
         "Enregistrer",
         BS_DEFPUSHBUTTON as u32 | WS_TABSTOP,
         485,
-        490,
+        460,
         117,
         34,
         210,
     );
     dialog.controls = vec![hotkey, theme, accent, clip, startup, roots, web, steam];
+    dialog.controls.extend(update_controls);
     EnableWindow(s.hwnd, 0);
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
@@ -4271,7 +4583,7 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: usize, lp: isi
                 0
             }
             210 | 1 => {
-                if d.controls.len() < 8 {
+                if d.controls.len() < 10 {
                     return 0;
                 }
                 let mut settings = d.source.clone();
@@ -4302,6 +4614,10 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: usize, lp: isi
                     SendMessageW(d.controls[3], BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
                 settings.steam_enabled =
                     SendMessageW(d.controls[7], BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
+                settings.auto_update =
+                    SendMessageW(d.controls[8], BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
+                settings.update_prereleases =
+                    SendMessageW(d.controls[9], BM_GETCHECK, 0, 0) == BST_CHECKED as isize;
                 settings.file_roots = control_text(d.controls[5])
                     .lines()
                     .map(str::trim)
@@ -4345,6 +4661,54 @@ unsafe fn control_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_waits_until_every_window_and_operation_is_idle() {
+        assert!(can_apply_update(false, false, false, false, false, 0));
+        for blocker in 0..5 {
+            let mut active = [false; 5];
+            active[blocker] = true;
+            assert!(!can_apply_update(
+                active[0], active[1], active[2], active[3], active[4], 0
+            ));
+        }
+        assert!(!can_apply_update(false, false, false, false, false, 1));
+    }
+
+    #[test]
+    fn paused_and_unacknowledged_timers_also_block_updates() {
+        let now = Instant::now();
+        let mut book = timer::TimerBook::new();
+        let id = book.start(timer::parse("1s Thé").unwrap(), now).unwrap();
+        book.pause(id, now).unwrap();
+        assert!(!can_apply_update(
+            false,
+            false,
+            false,
+            false,
+            false,
+            book.snapshots(now).len()
+        ));
+        book.resume(id, now).unwrap();
+        let finished = now + Duration::from_secs(2);
+        assert!(!can_apply_update(
+            false,
+            false,
+            false,
+            false,
+            false,
+            book.snapshots(finished).len()
+        ));
+        book.acknowledge(id, finished).unwrap();
+        assert!(can_apply_update(
+            false,
+            false,
+            false,
+            false,
+            false,
+            book.snapshots(finished).len()
+        ));
+    }
 
     #[test]
     fn only_hidden_file_changes_are_deferred() {
