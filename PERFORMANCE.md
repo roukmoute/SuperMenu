@@ -2,6 +2,40 @@
 
 **English** · [Français](PERFORMANCE.fr.md)
 
+## Version 0.6.19
+
+The local stable binary grows from **1 079 808 to 1 080 320 bytes (+512 bytes, +0.05%)**, with the same MSVC toolchain, Release profile and static CRT options. These measurements used the corrected source before changing the version stamp from 0.6.18 to 0.6.19.
+
+Packaged applications retain their display names and gain a prepared product-name alias from their Shell identity; distinct launch targets no longer disappear when their display names coincide. Aliases reuse the existing search cache: no new `Item` field, dependency or system call while typing is added. The desktop Codex application remains separate from the Codex CLI installation suggestion.
+
+### Comparative measurements
+
+Historical eight-item performance fixture, light theme, DPI 96, actual parent `WM_PAINT`, three launches, thirty warmups and three hundred measurements per series. Order: reference / candidate / candidate / reference; shared machine. Median / p95 in milliseconds:
+
+| Series | First internal draw, median | Parent painting | Search then painting |
+| --- | ---: | ---: | ---: |
+| Reference A | 80.189 | 2.064 / 3.654 | 3.566 / 5.576 |
+| Candidate A | 58.717 | 1.558 / 2.123 | 3.696 / 5.858 |
+| Candidate B | 70.233 | 1.796 / 2.799 | 3.760 / 5.954 |
+| Reference B | 76.392 | 1.785 / 2.306 | 3.821 / 6.318 |
+
+Menu search and painting are comparable across these series; warm private memory overlaps (**2.48–2.52 MiB**) and counters stay at **28 GDI, 26 USER**. Internal first-draw timing excludes process loading, the child EDIT and DWM presentation; Windows caches are uncontrolled. The inert fixture measures menu work, not installed application icons or a complete live catalogue.
+
+The in-memory engine benchmark uses 20 000 entries, top nine results, one hundred warmups and four hundred samples per scenario. Median / p95 in milliseconds:
+
+| Series | Simple index | Mixed index: files | Apps and cached package actions |
+| --- | ---: | ---: | ---: |
+| Reference A | 0.629 / 3.139 | 0.749 / 3.704 | 0.649 / 1.311 |
+| Candidate A | 0.679 / 3.365 | 0.817 / 4.077 | 0.644 / 1.424 |
+| Candidate B | 0.674 / 3.312 | 0.949 / 4.530 | 0.685 / 1.571 |
+| Reference B | 0.672 / 3.233 | 0.793 / 3.984 | 0.896 / 2.414 |
+
+The files scenario is slower in both initial candidate series; this is not reproduced in a final-version comparison: reference medians **0.509–0.543 ms**, candidate **0.501–0.505 ms** (p95 **2.894–2.959** versus **2.770–2.799 ms**). In that final comparison, app-action medians are **0.534–0.562** versus **0.527–0.528 ms**, while the simple-index candidate remains higher (**0.393–0.461** versus **0.362–0.373 ms**). The shared-machine series contain jitter, do not isolate its cause and prove neither a general speedup nor the absence of every regression. Indexing, external activation and cold startup are excluded from the engine benchmark.
+
+**271 Rust tests** pass; three optional probes are ignored by default. The read-only real-catalogue Codex probe also passes. **1 300 Windows assertions** pass locally: 495 launcher, 278 About, 171 translations, 40 console, 170 updater and 146 NSIS installer assertions. The final version-stamped binary retains the measured size of **1 080 320 bytes**.
+
+SHA-256 of the measured local candidate, before the version-stamp change: `1743652338965541A71A5193A1E34211CE7147362A9C14339E48441203CE02BE`.
+
 ## Version 0.6.18
 
 Automatic updating shares the WinHTTP transport already used for translations. No runtime dependency is added. The local stable binary grows from **1 021 440 to 1 079 808 bytes**, an increase of **58 368 bytes (+5.71%, 57 KiB)**. It is about **1.03 MiB**; the “under 1 MiB” description of earlier versions therefore no longer applies to this build. The stable MSVC toolchain, Release profile and static CRT options are identical.

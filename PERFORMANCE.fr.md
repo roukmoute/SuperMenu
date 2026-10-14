@@ -2,6 +2,40 @@
 
 [English](PERFORMANCE.md) · **Français**
 
+## Version 0.6.19
+
+Le binaire local stable passe de **1 079 808 à 1 080 320 octets (+512 octets, +0,05 %)**, avec la même chaîne MSVC, le même profil Release et les mêmes options CRT statique. Ces mesures utilisent le code corrigé avant le passage du numéro de version de 0.6.18 à 0.6.19.
+
+Les applications empaquetées conservent leur nom affiché et gagnent un alias de produit préparé depuis leur identité Shell ; les cibles de lancement distinctes ne disparaissent plus quand leurs noms affichés coïncident. Les alias réutilisent le cache de recherche existant : aucun nouveau champ `Item`, dépendance ou appel système à la frappe. L'application Codex desktop reste distincte de la proposition d'installation du CLI Codex.
+
+### Mesures comparatives
+
+Fixture historique de huit éléments, thème clair, DPI 96, vraie peinture parent `WM_PAINT`, trois lancements, trente échauffements et trois cents mesures par série. Ordre référence / candidat / candidat / référence ; machine partagée. Médiane / p95 en millisecondes :
+
+| Série | Premier dessin interne, médiane | Peinture parent | Recherche puis peinture |
+| --- | ---: | ---: | ---: |
+| Référence A | 80,189 | 2,064 / 3,654 | 3,566 / 5,576 |
+| Candidat A | 58,717 | 1,558 / 2,123 | 3,696 / 5,858 |
+| Candidat B | 70,233 | 1,796 / 2,799 | 3,760 / 5,954 |
+| Référence B | 76,392 | 1,785 / 2,306 | 3,821 / 6,318 |
+
+Les recherches et peintures du menu sont comparables dans ces séries ; les mémoires privées après échauffement se recouvrent (**2,48–2,52 Mio**) et les compteurs restent à **28 GDI, 26 USER**. Le premier dessin interne exclut le chargement du processus, le contrôle EDIT enfant et la présentation DWM ; les caches Windows ne sont pas contrôlés. La fixture inerte mesure le menu, pas les icônes des applications installées ni un catalogue réel complet.
+
+Le benchmark du moteur en mémoire utilise 20 000 entrées, les neuf premiers résultats, cent échauffements et quatre cents échantillons par scénario. Médiane / p95 en millisecondes :
+
+| Série | Index simple | Index mixte : fichiers | Applications et actions de paquets en cache |
+| --- | ---: | ---: | ---: |
+| Référence A | 0,629 / 3,139 | 0,749 / 3,704 | 0,649 / 1,311 |
+| Candidat A | 0,679 / 3,365 | 0,817 / 4,077 | 0,644 / 1,424 |
+| Candidat B | 0,674 / 3,312 | 0,949 / 4,530 | 0,685 / 1,571 |
+| Référence B | 0,672 / 3,233 | 0,793 / 3,984 | 0,896 / 2,414 |
+
+Le scénario fichiers est plus lent dans les deux premières séries candidates ; cet écart n'est pas reproduit lors d'une comparaison de la version finale : médianes référence **0,509–0,543 ms**, candidat **0,501–0,505 ms** (p95 **2,894–2,959** contre **2,770–2,799 ms**). Dans cette comparaison finale, les médianes des actions d'applications sont **0,534–0,562** contre **0,527–0,528 ms**, tandis que l'index simple reste plus lent côté candidat (**0,393–0,461** contre **0,362–0,373 ms**). Les séries sur machine partagée contiennent du jitter, n'en isolent pas la cause et ne prouvent ni une accélération générale ni l'absence de toute régression. Le benchmark du moteur exclut l'indexation, les activations externes et le démarrage à froid.
+
+**271 tests Rust** passent ; trois sondes facultatives sont ignorées par défaut. La sonde Codex en lecture seule sur le vrai catalogue réussit également. **1 300 assertions Windows** passent localement : 495 lanceur, 278 À propos, 171 traductions, 40 console, 170 updater et 146 assertions de l'installateur NSIS. Le binaire final portant le nouveau numéro de version conserve la taille mesurée de **1 080 320 octets**.
+
+SHA-256 du candidat local mesuré, avant le changement de numéro de version : `1743652338965541A71A5193A1E34211CE7147362A9C14339E48441203CE02BE`.
+
 ## Version 0.6.18
 
 La mise à jour automatique partage le transport WinHTTP déjà utilisé par les traductions. Aucune dépendance d’exécution n’est ajoutée. Le binaire local stable passe de **1 021 440 à 1 079 808 octets**, soit **58 368 octets supplémentaires (+5,71 %, 57 Kio)**. Il fait environ **1,03 Mio** ; la mention « moins de 1 Mio » des versions précédentes ne s’applique donc plus à cette construction. La chaîne MSVC stable, le profil Release et les options CRT statique sont identiques.
