@@ -1,65 +1,67 @@
-# Tester Super Menu sous Windows
+# Testing Super Menu on Windows
 
-Les tests sont versionnés avec le projet. La même commande s'utilise sur un PC de développement et dans GitHub Actions :
+**English** · [Français](TESTING.fr.md)
+
+Tests are versioned with the project. The same command runs on a development PC and in GitHub Actions:
 
 ```powershell
 .\scripts\test.ps1
 ```
 
-Prérequis : Windows x64, PowerShell 7, Rust MSVC avec `rustfmt` et `clippy`, et les outils C++ de Visual Studio Build Tools. Le script vérifie le formatage et Clippy, exécute les tests Rust, compile le binaire Release, puis teste les vrais contrôles Win32 du programme. Une erreur d'assertion fait échouer la commande.
+Requirements: Windows x64, PowerShell 7, Rust MSVC with `rustfmt` and `clippy`, and Visual Studio Build Tools C++ tools. The script checks formatting and Clippy, runs Rust tests, builds the Release binary, then tests the program's actual Win32 controls. An assertion failure makes the command fail.
 
-Les tests des pictogrammes vérifient aussi les pixels rendus hors écran : neuf symboles de l’accueil, centrés à un pixel près, aux échelles Windows 100 %, 125 %, 150 % et 200 %. Ils contrôlent les contours asymétriques, les rectangles invalides et la restauration des paramètres GDI.
+Pictogram tests also check off-screen rendered pixels: nine home symbols, centered to within one pixel, at Windows scales of 100%, 125%, 150% and 200%. They check asymmetric bounds, invalid rectangles and restoration of GDI settings.
 
-## Couverture
+## Coverage
 
-| Suite | Comportements vérifiés |
+| Suite | Verified behavior |
 | --- | --- |
-| `cargo test --locked` | Classement et normalisation de recherche, indexation et cache, surveillance réelle des créations/renommages/suppressions et des cibles de raccourcis, configuration Steam facultative, déduplication des jeux et exclusion du cache, couverture des 236 entrées WinUtil, éditions et architectures distinctes, commandes Microsoft Store simulées, preuve d'absence de Chrome malgré une inscription restante, réinstallation ciblée et confirmation de l'exécutable, plans de nettoyage et préservation des données, minuteurs, état des lancements, icônes, collecte système et contrôles natifs isolés. |
-| `pwsh scripts/update-package-catalog.ps1 -Check` | Hash et taille du catalogue importé, régénération déterministe des identifiants et des sources, sans téléchargement ni installation. Également exécuté par les scripts de test et de distribution. |
-| `tests/windows/launcher.ps1` | Rafraîchissements de fichiers différés quand le menu est masqué, ouverture avec résultats immédiatement disponibles, priorité des notifications d’applications et demandes manuelles, recherche sur un index fixe, applications par défaut et fichiers explicites, installation de Chrome absent avec ou sans préfixe, absence de résultats Telegram lors d'une recherche Steam, maintien de la sélection après plusieurs notifications d’index (accueil défilé et recherche), vraies peintures WM_PAINT et redimensionnements avec texte/sélection EDIT préservés et ressources GDI/USER bornées, réinitialisation lors d’une nouvelle requête, clavier du menu, préfixe et curseur, suppression de mots/sélection avec Ctrl+Retour arrière et annulation. |
-| `tests/windows/translations.ps1` | Menus et fenêtre À propos en anglais, identité inchangée des applications et paquets, vrai sélecteur français/anglais, réutilisation du cache sans réécriture. |
-| `tests/windows/about.ps1` | Ouverture et contenu de la fenêtre À propos dans les deux thèmes, version et compteurs, fermetures par Échap/croix/bouton, réouverture de la même fenêtre, redimensionnement, défilement, boutons restant accessibles et ressources GDI/USER bornées. |
-| `tests/windows/helper-console.ps1` | Fermeture automatique après une erreur d'installation ou de désinstallation, code de sortie conservé, rapport local, diagnostic sans attente et absence de sélection rapide bloquante. Les requêtes de test échouent avant tout appel à WinGet. |
-| `tests/windows/updater.ps1` | Vrai helper de mise à jour, validation des empreintes SHA-256, taille, image Windows x64, identité du processus parent et propriétaire de sa fenêtre, rejet des jobs étrangers et arguments ambigus, attente de la sortie complète du parent avant remplacement atomique, report borné si le parent refuse, redémarrage en arrière-plan et conservation des données. Une cible verrouillée conserve puis relance l'ancien binaire. Aucun téléchargement ni logiciel utilisateur n'est utilisé. |
-| `tests/windows/setup.ps1` | Vraie installation NSIS, raccourcis et inscription Windows, options facultatives, mise à jour pendant que l'instance de test tourne, refus des processus inconnus, désinstallation et conservation des données. Chaque installateur utilise un nom et un dossier de test isolés. |
+| `cargo test --locked` | Search ranking and normalization, indexing and cache, real monitoring of creation/rename/deletion and shortcut targets, optional Steam configuration, game deduplication and cache exclusion, coverage of the 236 WinUtil entries, distinct editions and architectures, simulated Microsoft Store commands, proof of Chrome's absence despite a remaining registration, targeted reinstallation and executable confirmation, cleanup plans and data preservation, timers, launch state, icons, system information collection and isolated native controls. |
+| `pwsh scripts/update-package-catalog.ps1 -Check` | Imported catalogue hash and size, deterministic regeneration of identifiers and sources, without downloading or installing. Also run by testing and distribution scripts. |
+| `tests/windows/launcher.ps1` | Deferred file refreshes while the menu is hidden, opening with results immediately available, priority of application notifications and manual requests, search on a fixed index, default applications and explicit files, installation of absent Chrome with or without a prefix, absence of Telegram results in a Steam search, selection preservation after multiple index notifications (scrolled home and search), real WM_PAINT painting and resizing with EDIT text/selection preserved and bounded GDI/USER resources, reset on a new query, menu keyboard, prefix and caret, word/selection deletion with Ctrl+Backspace and undo. |
+| `tests/windows/translations.ps1` | English menus and About window, unchanged application and package identities, real French/English selector, cache reuse without rewriting. |
+| `tests/windows/about.ps1` | About window opening and content in both themes, version and counters, closing with Escape/cross/button, reopening the same window, resizing, scrolling, accessible buttons and bounded GDI/USER resources. |
+| `tests/windows/helper-console.ps1` | Automatic closure after an installation or uninstallation error, preserved exit code, local report, non-waiting diagnostic and absence of blocking QuickEdit selection. Test requests fail before any WinGet call. |
+| `tests/windows/updater.ps1` | Actual update helper, validation of SHA-256 digests, size, Windows x64 image, parent process identity and window owner, rejection of foreign jobs and ambiguous arguments, waiting for full parent exit before atomic replacement, bounded deferral if the parent refuses, background restart and data preservation. A locked target preserves and restarts the old binary. No download or user software is used. |
+| `tests/windows/setup.ps1` | Real NSIS installation, shortcuts and Windows registration, optional settings, update while the test instance runs, rejection of unknown processes, uninstallation and data preservation. Every installer uses an isolated test name and directory. |
 
-Les suites Windows conduisent l'exécutable construit, observent ses fenêtres et ses résultats réels, et échouent sur une régression. Elles ne recalculent pas le classement dans le script. Elles vérifient aussi les noms et résultats de tous les contrôles `--smoke-test` ; un simple code de sortie nul ne suffit pas.
+Windows suites drive the built executable, observe its actual windows and results, and fail on a regression. They do not recalculate ranking in the script. They also verify names and results of every `--smoke-test` check; a zero exit code alone is insufficient.
 
-Le test natif de l'icône de notification vérifie son rendu réel avec `DrawIconEx` à 16, 20, 24 et 32 pixels : fond transparent sur thèmes clair et sombre, grille centrée, masque de transparence et libération des ressources. Pour exporter ses rendus BMP, définir facultativement `SUPER_MENU_ICON_TEST_DIR` avant `cargo test` ; cette instrumentation reste absente du binaire distribué.
+The native notification-icon test checks its actual rendering with `DrawIconEx` at 16, 20, 24 and 32 pixels: transparent background in light and dark themes, centered grid, transparency mask and resource release. To export BMP renders, optionally set `SUPER_MENU_ICON_TEST_DIR` before `cargo test`; this instrumentation remains absent from the distributed binary.
 
-Le retour de lancement est également dessiné dans un bitmap natif : le test vérifie le centrage et la transparence de l'icône d'application dans les deux thèmes, sa propriété indépendante du cache, son remplacement sans prolongation et l'absence de réapparition après expiration. `SUPER_MENU_LAUNCH_TEST_DIR` permet d'exporter facultativement ces rendus pendant les tests.
+Launch feedback is also drawn into a native bitmap: the test verifies the application icon's centering and transparency in both themes, its ownership independent of the cache, replacement without extending the duration and no reappearance after expiry. `SUPER_MENU_LAUNCH_TEST_DIR` optionally exports these renders during tests.
 
-Les tests du suivi de désinstallation utilisent des processus PowerShell fictifs et un faux navigateur GUI compilé pour la fixture : un lanceur se termine avant son enfant différé, qui doit écrire son marqueur avant que la commande rende la main. Ils vérifient aussi le code du lanceur, l'absence d'interférence avec un processus extérieur et l'exclusion du seul navigateur validé, sans le fermer. Le test de l'alias WinGet exécute uniquement --version. Le nettoyage StreamFab utilise un dossier de fixture, avec son nom daté, des binaires et des fichiers personnels : seuls les binaires attribuables deviennent candidats. Aucun StreamFab réel n'est lancé, arrêté ou désinstallé par ces tests.
+Uninstallation-tracking tests use dummy PowerShell processes and a fake GUI browser compiled for the fixture: a launcher exits before its delayed child, which must write its marker before the command returns. They also check the launcher's exit code, no interference with an unrelated process and exclusion of only the validated browser, without closing it. The WinGet alias test runs only --version. StreamFab cleanup uses a fixture directory with its dated name, binaries and personal files: only attributable binaries become candidates. These tests launch, stop or uninstall no actual StreamFab installation.
 
-## Données et isolation
+## Data and isolation
 
-`tests/fixtures/launcher.json` contient des applications et fichiers fictifs. `--smoke-test --smoke-fixture <fichier>` restaure leurs données de recherche et remplace l'indexation du PC. Le mode utilise les réglages par défaut et un historique de lancement vide. Il ne lit ni n'écrit l'index ou la configuration personnelle, n'installe pas de raccourci global et ne lance pas de surveillance de dossiers. Les activations de logiciels, fichiers, liens web, presse-papiers et actions système externes sont bloquées dans ce mode ; les tests utilisent les actions internes du menu.
+`tests/fixtures/launcher.json` contains dummy applications and files. `--smoke-test --smoke-fixture <fichier>` restores their search data and replaces PC indexing. This mode uses default settings and an empty launch history. It neither reads nor writes the personal index or configuration, installs no global shortcut and starts no directory watchers. Activation of external software, files, web links, clipboard and system actions is blocked in this mode; tests use internal menu actions.
 
-Chaque processus et dossier temporaire appartient à son test. Le support vérifie le PID de chaque fenêtre avant de la contrôler et borne les délais des messages Windows. Il ne ferme pas une instance de Super Menu déjà ouverte. Aucun logiciel utilisateur n'est installé ou désinstallé. Certains tests Rust créent des fichiers ou clés de registre jetables, et vérifient la Corbeille avec leurs propres fichiers ; ils nettoient uniquement ces ressources.
+Every process and temporary directory belongs to its test. The support code verifies every window's PID before controlling it and bounds Windows-message timeouts. It does not close an already running Super Menu instance. No user software is installed or uninstalled. Some Rust tests create disposable files or registry keys and check the Recycle Bin using their own files; they clean up only those resources.
 
-La suite de mise à jour compile deux petits exécutables Windows x64 jetables avec le compilateur .NET Framework de Windows. Ils remplacent uniquement l'ancienne et la nouvelle application de la fixture ; le helper exécuté est celui du vrai binaire Super Menu. Une fenêtre masquée reçoit le message de validation, puis le test vérifie que le fichier reste inchangé tant que son processus reste actif. Le redémarrage écrit un marqueur distinct selon la version réellement exécutée. Chaque processus reçoit son propre `LOCALAPPDATA` temporaire ; aucun mutex global, raccourci clavier, index utilisateur ou connexion Internet n'est sollicité. Les exécutables de fixture ne sont ni distribués ni inclus dans Super Menu.
+The update suite compiles two small disposable Windows x64 executables with Windows' .NET Framework compiler. They substitute only for the fixture's old and new application; the helper being run comes from the real Super Menu binary. A hidden window receives the validation message, then the test checks that the file remains unchanged while its process is active. Restarting writes a different marker depending on the version actually executed. Every process receives its own temporary `LOCALAPPDATA`; no global mutex, keyboard shortcut, user index or Internet connection is used. Fixture executables are neither distributed nor included in Super Menu.
 
-Les tests natifs ne requièrent pas de clavier physique, de focus du bureau, de carte graphique particulière ou de nombre précis d'applications installées. Les informations système disponibles varient sur une machine virtuelle : une valeur `Indisponible` est acceptée. La mémoire totale et les résolutions ne sont pas figées dans les assertions.
+Native tests require no physical keyboard, desktop focus, particular graphics card or precise number of installed applications. Available system information varies in a virtual machine: an `Indisponible` value is accepted. Total memory and resolutions are not fixed in assertions.
 
-## Rapports et diagnostics
+## Reports and diagnostics
 
-Les rapports JSON se trouvent dans `artifacts/test-results/` et sont conservés comme artefact **SuperMenu-test-results** dans GitHub Actions, même après un échec. Ils détaillent les assertions, les résultats observés et les diagnostics. Ce dossier est ignoré par Git.
+JSON reports are in `artifacts/test-results/` and retained as the **SuperMenu-test-results** artifact in GitHub Actions, even after a failure. They detail assertions, observed results and diagnostics. This directory is ignored by Git.
 
-Pour exporter également des captures des fenêtres de test sur un bureau Windows interactif :
+To also export captures of test windows on an interactive Windows desktop:
 
 ```powershell
 .\scripts\test.ps1 -Capture
 ```
 
-Les captures sont des aides au diagnostic. La CI ne compare pas les pixels, les polices ou les performances à un seuil dépendant du matériel. Un rapport de benchmark est produit séparément par `scripts/build.ps1`.
+Captures are diagnostic aids. CI does not compare pixels, fonts or performance against a hardware-dependent threshold. A benchmark report is produced separately by `scripts/build.ps1`.
 
-Pour reprendre un binaire construit depuis ce checkout, sans répéter les vérifications Rust :
+To reuse a binary built from this checkout without repeating Rust checks:
 
 ```powershell
 .\scripts\test.ps1 -Executable .\target\release\supermenu.exe -SkipRustChecks
 ```
 
-On peut aussi exécuter séparément une suite :
+A suite can also be run separately:
 
 ```powershell
 .\tests\windows\launcher.ps1 -Executable .\target\release\supermenu.exe
@@ -70,45 +72,44 @@ On peut aussi exécuter séparément une suite :
 .\tests\windows\setup.ps1 -Executable .\target\release\supermenu.exe
 ```
 
-Un ancien exécutable publié peut ne pas contenir les diagnostics ajoutés depuis sa publication : compiler le checkout testé. `--smoke-fixture`, le message de snapshot des résultats et le diagnostic Ctrl+Retour arrière sont réservés au mode de test. Le diagnostic de clavier modifie seulement l'état de la file d'entrée du thread UI de ce processus, puis le restaure ; il ne simule pas une touche globale.
+An older published executable may lack diagnostics added since publication: build the checkout being tested. `--smoke-fixture`, the result-snapshot message and the Ctrl+Backspace diagnostic are reserved for test mode. The keyboard diagnostic modifies only the input queue state of this process's UI thread, then restores it; it does not simulate a global keypress.
 
-## Mesurer les performances
+## Measuring performance
 
-Les mesures de latence sont facultatives et séparées des assertions fonctionnelles. Pour comparer deux exécutables sur le même PC :
+Latency measurements are optional and separate from functional assertions. To compare two executables on the same PC:
 
 ```powershell
 .\scripts\measure-performance.ps1 -Executable .\target\release\supermenu.exe -Report .\artifacts\performance.json
 ```
 
-Le paramètre facultatif `-WindowPaint` mesure le vrai `WM_PAINT` parent via `RedrawWindow`, tampon et copie vers la fenêtre compris. Le mode par défaut conserve le diagnostic hors écran `WM_PRINTCLIENT`. Les deux modes excluent le dessin du contrôle EDIT enfant et la présentation DWM ; le rapport précise le mode utilisé.
+The optional `-WindowPaint` parameter measures the actual parent `WM_PAINT` through `RedrawWindow`, including buffering and copying to the window. The default mode retains the off-screen `WM_PRINTCLIENT` diagnostic. Both modes exclude drawing the child EDIT control and DWM presentation; the report identifies the mode used.
 
 ```powershell
 .\scripts\measure-performance.ps1 -Executable .\target\release\supermenu.exe -WindowPaint -Theme light -Report .\artifacts\window-paint.json
 ```
 
-Le script utilise `tests/fixtures/launcher.json`, des cibles fictives `fixture://` et le même support de fenêtres isolées que les tests natifs. Il lance neuf processus successifs, puis mesure le dessin seul et la recherche suivie du dessin dans le dernier processus : trente échauffements et trois cents échantillons pour chaque série. `-StartupRuns`, `-WarmupRounds`, `-Rounds`, `-Theme`, `-Fixture` et `-Queries` permettent de reproduire une autre configuration ; une fixture est limitée à 256 entrées fictives. Les requêtes par défaut sont ASCII ; `tests/fixtures/launcher-accents.json` ajoute douze titres accentués, grecs et cyrilliques à la fixture standard, et `-Queries '@ éditeur','@ caméra','@ télé','@ désinst','@ ångs','@ no-match','/ vidéo','@ é'` mesure le chemin de normalisation non ASCII. La première requête de contrôle reste `@ steam`, donc la fixture doit conserver les entrées Steam. Chaque HWND est vérifié par son PID avant l'envoi d'un message. Aucun logiciel n'est activé, installé ou désinstallé, et aucun téléchargement de langue n'est demandé.
+The script uses `tests/fixtures/launcher.json`, dummy `fixture://` targets and the same isolated-window support as native tests. It launches nine successive processes, then measures drawing alone and search followed by drawing in the last process: thirty warmups and three hundred samples for each series. `-StartupRuns`, `-WarmupRounds`, `-Rounds`, `-Theme`, `-Fixture` and `-Queries` reproduce other configurations; a fixture is limited to 256 dummy entries. Default queries are ASCII; `tests/fixtures/launcher-accents.json` adds twelve accented, Greek and Cyrillic titles to the standard fixture, and `-Queries '@ éditeur','@ caméra','@ télé','@ désinst','@ ångs','@ no-match','/ vidéo','@ é'` measures the non-ASCII normalization path. The first control query remains `@ steam`, so the fixture must keep Steam entries. Every HWND is checked against its PID before sending a message. No software is activated, installed or uninstalled, and no language download is requested.
 
-Le chronométrage des séries se fait dans une boucle C#, hors du coût de dispatch de PowerShell. `WM_SETTEXT` traverse le vrai contrôle EDIT et actualise les résultats ; `WM_PRINTCLIENT` dessine le menu dans un bitmap hors écran réutilisé, suivi d'un `GdiFlush` côté appelant. Un snapshot vérifie aussi la requête réellement traitée. Le rapport JSON contient la taille et le SHA-256 du binaire, l'empreinte de la fixture, le thème, la langue, le DPI, les dimensions, les échantillons, leurs médianes et p95, la mémoire privée et résidente et les compteurs GDI/USER.
+Series are timed in a C# loop, excluding PowerShell dispatch overhead. `WM_SETTEXT` passes through the actual EDIT control and updates results; `WM_PRINTCLIENT` draws the menu into a reused off-screen bitmap, followed by caller-side `GdiFlush`. A snapshot also verifies the query actually processed. The JSON report contains the binary's size and SHA-256, fixture digest, theme, language, DPI, dimensions, samples, medians and p95, private and resident memory, and GDI/USER counters.
 
-Pour interpréter le rapport :
+To interpret the report:
 
-- `first_frame_ms` vient de l'horloge interne démarrée dans `ui::run`, jusqu'au premier `WM_PAINT` terminé. Il exclut la création du processus, le chargement initial du binaire et la présentation des pixels par DWM.
-- Les lancements répétés utilisent généralement les caches de fichiers et DLL de Windows déjà chauds. Leur état n'est pas contrôlé ; ce n'est pas une mesure de démarrage à froid du PC.
-- Les séries du menu incluent les contrôles de propriété des fenêtres et les messages Win32 synchrones entre processus. Le dessin hors écran exclut le contrôle EDIT enfant et la présentation à l'écran par DWM.
-- La petite fixture mesure le travail du menu. Le diagnostic `--benchmark` mesure séparément le classement sur un index de 20 000 éléments ; il ne mesure pas l'ouverture d'un logiciel ou les accès disque.
+- `first_frame_ms` comes from the internal clock started in `ui::run`, up to the first completed `WM_PAINT`. It excludes process creation, initial binary loading and DWM pixel presentation.
+- Repeated launches generally use already warm Windows file and DLL caches. Their state is uncontrolled; this is not a cold-PC startup measurement.
+- Menu series include window-ownership checks and synchronous inter-process Win32 messages. Off-screen drawing excludes the child EDIT control and on-screen DWM presentation.
+- The small fixture measures menu work. The `--benchmark` diagnostic separately measures ranking on a 20 000-item index; it does not measure opening software or disk access.
 
-Comparer des exécutables avec la même fixture, les mêmes options, le même DPI et des conditions machine proches. Les outils n'imposent aucun seuil arbitraire de performance et ne sont pas exécutés systématiquement par la CI.
+Compare executables using the same fixture, options, DPI and similar machine conditions. The tools impose no arbitrary performance threshold and are not routinely run by CI.
 
-Un benchmark supplémentaire mesure la restauration et la sérialisation du cache sur 20 000 entrées. Il compare la lecture JSON via lecteur tamponné à la vue de fichier en lecture seule, puis la sérialisation d'une copie profonde à celle d'éléments empruntés :
+An additional benchmark measures cache restoration and serialization over 20 000 entries. It compares buffered-reader JSON loading with a read-only file view, then serialization of a deep copy with serialization of borrowed items:
 
 ```powershell
 cargo test --release --locked cache_performance_comparison -- --ignored --nocapture
 ```
 
-Ce test marqué `#[ignore]` utilise un fichier temporaire, deux échauffements et seize échantillons par opération. Il est absent des exécutions ordinaires de `cargo test`, et son code n'est pas inclus dans l'exécutable distribué. Ses chiffres restent sensibles au compilateur, au profil de compilation, à la machine et aux caches Windows. Il ne remplace pas les tests fonctionnels du format, de la compatibilité et de la libération du cache.
+This `#[ignore]` test uses a temporary file, two warmups and sixteen samples per operation. It is absent from ordinary `cargo test` runs, and its code is not included in the distributed executable. Its figures remain sensitive to the compiler, build profile, machine and Windows caches. It does not replace functional tests for the cache's format, compatibility and release.
 
-
-Une sonde facultative mesure la mémoire d’un cache gelé. Copier le même `index.json` français hors du dossier des données actives, puis fournir des chemins absolus :
+An optional probe measures a frozen cache's memory. Copy the same French `index.json` outside the active data directory, then supply absolute paths:
 
 ```powershell
 $env:SUPER_MENU_MEMORY_FIXTURE = 'C:\mesures\index.json'
@@ -116,15 +117,15 @@ $env:SUPER_MENU_MEMORY_REPORT = 'C:\mesures\memoire.json'
 cargo test --release --locked frozen_index_memory_measurement -- --ignored --test-threads=1
 ```
 
-`tests/performance/memory.rs` relève `PrivateUsage`, l’ensemble de travail total résident, la capacité du vecteur, les tailles des chaînes, le temps de restauration, le hash des éléments et les résultats de six recherches. La langue de cette sonde est `fr` ; un cache d’une autre langue serait rejeté. Elle ne démarre aucun menu ni watcher, ne réindexe pas le PC et ne modifie pas le fichier fourni. Comparer les mêmes octets entre versions et alterner les lancements. Le rapport contient les identifiants du cache fourni : garder ces données locales lorsqu’elles décrivent des fichiers personnels. Le test est ignoré par défaut et son code reste exclu de l’exécutable distribué. Les compteurs engagés et résidents doivent être interprétés séparément ; la mémoire temporaire de Windows et les autres tâches du PC peuvent perturber les temps.
+`tests/performance/memory.rs` records `PrivateUsage`, total resident working set, vector capacity, string sizes, restoration time, item hash and the results of six searches. This probe's language is `fr`; a cache in another language would be rejected. It starts no menu or watcher, does not reindex the PC and does not modify the supplied file. Compare the same bytes between versions and alternate launches. The report contains identifiers from the supplied cache: keep this data local when it describes personal files. The test is ignored by default and its code remains excluded from the distributed executable. Committed and resident counters must be interpreted separately; temporary Windows memory and other PC tasks can affect timings.
 
-## Ajouter une régression
+## Adding a regression
 
-Pour un bug du moteur, ajouter un test Rust près du module concerné avec le cas qui échouait. Pour un bug d'interaction, ajouter une assertion dans la suite Windows appropriée et une donnée dans la fixture si nécessaire. Vérifier que le test échoue lorsque le comportement est volontairement régressé, puis restaurer le code. Garder les tests indépendants du profil Windows, des applications réelles et du temps d'exécution du PC.
+For an engine bug, add a Rust test near the relevant module with the failing case. For an interaction bug, add an assertion in the appropriate Windows suite and fixture data if needed. Verify that the test fails when behavior is deliberately regressed, then restore the code. Keep tests independent of the Windows profile, actual applications and PC execution time.
 
-Les tests de traduction copient le pack anglais du dépôt dans leur cache temporaire. Ils ne contactent pas Internet. Les tests Rust valident aussi le vrai pack JSON, les paramètres de texte, les limites, la sauvegarde atomique, la récupération après erreur et l’absence de téléchargement quand le cache est valide. `--smoke-language` et `--smoke-language-dir` nécessitent une fixture ; le second désigne un cache absolu isolé. `--smoke-first-run-language` vérifie le sélecteur avant l’affichage du menu, sans enregistrer de réglages personnels.
+Translation tests copy the repository's English pack into their temporary cache. They do not contact the Internet. Rust tests also validate the actual JSON pack, text parameters, limits, atomic saving, recovery after errors and absence of downloads when the cache is valid. `--smoke-language` and `--smoke-language-dir` require a fixture; the latter identifies an isolated absolute cache. `--smoke-first-run-language` checks the selector before showing the menu without saving personal settings.
 
-Pour vérifier facultativement le téléchargement réel du pack depuis la version publiée sur `main` (accès Internet nécessaire, jamais exécuté par la CI) :
+To optionally verify actual pack downloading from the version published on `main` (Internet access required, never run by CI):
 
 ```powershell
 .\tests\windows\translations.ps1 -Executable .\target\release\supermenu.exe -Download

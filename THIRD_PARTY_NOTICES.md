@@ -1,5 +1,9 @@
 # Third-party notices
 
+**English** · [Français](THIRD_PARTY_NOTICES.fr.md)
+
+The upstream license texts below are preserved verbatim in their original published language.
+
 ## Chris Titus WinUtil application catalogue
 
 Super Menu derives installation names and package identifiers from config/applications.json in [ChrisTitusTech/winutil](https://github.com/ChrisTitusTech/winutil/tree/07ccd8e2e755a706f31569808b31f5b77acad6a9), revision 07ccd8e2e755a706f31569808b31f5b77acad6a9. The original snapshot is kept in catalog/winutil-applications.json; only compact catalogue data is compiled into the executable. WinUtil scripts are not executed by Super Menu.

@@ -1,10 +1,12 @@
-# Traductions de Super Menu
+# Super Menu translations
 
-Le français est le texte de secours intégré au programme. Les autres langues sont des fichiers JSON séparés : aucun pack n’est inclus dans l’exécutable ou l’archive portable. Le choix d’une langue télécharge uniquement son fichier lorsqu’il n’existe pas encore dans le cache local. Les lancements suivants utilisent ce cache sans accès réseau.
+**English** · [Français](README.fr.md)
 
-## Format d’un pack
+French is the fallback text built into the program. Other languages are separate JSON files: no pack is included in the executable or portable archive. Selecting a language downloads only its file when it is not yet in the local cache. Subsequent starts use this cache without network access.
 
-Un fichier `locales/en.json` contient un objet JSON UTF-8 :
+## Pack format
+
+A `locales/en.json` file contains a UTF-8 JSON object:
 
 ```json
 {
@@ -17,23 +19,23 @@ Un fichier `locales/en.json` contient un objet JSON UTF-8 :
 }
 ```
 
-Les clés de `messages` sont les textes français exacts employés dans le code, y compris les accents, espaces, ponctuation et retours à la ligne. Les valeurs contiennent leur traduction. Une clé absente affiche le français, ce qui permet au programme de continuer à fonctionner avec un pack plus ancien.
+`messages` keys are the exact French texts used in the code, including accents, spaces, punctuation and line breaks. Values contain their translations. A missing key displays French, allowing the program to continue working with an older pack.
 
-Les paramètres entre accolades, tels que `{name}`, doivent conserver leur nom et leur nombre d’occurrences dans la traduction. Leur ordre peut changer. Ils sont remplacés par du texte littéral ; une valeur contenant des accolades n’est pas interprétée comme un autre modèle. Ne traduisez pas les noms de paramètres.
+Parameters in braces, such as `{name}`, must retain their name and occurrence count in the translation. Their order may change. They are replaced with literal text; a value containing braces is not interpreted as another template. Do not translate parameter names.
 
-Le lecteur refuse les clés dupliquées, les champs de schéma inconnus, une version différente de `1`, un code `language` incompatible, les caractères de contrôle non autorisés et les paramètres manquants ou ajoutés. Un pack doit être non vide, faire au maximum 1 Mio, contenir au maximum 4 096 messages et limiter chaque clé ou valeur à 16 384 octets. Utilisez les échappements JSON habituels, notamment `\n` pour un retour à la ligne.
+The reader rejects duplicate keys, unknown schema fields, a version other than `1`, an incompatible `language` code, disallowed control characters, and missing or added parameters. A pack must be nonempty, no larger than 1 MiB, contain at most 4 096 messages, and limit every key or value to 16 384 bytes. Use standard JSON escapes, particularly `\n` for a line break.
 
-## Ajouter une langue
+## Adding a language
 
-1. Copiez `en.json` vers `locales/<code>.json`, avec un code explicite comme `de`. Modifiez `language` et traduisez toutes les valeurs sans changer les clés françaises.
-2. Ajoutez une entrée `Language { code: "de", name: "Deutsch" }` dans `LANGUAGES`, au début de `src/i18n.rs`. Cette liste alimente le sélecteur et la normalisation des réglages ; aucun autre fichier de configuration ne doit définir une liste indépendante.
-3. Conservez exactement le même code, en minuscules, dans l’entrée Rust, le nom de fichier et le champ JSON. Lisez et testez le code canonique exact ; les packs et leurs chemins ne sont pas recherchés sous d’autres variantes de casse.
-4. Exécutez `.\scripts\test.ps1` sous Windows, puis vérifiez le menu et la fenêtre « À propos » dans la nouvelle langue, y compris les libellés longs. Ajoutez les scénarios utiles dans `tests/windows/translations.ps1`.
-5. Publiez le fichier JSON et l’entrée Rust ensemble. Le téléchargement lit `locales/<code>.json` depuis la branche `main` de ce dépôt ; il ne consulte pas de service de traduction externe.
+1. Copy `en.json` to `locales/<code>.json`, using an explicit code such as `de`. Change `language` and translate every value without changing the French keys.
+2. Add a `Language { code: "de", name: "Deutsch" }` entry to `LANGUAGES` at the beginning of `src/i18n.rs`. This list drives the selector and settings normalization; no other configuration file should define an independent list.
+3. Keep exactly the same lowercase code in the Rust entry, filename and JSON field. Read and test the exact canonical code; packs and paths are not looked up using other case variants.
+4. Run `.\scripts\test.ps1` on Windows, then check the menu and “About” window in the new language, including long labels. Add useful scenarios in `tests/windows/translations.ps1`.
+5. Publish the JSON file and Rust entry together. Downloading reads `locales/<code>.json` from this repository's `main` branch; it consults no external translation service.
 
-## Ajouter un texte dans le code
+## Adding text in code
 
-Utilisez `crate::i18n::tr("Texte français")` pour un libellé simple. Pour un texte paramétré, utilisez un modèle français et des valeurs nommées :
+Use `crate::i18n::tr("Texte français")` for a simple label. For parameterized text, use a French template and named values:
 
 ```rust
 crate::i18n::fmt(
@@ -42,6 +44,6 @@ crate::i18n::fmt(
 )
 ```
 
-Ajoutez la même clé française à chaque pack maintenu. Les identifiants d’actions, préfixes de recherche, commandes WinGet, clés de fichiers de configuration et noms réels des logiciels restent indépendants de la langue. Les chaînes saisies par l’utilisateur ne sont pas traduites.
+Add the same French key to every maintained pack. Action identifiers, search prefixes, WinGet commands, configuration-file keys and actual software names stay independent of language. User-entered strings are not translated.
 
-Le helper d’installation et de désinstallation charge uniquement le pack déjà enregistré : il ne télécharge rien. Les tests Rust emploient le français de secours et des packs de test isolés, sans charger les réglages personnels du développeur.
+The installation and uninstallation helper loads only the already saved pack: it downloads nothing. Rust tests use French fallback and isolated test packs without loading the developer's personal settings.
