@@ -1,7 +1,7 @@
 #requires -Version 7.0
 param(
     [Parameter(Mandatory)][string]$Executable,
-    [string]$Fixture = (Join-Path $PSScriptRoot '../tests/fixtures/launcher.json'),
+    [string]$Fixture = (Join-Path $PSScriptRoot '../tests/fixtures/launcher-performance.json'),
     [string]$Report = (Join-Path $PSScriptRoot '../artifacts/performance.json'),
     [ValidateRange(3, 30)][int]$StartupRuns = 9,
     [ValidateRange(20, 5000)][int]$Rounds = 300,

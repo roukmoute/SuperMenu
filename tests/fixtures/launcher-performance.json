@@ -1,0 +1,74 @@
+[
+  {
+    "id": "fixture:steam",
+    "title": "Steam",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/steam.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:steam-support",
+    "title": "Steam Support Center",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/steam-support.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:streamfab",
+    "title": "StreamFab",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/streamfab.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:telegram-uninstaller",
+    "title": "Désinstaller Telegram",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://steam/path-only-token/telegram-uninstaller.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:gamespy",
+    "title": "Register GameSpy Arcade",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "fixture://apps/gamespy.placeholder",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:steam-notes",
+    "title": "SteamNotes.txt",
+    "subtitle": "fixture://documents/SteamNotes.txt",
+    "glyph": "▤",
+    "kind": "File",
+    "target": "fixture://documents/SteamNotes.txt",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:zebra-document",
+    "title": "Zebra.txt",
+    "subtitle": "fixture://documents/Zebra.txt",
+    "glyph": "▤",
+    "kind": "File",
+    "target": "fixture://documents/Zebra.txt",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:steam-backups",
+    "title": "SteamBackups",
+    "subtitle": "fixture://documents/SteamBackups",
+    "glyph": "▱",
+    "kind": "Folder",
+    "target": "fixture://documents/SteamBackups",
+    "arguments": ""
+  }
+]

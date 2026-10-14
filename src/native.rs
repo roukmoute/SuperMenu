@@ -237,6 +237,37 @@ pub fn app_catalog() -> Vec<Item> {
     items
 }
 
+fn push_shell_application(
+    result: &mut Vec<Item>,
+    targets: &mut HashSet<String>,
+    title: String,
+    parsing: String,
+) {
+    let prefix = "::{4234d49b-0245-4df3-b780-3893943456e1}\\";
+    let target = if parsing.to_ascii_lowercase().starts_with(prefix) {
+        format!("shell:AppsFolder\\{}", &parsing[prefix.len()..])
+    } else if parsing.starts_with("::") {
+        format!("shell:{}", parsing)
+    } else if Path::new(&parsing).is_absolute() {
+        parsing
+    } else {
+        format!("shell:AppsFolder\\{}", parsing)
+    };
+    // Display names are not identities: a web shortcut and a packaged app can
+    // both be called ChatGPT. Only repeat targets represent the same Shell app.
+    if title.trim().is_empty() || !targets.insert(target.to_lowercase()) {
+        return;
+    }
+    result.push(Item::new(
+        format!("app:{}", target),
+        title,
+        crate::i18n::tr("Application Windows"),
+        "\u{E71D}",
+        Kind::Application,
+        target,
+    ));
+}
+
 fn shell_applications() -> Vec<Item> {
     use crate::com::{self, ComPtr, IEnumShellItems, IShellItem};
     use windows_sys::Win32::System::Com::{
@@ -271,7 +302,6 @@ fn shell_applications() -> Vec<Item> {
         let Ok(enumerator) = folder.BindToHandler::<IEnumShellItems>(&BHID_EnumItems) else {
             return result;
         };
-        let mut names = HashSet::new();
         let mut targets = HashSet::new();
         loop {
             let mut fetched = 0;
@@ -289,31 +319,7 @@ fn shell_applications() -> Vec<Item> {
             let Some(parsing) = display_name(&item, SIGDN_DESKTOPABSOLUTEPARSING) else {
                 continue;
             };
-            let prefix = "::{4234d49b-0245-4df3-b780-3893943456e1}\\";
-            let target = if parsing.to_ascii_lowercase().starts_with(prefix) {
-                format!("shell:AppsFolder\\{}", &parsing[prefix.len()..])
-            } else if parsing.starts_with("::") {
-                format!("shell:{}", parsing)
-            } else if Path::new(&parsing).is_absolute() {
-                parsing
-            } else {
-                format!("shell:AppsFolder\\{}", parsing)
-            };
-            if title.trim().is_empty()
-                || target.is_empty()
-                || !names.insert(title.to_lowercase())
-                || !targets.insert(target.to_lowercase())
-            {
-                continue;
-            }
-            result.push(Item::new(
-                format!("app:{}", target),
-                title,
-                crate::i18n::tr("Application Windows"),
-                "\u{E71D}",
-                Kind::Application,
-                target,
-            ));
+            push_shell_application(&mut result, &mut targets, title, parsing);
         }
     }
     result
@@ -1077,6 +1083,58 @@ pub fn lock_workstation() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// Optional read-only probe for a reported application on a real desktop.
+    #[test]
+    #[ignore = "requires SUPER_MENU_APP_QUERY and SUPER_MENU_APP_EXPECTED_TARGET"]
+    fn installed_shell_application_search_probe() {
+        let query = std::env::var("SUPER_MENU_APP_QUERY").expect("set the application query");
+        let expected =
+            std::env::var("SUPER_MENU_APP_EXPECTED_TARGET").expect("set its Shell target");
+        let apps = super::app_catalog();
+        let missing = crate::packages::missing_items(&apps, &[], &Default::default());
+        for query in [query.clone(), format!("@ {query}")] {
+            let hits = crate::packages::search_with_removals(
+                &apps,
+                &missing,
+                &[],
+                &query,
+                9,
+                &Default::default(),
+            );
+            for item in &hits {
+                println!("{}: {} -> {}", query, item.title, item.target);
+            }
+            assert_eq!(
+                hits.first().map(|item| item.target.as_str()),
+                Some(expected.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn shell_apps_with_equal_display_names_keep_distinct_launch_targets() {
+        let mut apps = Vec::new();
+        let mut targets = std::collections::HashSet::new();
+        for (title, parsing) in [
+            ("Chatgpt", "78ea9a12-70f1-4b61-8432-ee6d535f7aba"),
+            ("ChatGPT", "OpenAI.Codex_2p2nqsd0c76g0!App"),
+            (
+                "ChatGPT",
+                "::{4234d49b-0245-4df3-b780-3893943456e1}\\OpenAI.Codex_2p2nqsd0c76g0!App",
+            ),
+            ("ChatGPT renamed", "openai.codex_2p2nqsd0c76g0!app"),
+        ] {
+            super::push_shell_application(&mut apps, &mut targets, title.into(), parsing.into());
+        }
+        assert_eq!(apps.len(), 2);
+        let hits = crate::core::rank(&apps, "codex", 9, &Default::default());
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].target,
+            "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App"
+        );
+    }
+
     use super::*;
     #[test]
     fn uninstall_shortcut_titles_are_excluded_from_launchable_apps() {

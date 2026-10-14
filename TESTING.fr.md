@@ -74,6 +74,14 @@ On peut aussi exécuter séparément une suite :
 
 Un ancien exécutable publié peut ne pas contenir les diagnostics ajoutés depuis sa publication : compiler le checkout testé. `--smoke-fixture`, le message de snapshot des résultats et le diagnostic Ctrl+Retour arrière sont réservés au mode de test. Le diagnostic de clavier modifie seulement l'état de la file d'entrée du thread UI de ce processus, puis le restaure ; il ne simule pas une touche globale.
 
+Une sonde facultative en lecture seule vérifie la recherche de lancement dans le vrai catalogue Shell du compte Windows courant. L'application Codex desktop doit déjà être installée pour cet exemple ; la sonde est ignorée par défaut, affiche les noms et cibles trouvés, et ne lance aucune application :
+
+```powershell
+$env:SUPER_MENU_APP_QUERY = 'codex'
+$env:SUPER_MENU_APP_EXPECTED_TARGET = 'shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App'
+cargo test --release --locked installed_shell_application_search_probe -- --ignored --nocapture
+```
+
 ## Mesurer les performances
 
 Les mesures de latence sont facultatives et séparées des assertions fonctionnelles. Pour comparer deux exécutables sur le même PC :
@@ -88,7 +96,9 @@ Le paramètre facultatif `-WindowPaint` mesure le vrai `WM_PAINT` parent via `Re
 .\scripts\measure-performance.ps1 -Executable .\target\release\supermenu.exe -WindowPaint -Theme light -Report .\artifacts\window-paint.json
 ```
 
-Le script utilise `tests/fixtures/launcher.json`, des cibles fictives `fixture://` et le même support de fenêtres isolées que les tests natifs. Il lance neuf processus successifs, puis mesure le dessin seul et la recherche suivie du dessin dans le dernier processus : trente échauffements et trois cents échantillons pour chaque série. `-StartupRuns`, `-WarmupRounds`, `-Rounds`, `-Theme`, `-Fixture` et `-Queries` permettent de reproduire une autre configuration ; une fixture est limitée à 256 entrées fictives. Les requêtes par défaut sont ASCII ; `tests/fixtures/launcher-accents.json` ajoute douze titres accentués, grecs et cyrilliques à la fixture standard, et `-Queries '@ éditeur','@ caméra','@ télé','@ désinst','@ ångs','@ no-match','/ vidéo','@ é'` mesure le chemin de normalisation non ASCII. La première requête de contrôle reste `@ steam`, donc la fixture doit conserver les entrées Steam. Chaque HWND est vérifié par son PID avant l'envoi d'un message. Aucun logiciel n'est activé, installé ou désinstallé, et aucun téléchargement de langue n'est demandé.
+Le script utilise `tests/fixtures/launcher-performance.json`, les huit entrées historiques et leurs cibles fictives `fixture://`, pour comparer la latence sans charger les icônes d'applications installées. Il lance neuf processus successifs, puis mesure le dessin seul et la recherche suivie du dessin dans le dernier processus : trente échauffements et trois cents échantillons pour chaque série. `-StartupRuns`, `-WarmupRounds`, `-Rounds`, `-Theme`, `-Fixture` et `-Queries` permettent de reproduire une autre configuration ; une fixture est limitée à 256 entrées fictives. Les requêtes par défaut sont ASCII ; `tests/fixtures/launcher-accents.json` ajoute douze titres accentués, grecs et cyrilliques à cette fixture de mesure, et `-Queries '@ éditeur','@ caméra','@ télé','@ désinst','@ ångs','@ no-match','/ vidéo','@ é'` mesure le chemin de normalisation non ASCII. La première requête de contrôle reste `@ steam`, donc la fixture doit conserver les entrées Steam. Chaque HWND est vérifié par son PID avant l'envoi d'un message. Aucun logiciel n'est activé, installé ou désinstallé, et aucun téléchargement de langue n'est demandé.
+
+La fixture fonctionnelle `tests/fixtures/launcher.json` ajoute les identités Shell ChatGPT/Codex : la suite native vérifie les alias et les cibles distinctes sans lancer d'application ; elle reste séparée de la fixture de mesure.
 
 Le chronométrage des séries se fait dans une boucle C#, hors du coût de dispatch de PowerShell. `WM_SETTEXT` traverse le vrai contrôle EDIT et actualise les résultats ; `WM_PRINTCLIENT` dessine le menu dans un bitmap hors écran réutilisé, suivi d'un `GdiFlush` côté appelant. Un snapshot vérifie aussi la requête réellement traitée. Le rapport JSON contient la taille et le SHA-256 du binaire, l'empreinte de la fixture, le thème, la langue, le DPI, les dimensions, les échantillons, leurs médianes et p95, la mémoire privée et résidente et les compteurs GDI/USER.
 

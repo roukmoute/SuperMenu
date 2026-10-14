@@ -74,7 +74,7 @@ impl Item {
         target: String,
     ) -> Self {
         let search_title = normalize(&title);
-        let search_subtitle = normalize(&subtitle);
+        let search_subtitle = prepare_subtitle(&subtitle, &kind, &target);
         Self {
             id,
             title_mask: character_mask(&search_title),
@@ -93,10 +93,51 @@ impl Item {
     /// Refresh caches after deserialization or an explicit title/subtitle edit.
     pub fn prepare(&mut self) {
         self.search_title = normalize(&self.title);
-        self.search_subtitle = normalize(&self.subtitle);
+        self.search_subtitle = prepare_subtitle(&self.subtitle, &self.kind, &self.target);
         self.title_mask = character_mask(&self.search_title);
         self.subtitle_mask = character_mask(&self.search_subtitle);
     }
+
+    /// Prepared package identity, separate from the visible subtitle and paths.
+    /// Launch matches must precede installation suggestions for the same query.
+    pub fn application_alias_matches(&self, query: &str) -> bool {
+        self.kind == Kind::Application
+            && !query.is_empty()
+            && self
+                .search_subtitle
+                .split_once('\0')
+                .is_some_and(|(_, alias)| {
+                    alias.starts_with(query)
+                        || alias.split_whitespace().any(|word| word.starts_with(query))
+                })
+    }
+}
+
+fn prepare_subtitle(subtitle: &str, kind: &Kind, target: &str) -> String {
+    let mut prepared = normalize(subtitle);
+    if *kind == Kind::Application {
+        if let Some(name) = packaged_app_name(target) {
+            prepared.push('\0');
+            prepared.push_str(&normalize(name));
+        }
+    }
+    prepared
+}
+
+/// A packaged AUMID is <package name>_<13-character publisher ID>!<app ID>.
+/// Neither opaque IDs nor arbitrary executable/shortcut paths are search names.
+fn packaged_app_name(target: &str) -> Option<&str> {
+    let (family, app) = target.strip_prefix("shell:AppsFolder\\")?.split_once('!')?;
+    let (name, publisher) = family.rsplit_once('_')?;
+    (!app.is_empty()
+        && !app.contains(['!', '/', '\\'])
+        && (3..=50).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        && publisher.len() == 13
+        && publisher.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+    .then_some(name)
 }
 
 fn normalize(text: &str) -> String {
@@ -1055,6 +1096,73 @@ mod tests {
         );
         assert!(rank(&ties, "", 0, &usage).is_empty());
     }
+    #[test]
+    fn packaged_product_names_are_searchable_and_restored_from_cache() {
+        let desktop = Item::new(
+            "codex-desktop",
+            "ChatGPT",
+            "Application Windows",
+            "□",
+            Kind::Application,
+            "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App",
+        );
+        let bytes = serde_json::to_vec(&desktop).unwrap();
+        let mut restored: Item = serde_json::from_slice(&bytes).unwrap();
+        restored.prepare();
+        for app in [desktop, restored] {
+            for query in ["codex", "openai codex", "chatgpt"] {
+                let hits = rank(std::slice::from_ref(&app), query, 9, &HashMap::new());
+                assert_eq!(hits.len(), 1, "{query}");
+                assert_eq!(hits[0].title, "ChatGPT");
+                assert_eq!(hits[0].target, app.target);
+                assert!(hits[0].arguments.is_empty());
+            }
+            assert!(app.application_alias_matches("codex"));
+            assert!(app.application_alias_matches("openai codex"));
+            assert!(!app.application_alias_matches("2p2nqsd0c76g0"));
+            assert!(!app.application_alias_matches("app"));
+            assert!(!app.application_alias_matches(""));
+        }
+    }
+
+    #[test]
+    fn packaged_aliases_do_not_search_opaque_ids_or_executable_paths() {
+        for target in [
+            "C:\\codex\\Telegram.exe",
+            "shell:AppsFolder\\78ea9a12-70f1-4b61-8432-ee6d535f7aba",
+            "shell:AppsFolder\\Telegram_2p2nqsd0c76g0!Codex",
+            "shell:AppsFolder\\Codex_short!App",
+            "shell:AppsFolder\\Codex_2p2nqsd0c76g0!",
+            "shell:AppsFolder\\Codex_2p2nqsd0c76g0!App!Other",
+            "shell:AppsFolder\\C:\\codex_2p2nqsd0c76g0!App",
+        ] {
+            let app = Item::new(
+                "telegram",
+                "Telegram",
+                "Application Windows",
+                "□",
+                Kind::Application,
+                target,
+            );
+            for query in ["codex", "2p2nqsd0c76g0", "78ea9a12"] {
+                assert!(
+                    rank(std::slice::from_ref(&app), query, 9, &HashMap::new()).is_empty(),
+                    "{target}: {query}"
+                );
+                assert!(!app.application_alias_matches(query), "{target}: {query}");
+            }
+        }
+        let file = Item::new(
+            "file",
+            "Notes",
+            "Documents",
+            "□",
+            Kind::File,
+            "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App",
+        );
+        assert!(rank(&[file], "codex", 9, &HashMap::new()).is_empty());
+    }
+
     #[test]
     fn full_application_names_reject_scattered_letters_and_action_descriptions() {
         let mut telegram = item(

@@ -45,6 +45,24 @@
     "arguments": ""
   },
   {
+    "id": "fixture:codex-desktop",
+    "title": "ChatGPT",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App",
+    "arguments": ""
+  },
+  {
+    "id": "fixture:chatgpt-web",
+    "title": "Chatgpt",
+    "subtitle": "Application Windows",
+    "glyph": "▦",
+    "kind": "Application",
+    "target": "shell:AppsFolder\\{D60FBA60-1962-4B26-A2E6-6E7EB6A47FA0}",
+    "arguments": ""
+  },
+  {
     "id": "fixture:steam-notes",
     "title": "SteamNotes.txt",
     "subtitle": "fixture://documents/SteamNotes.txt",

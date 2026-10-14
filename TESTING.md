@@ -74,6 +74,14 @@ A suite can also be run separately:
 
 An older published executable may lack diagnostics added since publication: build the checkout being tested. `--smoke-fixture`, the result-snapshot message and the Ctrl+Backspace diagnostic are reserved for test mode. The keyboard diagnostic modifies only the input queue state of this process's UI thread, then restores it; it does not simulate a global keypress.
 
+An optional read-only probe checks launch search against the current Windows account's real Shell catalog. The Codex desktop application must already be installed for this example; the probe is ignored by default, prints matching names and targets, and launches no application:
+
+```powershell
+$env:SUPER_MENU_APP_QUERY = 'codex'
+$env:SUPER_MENU_APP_EXPECTED_TARGET = 'shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App'
+cargo test --release --locked installed_shell_application_search_probe -- --ignored --nocapture
+```
+
 ## Measuring performance
 
 Latency measurements are optional and separate from functional assertions. To compare two executables on the same PC:
@@ -88,7 +96,9 @@ The optional `-WindowPaint` parameter measures the actual parent `WM_PAINT` thro
 .\scripts\measure-performance.ps1 -Executable .\target\release\supermenu.exe -WindowPaint -Theme light -Report .\artifacts\window-paint.json
 ```
 
-The script uses `tests/fixtures/launcher.json`, dummy `fixture://` targets and the same isolated-window support as native tests. It launches nine successive processes, then measures drawing alone and search followed by drawing in the last process: thirty warmups and three hundred samples for each series. `-StartupRuns`, `-WarmupRounds`, `-Rounds`, `-Theme`, `-Fixture` and `-Queries` reproduce other configurations; a fixture is limited to 256 dummy entries. Default queries are ASCII; `tests/fixtures/launcher-accents.json` adds twelve accented, Greek and Cyrillic titles to the standard fixture, and `-Queries '@ éditeur','@ caméra','@ télé','@ désinst','@ ångs','@ no-match','/ vidéo','@ é'` measures the non-ASCII normalization path. The first control query remains `@ steam`, so the fixture must keep Steam entries. Every HWND is checked against its PID before sending a message. No software is activated, installed or uninstalled, and no language download is requested.
+The script uses `tests/fixtures/launcher-performance.json`, the eight historical entries and their dummy `fixture://` targets, to compare latency without loading installed application icons. It launches nine successive processes, then measures drawing alone and search followed by drawing in the last process: thirty warmups and three hundred samples for each series. `-StartupRuns`, `-WarmupRounds`, `-Rounds`, `-Theme`, `-Fixture` and `-Queries` reproduce other configurations; a fixture is limited to 256 dummy entries. Default queries are ASCII; `tests/fixtures/launcher-accents.json` adds twelve accented, Greek and Cyrillic titles to this performance fixture, and `-Queries '@ éditeur','@ caméra','@ télé','@ désinst','@ ångs','@ no-match','/ vidéo','@ é'` measures the non-ASCII normalization path. The first control query remains `@ steam`, so the fixture must keep Steam entries. Every HWND is checked against its PID before sending a message. No software is activated, installed or uninstalled, and no language download is requested.
+
+The functional fixture `tests/fixtures/launcher.json` adds the ChatGPT/Codex Shell identities: the native suite verifies aliases and distinct targets without launching an application; it remains separate from the performance fixture.
 
 Series are timed in a C# loop, excluding PowerShell dispatch overhead. `WM_SETTEXT` passes through the actual EDIT control and updates results; `WM_PRINTCLIENT` draws the menu into a reused off-screen bitmap, followed by caller-side `GdiFlush`. A snapshot also verifies the query actually processed. The JSON report contains the binary's size and SHA-256, fixture digest, theme, language, DPI, dimensions, samples, medians and p95, private and resident memory, and GDI/USER counters.
 

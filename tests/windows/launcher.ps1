@@ -49,7 +49,7 @@ try {
     $initial = Read-TestSnapshot -Context $context
     Assert-Test -Context $context -Condition ([bool]$initial.fixture_mode) -Name 'the UI uses the isolated fixture index'
     Assert-Test -Context $context -Condition ([bool]$initial.indexing_finished) -Name 'the fixture is ready without a machine scan'
-    Assert-Test -Context $context -Condition ($initial.applications -eq 5 -and $initial.files -eq 3 -and $initial.index_items -eq 8) -Name 'the fixture has five applications and three file entries'
+    Assert-Test -Context $context -Condition ($initial.applications -eq 7 -and $initial.files -eq 3 -and $initial.index_items -eq 10) -Name 'the fixture has seven applications and three file entries'
 
     # INDEX is the real notification delivered when background indexing publishes
     # a new catalog. Repeating it with the isolated fixture makes the navigation
@@ -230,6 +230,38 @@ try {
     Assert-Test -Context $context -Condition (([string]$chromeInstall.items[0].subtitle).StartsWith('Installer ·', [StringComparison]::Ordinal)) -Name 'explicit Chrome installation has the installation subtitle'
     Set-OwnQuery '@ chrome'
     [void](Assert-OwnResults 'absent Chrome has no launchable application' '@ chrome' @() @('Application'))
+
+    # A packaged application can retain a display name different from its product
+    # identity. Resolve the installed desktop app before suggesting the distinct
+    # Codex CLI package; all targets remain inert in this isolated fixture mode.
+    Set-OwnQuery 'codex'
+    $codex = Assert-OwnResults 'packaged product identity finds the installed desktop application' 'codex' @('fixture:codex-desktop', 'install:OpenAI.Codex') @('Application', 'Install')
+    Assert-Test -Context $context -Condition ($codex.items[0].id -ceq 'fixture:codex-desktop' -and $codex.items[0].kind -ceq 'Application') -Name 'the installed Codex desktop application precedes the Codex CLI installation'
+    Assert-Test -Context $context -Condition ($codex.items[0].title -ceq 'ChatGPT' -and $codex.items[0].target -ceq 'shell:AppsFolder\OpenAI.Codex_2p2nqsd0c76g0!App') -Name 'the identity alias preserves the Windows display name and launch target'
+    Assert-Test -Context $context -Condition ($codex.items[1].id -ceq 'install:OpenAI.Codex' -and $codex.items[1].kind -ceq 'Install') -Name 'the desktop identity does not mark the separate Codex CLI package as installed'
+    Set-OwnQuery '@ codex'
+    $codexLaunch = Assert-OwnResults 'packaged product identity works in launch-only search' '@ codex' @('fixture:codex-desktop') @('Application')
+    Assert-Test -Context $context -Condition ($codexLaunch.items[0].id -ceq 'fixture:codex-desktop') -Name 'launch-only Codex selects its installed desktop application'
+
+    foreach ($query in @('chatgpt', '@ chatgpt')) {
+        Set-OwnQuery $query
+        $chatgpt = Read-TestSnapshot -Context $context
+        $chatgptApps = @($chatgpt.items | Where-Object { $_.kind -ceq 'Application' })
+        $chatgptIds = @($chatgptApps | ForEach-Object { $_.id } | Sort-Object)
+        $cases.Add([ordered]@{
+            case = 'same display name keeps distinct launch targets ' + $query; query = $chatgpt.query
+            selected = $chatgpt.selected; result_ids = @($chatgpt.items.id)
+            application_ids = $chatgptIds; targets = @($chatgptApps.target)
+        })
+        Assert-Test -Context $context -Condition ($chatgpt.query -ceq $query) -Name ($query + ': EN_CHANGE updates the query')
+        Assert-Test -Context $context -Condition ($chatgptIds.Count -eq 2 -and [string]::Join(';', $chatgptIds) -ceq 'fixture:chatgpt-web;fixture:codex-desktop') -Name ($query + ': both applications sharing a display name remain searchable')
+        Assert-Test -Context $context -Condition (@($chatgptApps.target | Sort-Object -Unique).Count -eq 2) -Name ($query + ': the two results retain distinct launch targets')
+    }
+    foreach ($metadata in @('2p2nqsd0c76g0', 'OpenAI.Codex_2p2nqsd0c76g0!App', 'D60FBA60-1962-4B26-A2E6-6E7EB6A47FA0')) {
+        $query = '@ ' + $metadata
+        Set-OwnQuery $query
+        [void](Assert-OwnResults ('package and shortcut metadata is excluded ' + $metadata) $query @() @('Application'))
+    }
 
     # The imported catalog also covers CLI tools and explicit product variants.
     # Query through the real EDIT and inspect the cached rows; never activate one.

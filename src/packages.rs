@@ -989,7 +989,9 @@ pub fn search(
     let mut remaining = Vec::new();
     for item in ordinary {
         if item.kind == Kind::Application
-            && (alias_apps.contains(&item.id) || strongly_matches(&item.title, &normalized))
+            && (alias_apps.contains(&item.id)
+                || item.application_alias_matches(&normalized)
+                || strongly_matches(&item.title, &normalized))
         {
             strong.push(item)
         } else {
@@ -1090,6 +1092,7 @@ pub fn search_with_removals(
     for item in ordinary {
         let direct = item.kind == Kind::Application
             && (strongly_matches(&item.title, &normalized)
+                || item.application_alias_matches(&normalized)
                 || relevant_packages
                     .iter()
                     .any(|package| installed_match(&normalize(&item.title), package)));
@@ -1578,6 +1581,49 @@ mod tests {
             missing_items(&[app("Firefox Manager")], &[], &HashSet::new())
                 .iter()
                 .any(|item| item.target == "Mozilla.Firefox")
+        );
+    }
+
+    #[test]
+    fn packaged_desktop_alias_launches_before_the_separate_cli_install() {
+        let index = [Item::new(
+            "desktop",
+            "ChatGPT",
+            "Application Windows",
+            "□",
+            Kind::Application,
+            "shell:AppsFolder\\OpenAI.Codex_2p2nqsd0c76g0!App",
+        )];
+        let missing = missing_items(&index, &[], &HashSet::new());
+        // Desktop and CLI use different installation sources and identities.
+        assert!(missing.iter().any(|item| item.target == "OpenAI.Codex"));
+        let removals = [Item::new(
+            "remove-codex",
+            "Codex",
+            "Désinstaller",
+            "□",
+            Kind::Uninstall,
+            "name:Codex",
+        )];
+        for query in ["codex", "@ codex", "openai codex"] {
+            for hits in [
+                search(&index, &missing, query, 9, &HashMap::new()),
+                search_with_removals(&index, &missing, &removals, query, 9, &HashMap::new()),
+            ] {
+                assert_eq!(hits[0].id, "desktop", "{query}");
+                assert_eq!(hits[0].title, "ChatGPT");
+                if query.starts_with('@') {
+                    assert_eq!(hits.len(), 1);
+                }
+            }
+        }
+        assert_eq!(
+            search(&index, &missing, "+ codex", 9, &HashMap::new())[0].target,
+            "OpenAI.Codex"
+        );
+        assert_eq!(
+            search_with_removals(&index, &missing, &removals, "- codex", 9, &HashMap::new())[0].id,
+            "remove-codex"
         );
     }
 

@@ -138,9 +138,9 @@ try {
         $texts = @($controls | Where-Object { $_.Class -eq 'STATIC' } | ForEach-Object { $_.Text })
         $caption = if ($Language -ceq 'en') { 'Super Menu · About' } else { 'Super Menu · À propos' }
         $labels = if ($Language -ceq 'en') {
-            @('Hardware', 'Windows', 'Activity', 'Processor', 'Graphics', 'Display', 'Memory', 'System drive', 'Edition', 'Architecture', 'Uptime', 'Windows installed on', 'Super Menu executable', '5 applications', '3 files and folders', '8 entries in the local index')
+            @('Hardware', 'Windows', 'Activity', 'Processor', 'Graphics', 'Display', 'Memory', 'System drive', 'Edition', 'Architecture', 'Uptime', 'Windows installed on', 'Super Menu executable', '7 applications', '3 files and folders', '10 entries in the local index')
         } else {
-            @('Matériel', 'Windows', 'Activité', 'Processeur', 'Graphiques', 'Écran', 'Mémoire', 'Disque système', 'Édition', 'Architecture', 'Allumé depuis', 'Windows installé le', 'Exécutable Super Menu', '5 applications', '3 fichiers et dossiers', "8 entrées dans l’index local")
+            @('Matériel', 'Windows', 'Activité', 'Processeur', 'Graphiques', 'Écran', 'Mémoire', 'Disque système', 'Édition', 'Architecture', 'Allumé depuis', 'Windows installé le', 'Exécutable Super Menu', '7 applications', '3 fichiers et dossiers', "10 entrées dans l’index local")
         }
         Assert-Test -Context $context -Condition ($context.Api.ReadText($window) -ceq $caption) -Name ($Language + ': About caption is translated')
         foreach ($label in $labels) {
