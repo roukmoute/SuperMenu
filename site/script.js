@@ -3,6 +3,7 @@
 (() => {
   const english = {
     navSpeed: "Responsiveness",
+    navDocumentation: "Documentation",
     demoGames: "Steam games",
     factSteamTitle: "Steam games",
     factSteamText: "Your installed games, if you want them.",
@@ -91,6 +92,10 @@
     }
     screenshot.alt = dictionary.screenshotAlt;
     document.documentElement.lang = language;
+    for (const link of document.querySelectorAll("[data-documentation]")) {
+      const destination = language === "en" ? link.dataset.docEn : link.dataset.docFr;
+      if (destination) link.setAttribute("href", destination);
+    }
     document.title = language === "en" ? "Super Menu — Right at your fingertips" : "Super Menu — À portée de clavier";
     languageButton.textContent = language === "en" ? "FR" : "EN";
     languageButton.setAttribute("aria-label", language === "en" ? "Passer en français" : "Switch to English");
@@ -201,12 +206,19 @@
     }
   }
 
-  languageButton.addEventListener("click", () => setLanguage(language === "fr" ? "en" : "fr"));
+  languageButton.addEventListener("click", () => {
+    const next = language === "fr" ? "en" : "fr";
+    const url = new URL(window.location.href);
+    url.searchParams.set("lang", next);
+    window.history.replaceState(null, "", url);
+    setLanguage(next);
+  });
   query.addEventListener("input", render);
   query.addEventListener("keydown", event => { if (event.key === "Enter") event.preventDefault(); });
   for (const tab of tabs) tab.addEventListener("click", () => {
     const values = { apps: "obsidian", games: "artisan", files: language === "en" ? "/ project" : "/ projet", timer: language === "en" ? "timer 5m" : "minuteur 5m", calc: "= (15 + 5) * 3" };
     query.value = values[tab.dataset.demo]; render();
   });
-  render();
+  const requested = new URL(window.location.href).searchParams.get("lang");
+  setLanguage(requested === "en" ? "en" : "fr");
 })();

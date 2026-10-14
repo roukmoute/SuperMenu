@@ -7,3 +7,7 @@ target/
 *.user
 *.suo
 *.zip
+/_site/
+/_build/
+**/__pycache__/
+*.pyc
