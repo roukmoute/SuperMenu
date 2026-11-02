@@ -17,6 +17,7 @@ mod packages;
 mod paint_buffer;
 mod process_tree;
 mod setup_control;
+mod start_menu;
 mod steam;
 mod system_info;
 mod timer;

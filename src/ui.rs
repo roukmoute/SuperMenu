@@ -1,7 +1,7 @@
 use crate::{
     about, app_icons, brand_icon, catalog, config, core, i18n, installer, language_dialog,
-    launch_feedback, native, packages, paint_buffer::PaintBuffer, steam, timer, timer_alert,
-    timer_runtime, updater,
+    launch_feedback, native, packages, paint_buffer::PaintBuffer, start_menu, steam, timer,
+    timer_alert, timer_runtime, updater,
 };
 use core::{Item, Kind};
 use std::cell::{Cell, RefCell};
@@ -32,6 +32,7 @@ const SMOKE_STATE: u32 = WM_APP + 10;
 const SMOKE_CTRL_BACKSPACE: u32 = WM_APP + 11;
 const SMOKE_LANGUAGE_PICKER: u32 = WM_APP + 12;
 const TIMER_TICK: usize = 43;
+const START_DISMISS_TIMER: usize = 45;
 const EDIT_ID: usize = 100;
 const ROW_TOP: i32 = 177;
 const ROW_HEIGHT: i32 = 48;
@@ -135,6 +136,7 @@ struct State {
     app_icons: Option<app_icons::IconCache>,
     about: Option<about::AboutWindow>,
     hotkey: Option<native::Hotkey>,
+    start_dismissal: Option<start_menu::Dismissal>,
     watcher: Option<native::Watcher>,
     dpi: i32,
     visible_rows: usize,
@@ -746,6 +748,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             app_icons: None,
             about: None,
             hotkey: None,
+            start_dismissal: None,
             watcher: None,
             dpi: 96,
             visible_rows: 9,
@@ -920,6 +923,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         };
         RemoveClipboardFormatListener(hwnd);
         state.hotkey.take();
+        state.start_dismissal.take();
         state.watcher.take();
         state.feedback.take();
         state.app_icons.take();
@@ -927,6 +931,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         state.timers.borrow_mut().shutdown();
         timer_runtime::unbind();
         KillTimer(hwnd, TIMER_TICK);
+        KillTimer(hwnd, START_DISMISS_TIMER);
         KillTimer(hwnd, updater::CHECK_TIMER);
         KillTimer(hwnd, updater::APPLY_TIMER);
         tray(&state, NIM_DELETE);
@@ -1467,7 +1472,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             0
         }
         WM_TIMER => {
-            if wp == updater::CHECK_TIMER {
+            if wp == START_DISMISS_TIMER {
+                let step = s.start_dismissal.as_mut().map(start_menu::Dismissal::poll);
+                if !matches!(step, Some(start_menu::Step::Waiting)) {
+                    KillTimer(hwnd, START_DISMISS_TIMER);
+                    s.start_dismissal.take();
+                    if matches!(step, Some(start_menu::Step::Show)) {
+                        show_now(s);
+                    }
+                }
+            } else if wp == updater::CHECK_TIMER {
                 KillTimer(hwnd, updater::CHECK_TIMER);
                 if s.settings.auto_update && s.updater.is_some() {
                     SetTimer(hwnd, updater::CHECK_TIMER, 12 * 60 * 60 * 1_000, None);
@@ -1516,6 +1530,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize
             KillTimer(hwnd, 1);
             KillTimer(hwnd, 99);
             KillTimer(hwnd, TIMER_TICK);
+            KillTimer(hwnd, START_DISMISS_TIMER);
+            s.start_dismissal.take();
             KillTimer(hwnd, updater::CHECK_TIMER);
             KillTimer(hwnd, updater::APPLY_TIMER);
             PostQuitMessage(0);
@@ -2881,6 +2897,22 @@ unsafe fn reindex(s: &mut State) {
 }
 
 unsafe fn show(s: &mut State) {
+    if s.start_dismissal.is_some() {
+        return;
+    }
+    if !s.smoke && !s.smoke_fixture {
+        if let Some(dismissal) = start_menu::begin() {
+            s.start_dismissal = Some(dismissal);
+            if SetTimer(s.hwnd, START_DISMISS_TIMER, 10, None) != 0 {
+                return;
+            }
+            s.start_dismissal.take();
+        }
+    }
+    show_now(s);
+}
+
+unsafe fn show_now(s: &mut State) {
     if let Some(feedback) = &mut s.feedback {
         feedback.hide();
     }
@@ -2903,6 +2935,10 @@ unsafe fn show(s: &mut State) {
     }
 }
 unsafe fn hide(s: &mut State) {
+    if s.start_dismissal.is_some() {
+        KillTimer(s.hwnd, START_DISMISS_TIMER);
+        s.start_dismissal.take();
+    }
     ShowWindow(s.hwnd, SW_HIDE);
     if !s.previous.is_null() {
         SetForegroundWindow(s.previous);
@@ -3713,7 +3749,7 @@ fn can_apply_update(
 
 unsafe fn update_safe_to_apply(s: &State) -> bool {
     can_apply_update(
-        IsWindowVisible(s.hwnd) != 0,
+        IsWindowVisible(s.hwnd) != 0 || s.start_dismissal.is_some(),
         s.settings_open,
         s.about
             .as_ref()

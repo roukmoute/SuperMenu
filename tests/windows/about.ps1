@@ -188,6 +188,7 @@ try {
                 [void](Wait-TestAboutData -Context $context -Window $window)
             }
             $finalResources = $context.Api.GuiResources($context.Process.Handle)
+            $themeResult.resources = [ordered]@{ warm = $warmResources; final = $finalResources; permitted_growth = 4 }
             Assert-Test -Context $context -Condition ($finalResources.Gdi -le $warmResources.Gdi + 4) -Name 'reopening has bounded GDI object growth (at most four)'
             Assert-Test -Context $context -Condition ($finalResources.User -le $warmResources.User + 4) -Name 'reopening has bounded USER object growth (at most four)'
             Assert-Test -Context $context -Condition ($finalResources.Gdi -lt 1024 -and $finalResources.User -lt 1024) -Name 'native GUI resource counts stay below the leak ceiling'
@@ -197,7 +198,6 @@ try {
             Assert-Test -Context $context -Condition ([bool]$native.indexing_finished) -Name 'the fixture index is ready'
             Assert-Test -Context $context -Condition ($native.fixture_activation_attempts -eq 0) -Name 'the About tests do not request external activation'
             $themeResult.passed = $true
-            $themeResult.resources = [ordered]@{ warm = $warmResources; final = $finalResources; permitted_growth = 4 }
             $themeResult.native_smoke = $native
         } catch {
             $failed = $true

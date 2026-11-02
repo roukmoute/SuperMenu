@@ -2,6 +2,19 @@
 
 **English** · [Français](PERFORMANCE.fr.md)
 
+## Version 0.6.20
+
+The local stable MSVC Release binary grows from **1 080 320 to 1 082 880 bytes (+2 560 bytes)** with the same build profile and static CRT options. No dependency or additional worker thread is added.
+
+Only a confirmed visible Start menu creates the temporary 10 ms dismissal timer, capped at two seconds. Waiting for modifiers and Space to be released is confined to this path; ordinary activation creates no polling timer.
+
+| Local probe | Measurement |
+| --- | ---: |
+| Start-closed detection, 10 000 read-only calls | 10.158 µs per call, average |
+| Shell dismissal after detection, one manual probe | 25.16 ms |
+
+Both probes use the debug test build, not Release. The second timing starts after Start has been identified and ends when semantic visibility is false and the foreground has changed; it excludes showing or rendering Super Menu. These figures are neither complete menu-opening latency nor cold-start measurements. Reproduction commands are in [TESTING.md](TESTING.md#manual-start-menu-validation).
+
 ## Version 0.6.19
 
 The local stable binary grows from **1 079 808 to 1 080 320 bytes (+512 bytes, +0.05%)**, with the same MSVC toolchain, Release profile and static CRT options. These measurements used the corrected source before changing the version stamp from 0.6.18 to 0.6.19.

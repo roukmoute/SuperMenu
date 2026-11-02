@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use std::ptr::{null, null_mut, NonNull};
 use windows_sys::core::{w, BOOL, GUID, HRESULT, PCWSTR, PWSTR};
 use windows_sys::Win32::Foundation::{LocalFree, E_INVALIDARG, E_POINTER, SIZE};
-use windows_sys::Win32::Graphics::Gdi::HBITMAP;
+use windows_sys::Win32::Graphics::Gdi::{HBITMAP, HMONITOR};
 use windows_sys::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
 use windows_sys::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX, STGM};
 use windows_sys::Win32::System::Diagnostics::Debug::{
@@ -198,6 +198,40 @@ pub(crate) struct IUnknown_Vtbl {
         unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
     pub AddRef: unsafe extern "system" fn(*mut c_void) -> u32,
     pub Release: unsafe extern "system" fn(*mut c_void) -> u32,
+}
+
+// ShObjIdl_core.h: DECLSPEC_UUID("7E5FE3D9-985F-4908-91F9-EE19F9FD1514") AppVisibility
+#[allow(non_upper_case_globals)]
+pub(crate) const AppVisibility: GUID = GUID::from_u128(0x7e5fe3d9_985f_4908_91f9_ee19f9fd1514);
+
+// ShObjIdl_core.h: MIDL_INTERFACE("2246EA2D-CAEA-4444-A3C4-6DE827E44313") IAppVisibility
+pub(crate) enum IAppVisibility {}
+
+impl Interface for IAppVisibility {
+    const IID: GUID = GUID::from_u128(0x2246ea2d_caea_4444_a3c4_6de827e44313);
+    type Vtable = IAppVisibility_Vtbl;
+}
+
+#[allow(dead_code)]
+#[repr(C)]
+pub(crate) struct IAppVisibility_Vtbl {
+    pub base: IUnknown_Vtbl,
+    pub GetAppVisibilityOnMonitor:
+        unsafe extern "system" fn(*mut c_void, HMONITOR, *mut i32) -> HRESULT,
+    pub IsLauncherVisible: unsafe extern "system" fn(*mut c_void, *mut BOOL) -> HRESULT,
+    pub Advise: unsafe extern "system" fn(*mut c_void, *mut c_void, *mut u32) -> HRESULT,
+    pub Unadvise: unsafe extern "system" fn(*mut c_void, u32) -> HRESULT,
+}
+
+impl ComPtr<IAppVisibility> {
+    pub(crate) unsafe fn IsLauncherVisible(&self) -> Result<bool> {
+        let mut visible = 0;
+        check((self.vtable().IsLauncherVisible)(
+            self.as_raw(),
+            &mut visible,
+        ))
+        .map(|()| visible != 0)
+    }
 }
 
 // ShObjIdl_core.h: MIDL_INTERFACE("43826d1e-e718-42ee-bc55-a1e261c37bfe") IShellItem
@@ -504,6 +538,7 @@ mod tests {
     fn vtables_keep_the_sdk_slot_layout() {
         let slot = size_of::<usize>();
         assert_eq!(size_of::<IUnknown_Vtbl>(), 3 * slot);
+        assert_eq!(size_of::<IAppVisibility_Vtbl>(), 7 * slot);
         assert_eq!(size_of::<IShellItem_Vtbl>(), 8 * slot);
         assert_eq!(size_of::<IShellItemImageFactory_Vtbl>(), 4 * slot);
         assert_eq!(size_of::<IPersistFile_Vtbl>(), 9 * slot);
@@ -511,6 +546,7 @@ mod tests {
         assert_eq!(size_of::<IEnumShellItems_Vtbl>(), 7 * slot);
         assert_eq!(size_of::<IFileOperation_Vtbl>(), 23 * slot);
         // Slots this crate calls, at the positions the headers give them.
+        assert_eq!(offset_of!(IAppVisibility_Vtbl, IsLauncherVisible), 4 * slot);
         assert_eq!(offset_of!(IShellItem_Vtbl, BindToHandler), 3 * slot);
         assert_eq!(offset_of!(IShellItem_Vtbl, GetDisplayName), 5 * slot);
         assert_eq!(offset_of!(IShellItemImageFactory_Vtbl, GetImage), 3 * slot);
@@ -530,5 +566,6 @@ mod tests {
             22 * slot
         );
         assert_eq!(size_of::<Option<ComPtr<IShellItem>>>(), slot);
+        assert_eq!(size_of::<Option<ComPtr<IAppVisibility>>>(), slot);
     }
 }

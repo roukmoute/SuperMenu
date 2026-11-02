@@ -129,6 +129,20 @@ cargo test --release --locked frozen_index_memory_measurement -- --ignored --tes
 
 `tests/performance/memory.rs` records `PrivateUsage`, total resident working set, vector capacity, string sizes, restoration time, item hash and the results of six searches. This probe's language is `fr`; a cache in another language would be rejected. It starts no menu or watcher, does not reindex the PC and does not modify the supplied file. Compare the same bytes between versions and alternate launches. The report contains identifiers from the supplied cache: keep this data local when it describes personal files. The test is ignored by default and its code remains excluded from the distributed executable. Committed and resident counters must be interpreted separately; temporary Windows memory and other PC tasks can affect timings.
 
+## Manual Start menu validation
+
+These optional probes are ignored by default and excluded from CI. The first waits up to 45 seconds for Start to be opened manually, then sends Escape after modifiers and Space are released. It checks actual Shell dismissal without launching or restarting Super Menu. Run the second probe separately with Start closed; its 10 000 read-only calls measure detection alone.
+
+```powershell
+$env:SUPER_MENU_START_PROBE = '1'
+cargo test --locked real_start_dismissal_probe -- --ignored --nocapture
+Remove-Item Env:\SUPER_MENU_START_PROBE
+# Close Start before this separate read-only measurement.
+cargo test --locked closed_start_fast_path_probe -- --ignored --nocapture
+```
+
+These commands use the debug test build. Their reported times exclude complete launcher opening and rendering; the probes make no network requests.
+
 ## Adding a regression
 
 For an engine bug, add a Rust test near the relevant module with the failing case. For an interaction bug, add an assertion in the appropriate Windows suite and fixture data if needed. Verify that the test fails when behavior is deliberately regressed, then restore the code. Keep tests independent of the Windows profile, actual applications and PC execution time.

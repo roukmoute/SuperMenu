@@ -130,6 +130,20 @@ cargo test --release --locked frozen_index_memory_measurement -- --ignored --tes
 
 `tests/performance/memory.rs` relève `PrivateUsage`, l’ensemble de travail total résident, la capacité du vecteur, les tailles des chaînes, le temps de restauration, le hash des éléments et les résultats de six recherches. La langue de cette sonde est `fr` ; un cache d’une autre langue serait rejeté. Elle ne démarre aucun menu ni watcher, ne réindexe pas le PC et ne modifie pas le fichier fourni. Comparer les mêmes octets entre versions et alterner les lancements. Le rapport contient les identifiants du cache fourni : garder ces données locales lorsqu’elles décrivent des fichiers personnels. Le test est ignoré par défaut et son code reste exclu de l’exécutable distribué. Les compteurs engagés et résidents doivent être interprétés séparément ; la mémoire temporaire de Windows et les autres tâches du PC peuvent perturber les temps.
 
+## Validation manuelle du menu Démarrer
+
+Ces sondes facultatives sont ignorées par défaut et exclues de la CI. La première attend jusqu’à 45 secondes l’ouverture manuelle de Démarrer, puis envoie Échap après le relâchement des modificateurs et de la barre d’espace. Elle vérifie la fermeture réelle du Shell sans lancer ni redémarrer Super Menu. Exécuter la seconde sonde séparément avec Démarrer fermé ; ses 10 000 appels en lecture seule mesurent uniquement la détection.
+
+```powershell
+$env:SUPER_MENU_START_PROBE = '1'
+cargo test --locked real_start_dismissal_probe -- --ignored --nocapture
+Remove-Item Env:\SUPER_MENU_START_PROBE
+# Fermer Démarrer avant cette mesure séparée en lecture seule.
+cargo test --locked closed_start_fast_path_probe -- --ignored --nocapture
+```
+
+Ces commandes utilisent les tests compilés en debug. Les temps affichés excluent l’ouverture complète et le rendu du lanceur ; les sondes ne font aucun accès réseau.
+
 ## Ajouter une régression
 
 Pour un bug du moteur, ajouter un test Rust près du module concerné avec le cas qui échouait. Pour un bug d'interaction, ajouter une assertion dans la suite Windows appropriée et une donnée dans la fixture si nécessaire. Vérifier que le test échoue lorsque le comportement est volontairement régressé, puis restaurer le code. Garder les tests indépendants du profil Windows, des applications réelles et du temps d'exécution du PC.

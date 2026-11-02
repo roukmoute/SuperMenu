@@ -2,6 +2,19 @@
 
 [English](PERFORMANCE.md) · **Français**
 
+## Version 0.6.20
+
+Le binaire local stable MSVC Release passe de **1 080 320 à 1 082 880 octets (+2 560 octets)**, avec le même profil de compilation et les mêmes options CRT statique. Aucune dépendance ni thread de travail supplémentaire n’est ajouté.
+
+Seul un menu Démarrer confirmé visible crée le temporisateur de fermeture temporaire de 10 ms, limité à deux secondes. L’attente du relâchement des modificateurs et de la barre d’espace reste limitée à ce chemin ; une activation ordinaire ne crée aucun temporisateur de sondage.
+
+| Sonde locale | Mesure |
+| --- | ---: |
+| Détection avec Démarrer fermé, 10 000 appels en lecture seule | 10,158 µs par appel, moyenne |
+| Fermeture du Shell après détection, une sonde manuelle | 25,16 ms |
+
+Les deux sondes utilisent les tests compilés en debug, pas en Release. Le second chronométrage commence après l’identification de Démarrer et se termine quand sa visibilité sémantique est fausse et que le premier plan a changé ; il exclut l’affichage et le rendu de Super Menu. Ces chiffres ne mesurent ni l’ouverture complète du menu ni un démarrage à froid. Les commandes de reproduction figurent dans [TESTING.fr.md](TESTING.fr.md).
+
 ## Version 0.6.19
 
 Le binaire local stable passe de **1 079 808 à 1 080 320 octets (+512 octets, +0,05 %)**, avec la même chaîne MSVC, le même profil Release et les mêmes options CRT statique. Ces mesures utilisent le code corrigé avant le passage du numéro de version de 0.6.18 à 0.6.19.
