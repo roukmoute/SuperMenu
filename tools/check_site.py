@@ -60,7 +60,7 @@ def validate(output: Path, root: Path = ROOT) -> dict:
     manifest = json.loads((output / "documentation-manifest.json").read_text(encoding="utf-8"))
     assert manifest["languages"] == ["en", "fr"]
     assert manifest["defaultDocumentationLanguage"] == "en"
-    assert manifest["applicationVersion"] == "0.6.18"
+    assert manifest["applicationVersion"] == "0.6.20"
     assert set(manifest["pages"]) == {route(document, language) for document in DOCUMENTS for language in ("en", "fr")}
     assert re.fullmatch(r"[0-9a-f]{40}", manifest["revision"])
     expected = Site(root=root, revision=manifest["revision"])
@@ -129,7 +129,7 @@ def validate(output: Path, root: Path = ROOT) -> dict:
             assert destination.path in pages
             if destination.fragment:
                 assert unquote(destination.fragment) in pages[destination.path].ids
-    assert 'releases/download/v0.6.18/SuperMenu-Setup-x64.exe' in files["index.html"].read_text(encoding="utf-8")
+    assert 'releases/download/v0.6.20/SuperMenu-Setup-x64.exe' in files["index.html"].read_text(encoding="utf-8")
     result = {"documentationPages": len(manifest["pages"]), "htmlPages": len(pages), "languages": manifest["languages"], "assets": len(manifest["assets"]), "revision": manifest["revision"]}
     return result
 

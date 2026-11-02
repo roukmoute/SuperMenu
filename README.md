@@ -8,13 +8,13 @@ A **native Windows** launcher and search engine, written in Rust and Win32. A di
 
 ![Super Menu](docs/screenshot.png)
 
-Windows 10 and 11, x64. The standalone executable is **about 1 MiB** (1 079 808 bytes for version 0.6.18). Its exact size may vary with the toolchain; the [performance report](PERFORMANCE.md) describes the size reductions in versions 0.6.1, 0.6.13, 0.6.15, 0.6.16, 0.6.17 and 0.6.18, the method and the tradeoffs.
+Windows 10 and 11, x64. The standalone executable is **about 1 MiB** (1 062 912 bytes for the official version 0.6.20). Its exact size may vary with the toolchain; the [performance report](PERFORMANCE.md) describes measurements across versions, their method and the tradeoffs.
 
 The program uses Windows controls and APIs: no embedded browser, no .NET installation, and no remote service needed to search applications or files. Search works on an in-memory index; rebuilding runs in the background. A local cache speeds up subsequent starts. File changes received while the menu is hidden are batched until it opens; results already in memory appear before the update. Application shortcuts and explicit requests still update in the background.
 
 Search keys are prepared during indexing; typing filters candidates and selects the best results without sorting the entire catalogue. The menu keeps its fixed providers and translated text in memory, and reuses its UTF-16 conversion storage and Windows drawing resources. Cache restoration uses a read-only file view; saving serializes borrowed items without copying the entire index. Reproducible engine, cache and menu measurements are described in the [testing guide](TESTING.md#measuring-performance).
 
-The measurements separately compare search over 20 000 items, cache restoration and menu drawing. Default application search and cache operations improve on the tested machine; generic scenarios and display latency remain sensitive to the build profile and PC conditions. The [detailed report](PERFORMANCE.md) also publishes these limitations. **267 Rust tests**, two optional cache/memory measurements and **1 275 Windows assertions** pass, including 146 assertions exercising real isolated installation, update and uninstallation tests.
+The measurements separately compare search over 20 000 items, cache restoration and menu drawing. Default application search and cache operations improve on the tested machine; generic scenarios and display latency remain sensitive to the build profile and PC conditions. The [detailed report](PERFORMANCE.md) also publishes these limitations. **274 Rust tests and 1 300 Windows assertions** pass, including 146 assertions exercising real isolated installation, update and uninstallation tests. Five additional diagnostic and measurement probes are opt-in.
 
 ## Languages
 
@@ -36,7 +36,7 @@ An installed copy uses the existing silent Setup; a portable copy replaces only 
 
 **Include prereleases** is enabled by default for 0.x versions; a fresh 1.x installation targets stable versions. Drafts and equal or older versions are ignored. The already selected downloaded language is refreshed once per application version to translate new text; French remains built in. Disabling automatic updates prevents new checks and automatic application.
 
-An initial installation of 0.6.18 is required to use this mechanism: earlier versions do not contain it.
+An initial installation of 0.6.18 or a newer version is required to use this mechanism: earlier versions do not contain it.
 
 ## Usage
 

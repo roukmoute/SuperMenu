@@ -67,7 +67,7 @@ class DocumentationTests(unittest.TestCase):
             if source.is_file():
                 self.assertEqual(source.read_bytes(), (self.output / "assets/docs" / source.name).read_bytes())
         landing = (self.output / "index.html").read_text(encoding="utf-8")
-        self.assertIn("releases/download/v0.6.18/SuperMenu-Setup-x64.exe", landing)
+        self.assertIn("releases/download/v0.6.20/SuperMenu-Setup-x64.exe", landing)
         self.assertIn('data-doc-en="documentation/performance.html"', landing)
         self.assertIn('data-doc-fr="fr/documentation/performance.html"', landing)
 

@@ -218,7 +218,7 @@ class Site:
 <header class="doc-header"><a class="brand" href="{href(current, 'index.html', query='lang=' + language)}"><img src="{href(current, 'assets/mark.svg')}" width="25" height="25" alt="">SUPER MENU<span>.</span></a><a class="home-link" href="{href(current, 'index.html', query='lang=' + language)}">{labels['home']}</a><nav class="languages" aria-label="{labels['language']}" data-anchor-map="{anchor_data}">{language_links}</nav></header>
 <div class="doc-layout">
 <aside class="doc-sidebar"><p class="eyebrow">{labels['documentation']}</p><nav aria-label="{labels['navigation']}">{links}</nav>{'<div class="toc"><p class="eyebrow">' + labels['on_this_page'] + '</p><ol>' + toc + '</ol></div>' if toc else ''}</aside>
-<main id="main" class="doc-content">{self.rewritten_body(document, language)}<footer class="doc-footer"><a href="{source_url}">{labels['source']} ↗</a><span>Super Menu 0.6.18</span></footer></main>
+<main id="main" class="doc-content">{self.rewritten_body(document, language)}<footer class="doc-footer"><a href="{source_url}">{labels['source']} ↗</a><span>Super Menu 0.6.20</span></footer></main>
 </div>
 </body>
 </html>
@@ -257,7 +257,7 @@ class Site:
         shutil.copytree(self.root / "docs", output / "assets/docs")
         css_hash = sha256((self.root / "site/documentation.css").read_bytes())[:12]
         js_hash = sha256((self.root / "site/documentation.js").read_bytes())[:12]
-        manifest = {"schemaVersion": 1, "defaultDocumentationLanguage": "en", "languages": ["en", "fr"], "revision": self.revision, "applicationVersion": "0.6.18", "pages": {}, "assets": {}}
+        manifest = {"schemaVersion": 1, "defaultDocumentationLanguage": "en", "languages": ["en", "fr"], "revision": self.revision, "applicationVersion": "0.6.20", "pages": {}, "assets": {}}
         for (document, language), page in self.pages.items():
             physical = route(document, language)
             destination = output / physical
