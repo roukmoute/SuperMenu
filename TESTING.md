@@ -137,7 +137,6 @@ These optional probes are ignored by default and excluded from CI. The first wai
 $env:SUPER_MENU_START_PROBE = '1'
 cargo test --locked real_start_dismissal_probe -- --ignored --nocapture
 Remove-Item Env:\SUPER_MENU_START_PROBE
-# Close Start before this separate read-only measurement.
 cargo test --locked closed_start_fast_path_probe -- --ignored --nocapture
 ```
 

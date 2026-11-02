@@ -138,7 +138,6 @@ Ces sondes facultatives sont ignorées par défaut et exclues de la CI. La premi
 $env:SUPER_MENU_START_PROBE = '1'
 cargo test --locked real_start_dismissal_probe -- --ignored --nocapture
 Remove-Item Env:\SUPER_MENU_START_PROBE
-# Fermer Démarrer avant cette mesure séparée en lecture seule.
 cargo test --locked closed_start_fast_path_probe -- --ignored --nocapture
 ```
 
